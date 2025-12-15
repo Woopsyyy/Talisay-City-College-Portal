@@ -38,27 +38,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         exit();
     }
 
-    // Handle file upload if a file was provided
-    if (isset($_FILES['profileImage']) && $_FILES['profileImage']['error'] == 0) {
-        $target_dir = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . "/TCC/database/pictures/";
-        if (!file_exists($target_dir)) {
-            mkdir($target_dir, 0777, true);
-        }
-
-        $file_extension = strtolower(pathinfo($_FILES["profileImage"]["name"], PATHINFO_EXTENSION));
-        $sanitized_name = preg_replace('/[^a-z0-9]+/', '-', strtolower($full_name));
-        $new_filename = $sanitized_name . '_' . date('YmdHis') . '.' . $file_extension;
-        $target_file = $target_dir . $new_filename;
-
-        // Basic image validation
-        $check = getimagesize($_FILES["profileImage"]["tmp_name"]);
-        if ($check !== false) {
-            if (move_uploaded_file($_FILES["profileImage"]["tmp_name"], $target_file)) {
-                // Use a web-accessible path for storage in DB
-                $image_path = '/TCC/database/pictures/' . $new_filename;
-            }
-        }
-    }
+    // Local file uploads are not supported. Avatars should be uploaded to Supabase Storage and
+    // the avatar path stored in the users table (handled by server-side API).
 
     $db = Database::getInstance();
     $conn = $db->getConnection();

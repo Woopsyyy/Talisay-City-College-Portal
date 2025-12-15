@@ -4,9 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="css/bootstrap.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
+    />
     <link rel="stylesheet" href="css/home.css" />
     <link rel="stylesheet" href="css/home_sidebar.css" />
+    <link rel="stylesheet" href="css/profile-settings.css" />
     <title>Home</title>
   </head>
   <body>
@@ -15,46 +19,103 @@
         <div class="sidebar-glass"></div>
         <div class="sidebar-top">
           <div class="sidebar-profile-tile">
-            <img id="sidebarUserImage" src="images/sample.jpg" alt="User" class="sidebar-logo" />
-            <span id="sidebarSchoolId" class="sidebar-school-id" style="display:none;" title="School ID"></span>
-            <span id="sidebarRole" class="sidebar-role" style="display:none;" title="Role"></span>
+            <img
+              id="sidebarUserImage"
+              src="images/sample.jpg"
+              alt="User"
+              class="sidebar-logo"
+            />
+            <span
+              id="sidebarSchoolId"
+              class="sidebar-school-id"
+              style="display: none"
+              title="School ID"
+            ></span>
+            <span
+              id="sidebarRole"
+              class="sidebar-role"
+              style="display: none"
+              title="Role"
+            ></span>
           </div>
         </div>
 
         <nav class="sidebar-nav" aria-label="Main navigation">
           <ul>
             <li>
-              <a href="#" data-view="announcements" class="nav-link" data-bs-toggle="tooltip" data-bs-placement="right" title="Announcements">
+              <a
+                href="#"
+                data-view="announcements"
+                class="nav-link"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Announcements"
+              >
                 <i class="bi bi-megaphone-fill"></i>
                 <span class="nav-label">Announcements</span>
               </a>
             </li>
             <li>
-              <a href="#" data-view="records" class="nav-link active" data-bs-toggle="tooltip" data-bs-placement="right" title="Records">
+              <a
+                href="#"
+                data-view="records"
+                class="nav-link active"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Records"
+              >
                 <i class="bi bi-journal-text"></i>
                 <span class="nav-label">Records</span>
               </a>
             </li>
             <li>
-              <a href="#" data-view="grades" class="nav-link" data-bs-toggle="tooltip" data-bs-placement="right" title="Grades">
+              <a
+                href="#"
+                data-view="grades"
+                class="nav-link"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Grades"
+              >
                 <i class="bi bi-journal-bookmark-fill"></i>
                 <span class="nav-label">Grades</span>
               </a>
             </li>
             <li>
-              <a href="#" data-view="transparency" class="nav-link" data-bs-toggle="tooltip" data-bs-placement="right" title="Transparency">
+              <a
+                href="#"
+                data-view="transparency"
+                class="nav-link"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Transparency"
+              >
                 <i class="bi bi-graph-up"></i>
                 <span class="nav-label">Transparency</span>
               </a>
             </li>
             <li>
-              <a href="#" data-view="evaluation" class="nav-link" data-bs-toggle="tooltip" data-bs-placement="right" title="Teacher Evaluation">
+              <a
+                href="#"
+                data-view="evaluation"
+                class="nav-link"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Teacher Evaluation"
+              >
                 <i class="bi bi-clipboard-check"></i>
                 <span class="nav-label">Evaluation</span>
               </a>
             </li>
             <li>
-              <a href="#" data-view="settings" class="nav-link" data-bs-toggle="tooltip" data-bs-placement="right" title="Settings">
+              <a
+                href="#"
+                data-view="settings"
+                class="nav-link"
+                data-bs-toggle="tooltip"
+                data-bs-placement="right"
+                title="Settings"
+              >
                 <i class="bi bi-gear-fill"></i>
                 <span class="nav-label">Settings</span>
               </a>
@@ -63,11 +124,21 @@
         </nav>
 
         <div class="sidebar-bottom">
-          <a id="adminViewLink" href="admin_dashboard.html" class="btn btn-switch-view sidebar-switch-btn" title="Switch to Admin Dashboard" data-bs-toggle="tooltip" data-bs-placement="right" style="display:none;">
+          <a
+            id="adminViewLink"
+            href="admin_dashboard.html"
+            class="btn btn-switch-view sidebar-switch-btn"
+            title="Switch to Admin Dashboard"
+            data-bs-toggle="tooltip"
+            data-bs-placement="right"
+            style="display: none"
+          >
             <i class="bi bi-shield-lock-fill"></i>
             <span>Admin View</span>
           </a>
-          <a href="#" id="logoutBtn" class="btn logout-icon" title="Logout"><i class="bi bi-box-arrow-right"></i></a>
+          <a href="#" id="logoutBtn" class="btn logout-icon" title="Logout"
+            ><i class="bi bi-box-arrow-right"></i
+          ></a>
         </div>
       </aside>
 
@@ -75,7 +146,9 @@
         <section class="dashboard-hero">
           <div class="hero-content">
             <span class="hero-eyebrow">Student Dashboard</span>
-            <h1 class="hero-title">Hi, <span id="heroUserName">Loading...</span>!</h1>
+            <h1 class="hero-title">
+              Hi, <span id="heroUserName">Loading...</span>!
+            </h1>
             <p class="hero-copy" id="heroCopy">Loading...</p>
             <div class="hero-action-group">
               <a href="#" data-view="records" class="hero-action active">
@@ -106,7 +179,9 @@
           </div>
           <div class="hero-spotlight">
             <div class="spotlight-card">
-              <span class="spotlight-eyebrow" id="spotlightEyebrow">Loading...</span>
+              <span class="spotlight-eyebrow" id="spotlightEyebrow"
+                >Loading...</span
+              >
               <h2 class="spotlight-title" id="spotlightTitle">Loading...</h2>
               <p class="spotlight-copy" id="spotlightCopy">Loading...</p>
             </div>
@@ -116,14 +191,26 @@
                 <span class="clock-time-sub" id="homeClockSub">--</span>
               </p>
               <p class="clock-day" id="homeClockDay">Loading...</p>
-              <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 16 16" class="clock-moon" fill="currentColor" stroke="currentColor">
-                <path d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"></path>
-                <path d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.734 1.734 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162A1.734 1.734 0 0 0 9.31 6.593l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387a1.734 1.734 0 0 0 1.097-1.097l.387-1.162zM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L13.863.1z"></path>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="1em"
+                height="1em"
+                viewBox="0 0 16 16"
+                class="clock-moon"
+                fill="currentColor"
+                stroke="currentColor"
+              >
+                <path
+                  d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z"
+                ></path>
+                <path
+                  d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.734 1.734 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162A1.734 1.734 0 0 0 9.31 6.593l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387a1.734 1.734 0 0 0 1.097-1.097l.387-1.162zM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L13.863.1z"
+                ></path>
               </svg>
             </div>
           </div>
         </section>
-        
+
         <div id="contentArea">
           <div class="text-center p-5">
             <div class="spinner-border" role="status">
@@ -135,7 +222,7 @@
     </div>
     <script src="js/bootstrap.bundle.min.js"></script>
     <script src="js/api.js"></script>
+    <script src="js/profile-settings.js"></script>
     <script src="js/home.js"></script>
   </body>
 </html>
-

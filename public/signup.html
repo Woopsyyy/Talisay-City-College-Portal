@@ -234,7 +234,12 @@
                     formData.append('profileImage', profileImage.files[0]);
                 }
                 
-                const data = await AuthAPI.signup(formData);
+                const response = await fetch('/api/auth/signup', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
                 
                 if (data.success) {
                     window.location.href = 'index.html?signup=success';

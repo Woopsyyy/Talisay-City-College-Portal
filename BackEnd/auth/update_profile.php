@@ -50,23 +50,8 @@ if (!empty($password)) {
     $fields[] = 'password = ?'; $types .= 's'; $values[] = $hash;
 }
 
-// handle profile picture upload
-if (isset($_FILES['profile_image']) && $_FILES['profile_image']['error'] === UPLOAD_ERR_OK) {
-    $uploadDir = rtrim($_SERVER['DOCUMENT_ROOT'], DIRECTORY_SEPARATOR) . "/TCC/database/pictures/";
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-
-    $tmp = $_FILES['profile_image']['tmp_name'];
-    $orig = basename($_FILES['profile_image']['name']);
-    $ext = pathinfo($orig, PATHINFO_EXTENSION);
-    $safe = preg_replace('/[^a-zA-Z0-9_-]/', '_', strtolower($full_name));
-    $filename = $safe . '_' . time() . '.' . $ext;
-    $dest = $uploadDir . $filename;
-
-    if (move_uploaded_file($tmp, $dest)) {
-        $webPath = '/TCC/database/pictures/' . $filename;
-        $fields[] = 'image_path = ?'; $types .= 's'; $values[] = $webPath;
-    }
-}
+// Local profile image uploads are not supported. Upload avatars via Supabase Storage and
+// update the user's `avatar_path` in the database using the server API.
 
 // build update statement
 $types .= 'i'; // for where id
@@ -83,11 +68,10 @@ for ($i = 0; $i < count($values); $i++) {
 }
 call_user_func_array([$stmt, 'bind_param'], $bindNames);
 
-if ($stmt->execute()) {
+    if ($stmt->execute()) {
     // update session values
     $_SESSION['username'] = $username;
     $_SESSION['full_name'] = $full_name;
-    if (isset($webPath)) $_SESSION['image_path'] = $webPath;
     header('Location: /TCC/public/settings.php?success=1');
     exit();
 } else {

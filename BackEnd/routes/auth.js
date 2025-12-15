@@ -5,33 +5,17 @@ const path = require("path");
 const fs = require("fs");
 const db = require("../config/database");
 const Logger = require("../config/logger");
+const supabaseAdmin = require("../config/supabaseAdmin");
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "avatars";
 const router = express.Router();
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, "../../database/pictures");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const userId = req.session.user_id || "user";
-    const timestamp = Date.now();
-    const ext = path.extname(file.originalname);
-    const sanitizedName = file.originalname
-      .replace(/[^a-z0-9.-]/gi, "-")
-      .toLowerCase();
-    cb(null, `${userId}_${timestamp}_${sanitizedName}`);
-  },
-});
-
+// Configure multer for form parsing; do NOT write files to disk anymore
+const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit; avatar uploads must use /api/avatar
   fileFilter: function (req, file, cb) {
-    const allowedTypes = /jpeg|jpg|png|gif/;
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
     const extname = allowedTypes.test(
       path.extname(file.originalname).toLowerCase()
     );
@@ -104,10 +88,10 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// Signup endpoint with file upload support
+// Signup endpoint with optional file upload
 router.post("/signup", upload.single("profileImage"), async (req, res) => {
   try {
-    // Get form data - handle both JSON and FormData
+    // Get form data
     const username = req.body.username?.trim();
     const password = req.body.password;
     const full_name = req.body.full_name?.trim() || req.body.name?.trim();
@@ -171,13 +155,10 @@ router.post("/signup", upload.single("profileImage"), async (req, res) => {
       }
     }
 
-    // Handle file upload if present
+    // Default avatar path
     let imagePath = "/TCC/public/images/sample.jpg";
-    if (req.file) {
-      imagePath = `/TCC/database/pictures/${req.file.filename}`;
-    }
 
-    // Insert user with RETURNING clause for PostgreSQL
+    // Insert user first with RETURNING clause for PostgreSQL
     const sql = `INSERT INTO users (username, password, full_name, school_id, role, image_path) 
                      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`;
     const result = await db.query(sql, [
@@ -189,16 +170,105 @@ router.post("/signup", upload.single("profileImage"), async (req, res) => {
       imagePath,
     ]);
 
-    Logger.dataSaved(
-      "users",
-      result.id || (Array.isArray(result) ? result[0]?.id : result?.id)
-    );
+    const userId =
+      result.id || (Array.isArray(result) ? result[0]?.id : result?.id);
+
+    Logger.dataSaved("users", userId);
+
+    // If profile image provided, upload to Supabase Storage
+    if (req.file) {
+      try {
+        const supabaseAdmin = require("../config/supabaseAdmin");
+        const sharp = require("sharp");
+
+        const AVATAR_MAX_DIM = 512;
+        const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "avatars";
+
+        const optimized = await sharp(req.file.buffer)
+          .rotate()
+          .resize({
+            width: AVATAR_MAX_DIM,
+            height: AVATAR_MAX_DIM,
+            fit: "inside",
+          })
+          .webp({ quality: 72, effort: 6 })
+          .toBuffer();
+
+        const avatarPath = `${userId}.webp`;
+
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from(BUCKET)
+          .upload(avatarPath, optimized, {
+            contentType: "image/webp",
+            upsert: true,
+          });
+
+        // If upload fails due to missing bucket, try to create bucket and retry
+        if (uploadErr) {
+          const msg = uploadErr.message || String(uploadErr);
+          if (
+            msg.includes("Bucket not found") ||
+            msg.includes("No such bucket") ||
+            uploadErr.status === 404
+          ) {
+            Logger.warning(
+              "Signup avatar upload: bucket not found, attempting to create bucket"
+            );
+            const { error: createErr } = await supabaseAdmin.storage
+              .createBucket(BUCKET, { public: false })
+              .catch((e) => ({ error: e }));
+            if (!createErr) {
+              const { error: retryErr } = await supabaseAdmin.storage
+                .from(BUCKET)
+                .upload(avatarPath, optimized, {
+                  contentType: "image/webp",
+                  upsert: true,
+                });
+              if (!retryErr) {
+                const updateSql = `
+                  UPDATE public.users 
+                  SET image_path = $1::text, avatar_path = $1::text, last_avatar_upload = now() 
+                  WHERE id = $2::int
+                `;
+                await db.query(updateSql, [avatarPath, userId]);
+                imagePath = avatarPath;
+                Logger.dataSaved("avatar", userId);
+              } else {
+                Logger.error(
+                  "Signup avatar upload failed after creating bucket",
+                  retryErr
+                );
+              }
+            } else {
+              Logger.error(
+                "Failed to create bucket during signup avatar upload",
+                createErr
+              );
+            }
+          } else {
+            Logger.error("Avatar upload during signup failed", uploadErr);
+          }
+        } else {
+          const updateSql = `
+            UPDATE public.users 
+            SET image_path = $1::text, avatar_path = $1::text, last_avatar_upload = now() 
+            WHERE id = $2::int
+          `;
+          await db.query(updateSql, [avatarPath, userId]);
+          imagePath = avatarPath;
+          Logger.dataSaved("avatar", userId);
+        }
+      } catch (avatarErr) {
+        Logger.error("Error processing avatar during signup", avatarErr);
+        // Continue without avatar - don't fail signup
+      }
+    }
 
     res.status(201).json({
       success: true,
       message: "User created successfully",
-      user_id:
-        result.id || (Array.isArray(result) ? result[0]?.id : result?.id),
+      user_id: userId,
+      avatar_path: imagePath,
     });
   } catch (error) {
     Logger.error("Signup error", error);
@@ -220,17 +290,39 @@ router.post("/logout", (req, res) => {
 // Check authentication status
 router.get("/check", (req, res) => {
   if (req.session.user_id) {
-    res.json({
-      authenticated: true,
-      user: {
+    (async () => {
+      const user = {
         id: req.session.user_id,
         username: req.session.username,
         role: req.session.role,
         full_name: req.session.full_name,
         image_path: req.session.image_path,
         school_id: req.session.school_id,
-      },
-    });
+      };
+
+      try {
+        // If image_path looks like a storage object (not a public images/ path or http), add signed URL
+        const ip = user.image_path || "";
+        if (
+          ip &&
+          !ip.startsWith("http://") &&
+          !ip.startsWith("https://") &&
+          !ip.startsWith("images/") &&
+          !ip.startsWith("/TCC/public/")
+        ) {
+          const { data: signed, error } = await supabaseAdmin.storage
+            .from(BUCKET)
+            .createSignedUrl(ip, 60 * 60);
+          if (!error && signed && signed.signedUrl) {
+            user.avatar_url = signed.signedUrl;
+          }
+        }
+      } catch (e) {
+        Logger.error("Failed to create signed URL in check session", e);
+      }
+
+      res.json({ authenticated: true, user });
+    })();
   } else {
     res.json({ authenticated: false });
   }
@@ -306,7 +398,7 @@ router.post("/reset-password", async (req, res) => {
     const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
     // Update user password
-    await db.query("UPDATE users SET password = $1 WHERE id = $2", [
+    await db.query("UPDATE users SET password = $1 WHERE id = $2::int", [
       hashedPassword,
       user.id,
     ]);
@@ -363,7 +455,7 @@ router.post(
 
       // Check for duplicates (excluding current user)
       const checkUser = await db.query(
-        "SELECT id FROM users WHERE (username = $1 OR full_name = $2) AND id != $3",
+        "SELECT id FROM users WHERE (username = $1 OR full_name = $2) AND id != $3::int",
         [username, full_name, userId]
       );
       if (Array.isArray(checkUser) ? checkUser.length > 0 : checkUser) {
@@ -388,17 +480,89 @@ router.post(
         values.push(hashedPassword);
       }
 
-      // Handle file upload if present
+      // If a profile image was submitted with the form, process and upload it
       if (req.file) {
-        const imagePath = `/TCC/database/pictures/${req.file.filename}`;
-        updates.push(`image_path = $${paramIndex++}`);
-        values.push(imagePath);
+        try {
+          const supabaseAdmin = require("../config/supabaseAdmin");
+          const sharp = require("sharp");
+          const AVATAR_MAX_DIM = 512;
+          const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "avatars";
+
+          const optimized = await sharp(req.file.buffer)
+            .rotate()
+            .resize({
+              width: AVATAR_MAX_DIM,
+              height: AVATAR_MAX_DIM,
+              fit: "inside",
+            })
+            .webp({ quality: 72, effort: 6 })
+            .toBuffer();
+
+          const avatarPath = `${userId}.webp`;
+
+          const { error: uploadErr } = await supabaseAdmin.storage
+            .from(BUCKET)
+            .upload(avatarPath, optimized, {
+              contentType: "image/webp",
+              upsert: true,
+            });
+
+          if (uploadErr) {
+            const msg = uploadErr.message || String(uploadErr);
+            if (
+              msg.includes("Bucket not found") ||
+              msg.includes("No such bucket") ||
+              uploadErr.status === 404
+            ) {
+              // Try to create the bucket and retry
+              const { error: createErr } = await supabaseAdmin.storage
+                .createBucket(BUCKET, { public: false })
+                .catch((e) => ({ error: e }));
+              if (!createErr) {
+                const { error: retryErr } = await supabaseAdmin.storage
+                  .from(BUCKET)
+                  .upload(avatarPath, optimized, {
+                    contentType: "image/webp",
+                    upsert: true,
+                  });
+                if (retryErr) {
+                  Logger.error(
+                    "Profile avatar upload failed after bucket creation",
+                    retryErr
+                  );
+                } else {
+                  await db.query(
+                    "UPDATE public.users SET image_path = $1::text, avatar_path = $1::text, last_avatar_upload = now() WHERE id = $2::int",
+                    [avatarPath, userId]
+                  );
+                  req.session.image_path = avatarPath;
+                }
+              } else {
+                Logger.error(
+                  "Failed to create bucket for profile avatar",
+                  createErr
+                );
+              }
+            } else {
+              Logger.error("Profile avatar upload failed", uploadErr);
+            }
+          } else {
+            await db.query(
+              "UPDATE public.users SET image_path = $1::text, avatar_path = $1::text, last_avatar_upload = now() WHERE id = $2::int",
+              [avatarPath, userId]
+            );
+            req.session.image_path = avatarPath;
+          }
+        } catch (avatarErr) {
+          Logger.error("Error processing profile image", avatarErr);
+          // don't fail the profile update for avatar errors
+        }
       }
 
       values.push(userId);
       const sql = `UPDATE users SET ${updates.join(
         ", "
-      )} WHERE id = $${paramIndex}`;
+      )} WHERE id = $${paramIndex}::int`;
 
       await db.query(sql, values);
 
@@ -407,9 +571,10 @@ router.post(
       req.session.full_name = full_name;
 
       // Get updated user info
-      const updatedUser = await db.query("SELECT * FROM users WHERE id = $1", [
-        userId,
-      ]);
+      const updatedUser = await db.query(
+        "SELECT * FROM users WHERE id = $1::int",
+        [userId]
+      );
       const user = Array.isArray(updatedUser) ? updatedUser[0] : updatedUser;
       if (user && user.image_path) {
         req.session.image_path = user.image_path;

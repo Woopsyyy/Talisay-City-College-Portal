@@ -4,6 +4,8 @@ const session = require("express-session");
 const cors = require("cors");
 const path = require("path");
 const Logger = require("./BackEnd/config/logger");
+const supabaseAdmin = require("./BackEnd/config/supabaseAdmin");
+const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "avatars";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,11 +67,7 @@ app.use(
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, "public")));
 
-// Serve static files from database/pictures directory
-app.use(
-  "/database/pictures",
-  express.static(path.join(__dirname, "database/pictures"))
-);
+// Note: local picture serving removed; avatars served via Supabase Storage signed URLs
 
 // Initialize database connection
 const db = require("./BackEnd/config/database");
@@ -83,12 +81,15 @@ const authRoutes = require("./BackEnd/routes/auth");
 const adminRoutes = require("./BackEnd/routes/admin");
 const teacherRoutes = require("./BackEnd/routes/teacher");
 const studentRoutes = require("./BackEnd/routes/student");
+const avatarRoutes = require("./BackEnd/routes/avatar");
 
 // Use routes with /api prefix to match frontend expectations
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/teacher", teacherRoutes);
 app.use("/api/student", studentRoutes);
+// Avatar routes (image upload, signed URLs)
+app.use("/api/avatar", avatarRoutes);
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -111,6 +112,40 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  Logger.serverStarted(PORT, process.env.NODE_ENV || "development");
+// Ensure avatars bucket exists (best-effort)
+async function ensureAvatarsBucket() {
+  try {
+    const { data, error } = await supabaseAdmin.storage.createBucket(
+      STORAGE_BUCKET,
+      { public: false }
+    );
+    if (error) {
+      const msg = error.message || String(error);
+      if (
+        msg.includes("already exists") ||
+        msg.includes("Bucket already exists")
+      ) {
+        Logger.warning(`Storage bucket '${STORAGE_BUCKET}' already exists`);
+      } else {
+        Logger.warning(
+          "Could not create storage bucket: " +
+            (error && error.message ? error.message : String(error))
+        );
+      }
+    } else {
+      Logger.success(`Created storage bucket '${STORAGE_BUCKET}'`);
+    }
+  } catch (err) {
+    // Some Supabase projects may not allow bucket creation via the SQL sandbox or client
+    Logger.warning(
+      "Unable to auto-create storage bucket (continue if created manually): " +
+        (err && err.message ? err.message : String(err))
+    );
+  }
+}
+
+ensureAvatarsBucket().finally(() => {
+  app.listen(PORT, () => {
+    Logger.serverStarted(PORT, process.env.NODE_ENV || "development");
+  });
 });

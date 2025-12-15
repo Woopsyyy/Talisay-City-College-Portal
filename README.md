@@ -5,6 +5,7 @@ A modern web-based campus management system for students and teachers at Talisay
 ## 📱 Features
 
 ### For Students
+
 - ✅ **View Course Schedule** - See your daily class timetable, instructors, and locations
 - ✅ **Check Grades** - Access your semester grades (Prelim, Midterm, Finals)
 - ✅ **Study Load** - View all your enrolled subjects and course details
@@ -14,6 +15,7 @@ A modern web-based campus management system for students and teachers at Talisay
 - ✅ **Section Assignment** - Know your assigned building, floor, and room
 
 ### For Teachers
+
 - ✅ **Class Schedule** - Manage and view your teaching schedule
 - ✅ **Grade Entry** - Input student grades (Prelim, Midterm, Finals)
 - ✅ **Class List** - View all students in your sections
@@ -22,6 +24,7 @@ A modern web-based campus management system for students and teachers at Talisay
 - ✅ **Statistics** - View grade distribution and class performance
 
 ### For Administrators
+
 - ✅ **User Management** - Create and manage student and teacher accounts
 - ✅ **Building & Room Management** - Configure campus buildings and rooms
 - ✅ **Schedule Management** - Set up class schedules and assignments
@@ -33,6 +36,7 @@ A modern web-based campus management system for students and teachers at Talisay
 ## 🚀 Getting Started
 
 ### Prerequisites
+
 - Modern web browser (Chrome, Firefox, Edge, Safari)
 - Internet connection
 
@@ -40,6 +44,7 @@ A modern web-based campus management system for students and teachers at Talisay
 
 1. **Open your browser** and navigate to the portal URL
 2. **Log in** with your credentials:
+
    - **Username**: Your assigned username
    - **Password**: Your assigned password
 
@@ -49,6 +54,7 @@ A modern web-based campus management system for students and teachers at Talisay
 ## 📚 User Guides
 
 ### For Students
+
 1. **First Login**: Update your profile picture and password
 2. **Check Schedule**: Go to "Schedule" to see your classes
 3. **View Grades**: Access "Grades" section to check your performance
@@ -56,12 +62,14 @@ A modern web-based campus management system for students and teachers at Talisay
 5. **Announcements**: Stay informed about college news
 
 ### For Teachers
+
 1. **View Classes**: Check your assigned class schedule
 2. **Enter Grades**: Go to "Grades" and input student performance
 3. **Post Announcements**: Share important information with students
 4. **Check Statistics**: Monitor class performance
 
 ### For Administrators
+
 1. **Manage Users**: Create student and teacher accounts
 2. **Set Up Classes**: Configure schedules and room assignments
 3. **Manage Subjects**: Add and update course information
@@ -70,22 +78,26 @@ A modern web-based campus management system for students and teachers at Talisay
 ## 🎯 Key Features Explained
 
 ### Grade System
+
 - **Prelim Grade**: First quarter assessment
 - **Midterm Grade**: Mid-semester evaluation
 - **Finals Grade**: Final assessment
 - Grades are calculated as weighted averages
 
 ### Class Schedule
+
 - Shows all your assigned classes
 - Displays instructor name, subject, day, and time
 - Indicates classroom location (Building, Floor, Room)
 
 ### Announcements
+
 - Important college-wide updates
 - Can be filtered by year and department
 - Read announcements directly from the dashboard
 
 ### Payment Status
+
 - Shows if your fees are **Paid** or **Owing**
 - Displays outstanding balance if applicable
 - Pay through the college finance office
@@ -93,6 +105,7 @@ A modern web-based campus management system for students and teachers at Talisay
 ## 📞 Support & Help
 
 For technical issues or questions:
+
 1. Contact your system administrator
 2. Visit the college IT office
 3. Check with your academic advisor
@@ -100,6 +113,7 @@ For technical issues or questions:
 ## 📋 Account Information
 
 ### Default Username/Password
+
 - Username: `admin`
 - Password: `admin123` (Change on first login)
 
@@ -116,12 +130,15 @@ For technical issues or questions:
 ## 🎨 Interface Overview
 
 ### Dashboard
+
 Your personal home screen showing:
+
 - Quick access to schedules and grades
 - Latest announcements
 - Your profile information
 
 ### Main Navigation
+
 - **Schedule**: View class timetable
 - **Grades**: Check your academic performance
 - **Announcements**: Read college updates
@@ -132,6 +149,7 @@ Your personal home screen showing:
 ## 📅 Academic Calendar
 
 Check with your academic office for:
+
 - Semester dates
 - Holiday schedules
 - Exam periods
@@ -148,6 +166,7 @@ Check with your academic office for:
 ## 🌐 Browser Compatibility
 
 Works best on:
+
 - ✅ Chrome (latest version)
 - ✅ Firefox (latest version)
 - ✅ Edge (latest version)
