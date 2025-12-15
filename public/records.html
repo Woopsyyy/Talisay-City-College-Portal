@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="css/bootstrap.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" />
+    <title>Records</title>
+    <style>
+      body { background: #f1efe9; }
+      .topbar { display:flex; align-items:center; gap:12px; padding:12px 18px; }
+      .profile-sm { width:40px; height:40px; border-radius:8px; object-fit:cover; }
+      .card-grid { display:flex; gap:1rem; flex-wrap:wrap; }
+      .small-card { background:#fff; padding:14px; border-radius:10px; box-shadow:0 6px 18px rgba(47,41,38,0.06); }
+    </style>
+  </head>
+  <body>
+    <div class="container-fluid">
+      <div class="topbar">
+        <img id="userImage" src="images/sample.jpg" alt="user" class="profile-sm" />
+        <div>
+          <div><strong id="userName">Loading...</strong></div>
+          <div class="text-muted">Records Dashboard</div>
+        </div>
+      </div>
+
+      <div class="container mt-3">
+        <div class="row">
+          <div class="col-md-8">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">City Weather</h5>
+                <p class="card-text">Sunny, 26°C</p>
+                <div class="row">
+                  <div class="col-6 small-card">
+                    <strong>Year</strong>
+                    <div id="yearDisplay">Loading...</div>
+                  </div>
+                  <div class="col-6 small-card">
+                    <strong>Section</strong>
+                    <div id="sectionDisplay">Loading...</div>
+                  </div>
+                </div>
+
+                <div class="row mt-3">
+                  <div class="col-6 small-card">
+                    <strong>Building</strong>
+                    <div id="buildingDisplay">Loading...</div>
+                  </div>
+                  <div class="col-6 small-card">
+                    <strong>Room</strong>
+                    <div id="roomDisplay">Loading...</div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-body">
+                <h5 class="card-title">Lackings / Payments</h5>
+                <p id="paymentStatus" class="text-danger">Loading payment information...</p>
+                <p class="text-muted">Payment and student account management is controlled in the admin dashboard.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-md-4">
+            <div class="card">
+              <div class="card-body">
+                <h6>Quick Info</h6>
+                <ul class="list-unstyled">
+                  <li>Buildings: A, B, C, D</li>
+                  <li>Floors per building: 4 (Building C includes 4th floor)</li>
+                  <li>Rooms per floor: 4</li>
+                </ul>
+                <p class="small text-muted">These values are managed from the admin dashboard.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="js/api.js"></script>
+    <script>
+      // Check session and load assignment data
+      async function init() {
+        try {
+          const session = await AuthAPI.checkSession();
+          if (!session.authenticated) {
+            window.location.href = 'index.html';
+            return;
+          }
+          
+          if (session.user) {
+            document.getElementById('userImage').src = session.user.image_path || 'images/sample.jpg';
+            document.getElementById('userName').textContent = session.user.full_name || session.user.username;
+          }
+          
+          // Load assignment
+          await loadAssignment();
+        } catch (error) {
+          console.error('Init error:', error);
+          window.location.href = 'index.html';
+        }
+      }
+      
+      async function loadAssignment() {
+        try {
+          const assignment = await StudentAPI.getAssignment();
+          
+          if (assignment) {
+            document.getElementById('yearDisplay').textContent = assignment.year || 'N/A';
+            document.getElementById('sectionDisplay').textContent = assignment.section || 'N/A';
+            
+            // Load section assignment for building/room
+            if (assignment.year && assignment.section) {
+              try {
+                const sectionAssignments = await AdminAPI.getSectionAssignments();
+                const sectionAssignment = sectionAssignments.find(sa => 
+                  sa.year === assignment.year && sa.section === assignment.section
+                );
+                
+                if (sectionAssignment) {
+                  document.getElementById('buildingDisplay').textContent = sectionAssignment.building ? `Building ${sectionAssignment.building}` : 'Unassigned';
+                  
+                  const floorText = sectionAssignment.floor ? formatOrdinal(sectionAssignment.floor) + ' Floor' : '';
+                  const roomText = sectionAssignment.room ? `Room ${sectionAssignment.room}` : '';
+                  document.getElementById('roomDisplay').textContent = floorText && roomText ? `${floorText} / ${roomText}` : (floorText || roomText || 'N/A');
+                } else {
+                  document.getElementById('buildingDisplay').textContent = 'Unassigned';
+                  document.getElementById('roomDisplay').textContent = 'N/A';
+                }
+              } catch (error) {
+                console.error('Load section assignment error:', error);
+                document.getElementById('buildingDisplay').textContent = 'Unassigned';
+                document.getElementById('roomDisplay').textContent = 'N/A';
+              }
+            } else {
+              document.getElementById('buildingDisplay').textContent = 'Unassigned';
+              document.getElementById('roomDisplay').textContent = 'N/A';
+            }
+            
+            // Payment status
+            const paymentStatus = assignment.payment || 'paid';
+            const owingAmount = assignment.owing_amount || null;
+            const paymentStatusEl = document.getElementById('paymentStatus');
+            
+            if (paymentStatus === 'owing' && owingAmount) {
+              paymentStatusEl.innerHTML = `You have outstanding fees: <strong>₱${parseFloat(owingAmount).toFixed(2)}</strong>`;
+              paymentStatusEl.className = 'text-danger';
+            } else if (paymentStatus === 'owing') {
+              paymentStatusEl.textContent = 'Amount pending';
+              paymentStatusEl.className = 'text-danger';
+            } else {
+              paymentStatusEl.innerHTML = 'You have no outstanding fees.';
+              paymentStatusEl.className = 'text-success';
+            }
+          } else {
+            document.getElementById('yearDisplay').textContent = 'N/A';
+            document.getElementById('sectionDisplay').textContent = 'N/A';
+            document.getElementById('buildingDisplay').textContent = 'Unassigned';
+            document.getElementById('roomDisplay').textContent = 'N/A';
+            document.getElementById('paymentStatus').textContent = 'No assignment information available.';
+          }
+        } catch (error) {
+          console.error('Load assignment error:', error);
+          document.getElementById('yearDisplay').textContent = 'Error';
+          document.getElementById('sectionDisplay').textContent = 'Error';
+          document.getElementById('buildingDisplay').textContent = 'Error';
+          document.getElementById('roomDisplay').textContent = 'Error';
+          document.getElementById('paymentStatus').textContent = 'Error loading payment information.';
+        }
+      }
+      
+      function formatOrdinal(number) {
+        number = parseInt(number);
+        if (number <= 0) return '';
+        const suffixes = ['th','st','nd','rd','th','th','th','th','th','th'];
+        const value = number % 100;
+        if (value >= 11 && value <= 13) {
+          return number + 'th';
+        }
+        return number + (suffixes[number % 10] || 'th');
+      }
+      
+      init();
+    </script>
+  </body>
+</html>
+

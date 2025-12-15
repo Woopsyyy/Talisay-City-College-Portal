@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="stylesheet" href="css/bootstrap.min.css" />
+    <title>Create Announcement (Dev)</title>
+  </head>
+  <body class="p-4">
+    <div class="container">
+      <h3>Create Announcement (Dev)</h3>
+      <form id="annForm">
+        <div class="mb-2">
+          <label class="form-label">Title</label>
+          <input class="form-control" id="title" required />
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Content</label>
+          <textarea
+            id="content"
+            class="form-control"
+            rows="4"
+            required
+          ></textarea>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col">
+            <input
+              id="year"
+              class="form-control"
+              placeholder="Year (optional)"
+            />
+          </div>
+          <div class="col">
+            <input
+              id="department"
+              class="form-control"
+              placeholder="Department (optional)"
+            />
+          </div>
+          <div class="col">
+            <input
+              id="major"
+              class="form-control"
+              placeholder="Major (optional)"
+            />
+          </div>
+        </div>
+        <button class="btn btn-primary">Create</button>
+        <label class="ms-3">
+          <input type="checkbox" id="useProtected" /> Use protected admin
+          endpoint (send credentials)
+        </label>
+      </form>
+      <div id="result" class="mt-3"></div>
+    </div>
+
+    <script>
+      document
+        .getElementById("annForm")
+        .addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const payload = {
+            title: document.getElementById("title").value.trim(),
+            content: document.getElementById("content").value.trim(),
+            year: document.getElementById("year").value.trim() || null,
+            department:
+              document.getElementById("department").value.trim() || null,
+            major: document.getElementById("major").value.trim() || null,
+          };
+          try {
+            const useProtected =
+              document.getElementById("useProtected").checked;
+            const url = useProtected
+              ? "/api/admin/announcements"
+              : "/api/admin/announcements/public";
+            const opts = {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            };
+            if (useProtected) opts.credentials = "include";
+            const resp = await fetch(url, opts);
+            const data = await resp.json();
+            const out = document.getElementById("result");
+            if (resp.ok)
+              out.innerHTML = `<div class='alert alert-success'>Created announcement id=${data.id}</div>`;
+            else
+              out.innerHTML = `<div class='alert alert-danger'>${
+                data.error || "Failed"
+              }</div>`;
+          } catch (err) {
+            document.getElementById(
+              "result"
+            ).innerHTML = `<div class='alert alert-danger'>${err.message}</div>`;
+          }
+        });
+    </script>
+  </body>
+</html>

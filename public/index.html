@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="css/bootstrap.min.css" />
+    <link rel="stylesheet" href="css/login.css" />
+    <title>Login</title>
+  </head>
+
+  <body>
+    <img src="images/background.jpg" alt="Background" class="logo" />
+    <div class="login-card">
+      <div class="login-header">
+        <img src="images/tcc logo.png" alt="Talisay City College logo" class="school-logo" />
+        <h2 class="mb-2">Talisay City College</h2>
+      </div>
+      <form
+        id="loginForm"
+        class="w-100"
+      >
+        <div class="text-danger mb-3" id="error-message" style="display: none">
+          Invalid username or password
+        </div>
+        <div class="form-group mb-3">
+          <label for="username" class="form-label">Username</label>
+          <input
+            type="text"
+            class="form-control"
+            id="username"
+            name="username"
+            placeholder="Enter your username"
+            required
+          />
+        </div>
+        <div class="form-group mb-3">
+          <label for="password" class="form-label">Password</label>
+          <input
+            type="password"
+            class="form-control"
+            id="password"
+            name="password"
+            placeholder="Enter your password"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-primary w-100 mb-3">Login</button>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <a href="forgot_password.html" class="text-decoration-none small"
+            >Forgot Password?</a
+          >
+          <a href="signup.html" class="text-decoration-none small"
+            >Create Account</a
+          >
+        </div>
+      </form>
+    </div>
+    <script src="js/bootstrap.bundle.min.js"></script>
+    <script src="js/api.js"></script>
+    <script>
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get("error") === "1") {
+        document.getElementById("error-message").style.display = "block";
+      }
+      if (urlParams.get("signup") === "success") {
+        // Show success message for signup
+        const successMessage = document.createElement("div");
+        successMessage.className = "alert alert-success mb-3";
+        successMessage.textContent =
+          "Account created successfully! Please login.";
+        document.querySelector(".login-card").prepend(successMessage);
+      }
+
+      // Handle login form submission
+      document.getElementById('loginForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const errorMessage = document.getElementById('error-message');
+
+        try {
+          const result = await AuthAPI.login(username, password);
+          if (result.success) {
+            // Redirect based on role
+            if (result.user.role === 'admin') {
+              window.location.href = 'admin_dashboard.html';
+            } else if (result.user.role === 'teacher') {
+              window.location.href = 'teachers.html';
+            } else {
+              window.location.href = 'home.html';
+            }
+          }
+        } catch (error) {
+          errorMessage.style.display = 'block';
+          errorMessage.textContent = error.message || 'Invalid username or password';
+        }
+      });
+    </script>
+  </body>
+</html>
