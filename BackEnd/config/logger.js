@@ -84,12 +84,21 @@ class Logger {
   /**
    * Server startup logs
    */
-  static serverStarted(port, environment) {
+  static serverStarted(port, environment, host = "0.0.0.0") {
+    const localUrl = `http://localhost:${port}`;
+    const networkUrl = host === "0.0.0.0" ? `http://0.0.0.0:${port}` : `http://${host}:${port}`;
     console.log(
       `${chalk.bgGreen.black(" SERVER ")} ${chalk.green(
-        `Running on http://localhost:${port}`
+        `Running on ${localUrl}`
       )} ${chalk.gray(`[${environment}]`)}`
     );
+    if (host === "0.0.0.0") {
+      console.log(
+        `${chalk.bgBlue.white(" INFO ")} ${chalk.blue(
+          `Network access: ${networkUrl} (accessible from other devices)`
+        )}`
+      );
+    }
   }
 }
 

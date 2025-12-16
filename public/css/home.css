@@ -1,6 +1,6 @@
 :root {
   --color-saddle-brown: #824615;
-  --color-royal-gold: #EED34E;
+  --color-royal-gold: #eed34e;
   --color-ethereal: #f5f0e8;
   --color-bark: #000000;
   --color-cliff: #000000;
@@ -9,8 +9,11 @@
 body {
   margin: 0;
   padding: 0;
-  background:
-    radial-gradient(circle at 8% 16%, rgba(238, 211, 78, 0.25), transparent 54%),
+  background: radial-gradient(
+      circle at 8% 16%,
+      rgba(238, 211, 78, 0.25),
+      transparent 54%
+    ),
     radial-gradient(circle at 92% 12%, rgba(130, 70, 21, 0.18), transparent 48%),
     linear-gradient(160deg, #fef9e7 0%, #fef5d7 50%, #fef0c7 100%);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -20,11 +23,15 @@ body {
 }
 
 body::before {
-  content: '';
+  content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(circle at 78% 82%, rgba(238, 211, 78, 0.15), transparent 62%);
+  background: radial-gradient(
+    circle at 78% 82%,
+    rgba(238, 211, 78, 0.15),
+    transparent 62%
+  );
   z-index: 0;
 }
 
@@ -50,8 +57,11 @@ body::before {
   gap: 28px;
   padding: 36px 42px;
   border-radius: 30px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(254, 245, 215, 0.88)),
+  background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(254, 245, 215, 0.88)
+    ),
     linear-gradient(135deg, rgba(238, 211, 78, 0.2), rgba(130, 70, 21, 0.1));
   border: 1px solid rgba(130, 70, 21, 0.2);
   box-shadow: 0 35px 60px rgba(130, 70, 21, 0.15);
@@ -61,10 +71,14 @@ body::before {
 }
 
 .dashboard-hero::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: -45% 35% 35% -35%;
-  background: radial-gradient(circle at center, rgba(238, 211, 78, 0.25), transparent 68%);
+  background: radial-gradient(
+    circle at center,
+    rgba(238, 211, 78, 0.25),
+    transparent 68%
+  );
   pointer-events: none;
   opacity: 0.85;
 }
@@ -87,7 +101,7 @@ body::before {
 }
 
 .hero-eyebrow::before {
-  content: '';
+  content: "";
   display: inline-block;
   width: 32px;
   height: 2px;
@@ -128,7 +142,8 @@ body::before {
   text-decoration: none;
   font-weight: 600;
   letter-spacing: 0.02em;
-  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .hero-action:hover {
@@ -139,7 +154,11 @@ body::before {
 }
 
 .hero-action.active {
-  background: linear-gradient(135deg, rgba(130, 70, 21, 0.9), rgba(238, 211, 78, 0.85));
+  background: linear-gradient(
+    135deg,
+    rgba(130, 70, 21, 0.9),
+    rgba(238, 211, 78, 0.85)
+  );
   color: #000000;
   border-color: rgba(130, 70, 21, 0.9);
   box-shadow: 0 8px 18px rgba(130, 70, 21, 0.3);
@@ -170,12 +189,20 @@ body::before {
 }
 
 .spotlight-card.alt {
-  background: linear-gradient(145deg, rgba(238, 211, 78, 0.15), rgba(255, 255, 255, 0.9));
+  background: linear-gradient(
+    145deg,
+    rgba(238, 211, 78, 0.15),
+    rgba(255, 255, 255, 0.9)
+  );
 }
 
 /* Hero clock card (aligned with admin dashboard styling) */
 .clock-card {
-  background: linear-gradient(135deg, rgba(254, 249, 231, 0.95), rgba(254, 240, 199, 0.92));
+  background: linear-gradient(
+    135deg,
+    rgba(254, 249, 231, 0.95),
+    rgba(254, 240, 199, 0.92)
+  );
   color: #000000;
   border: 1px solid rgba(130, 70, 21, 0.3);
   box-shadow: 0 20px 40px rgba(130, 70, 21, 0.18);
@@ -341,7 +368,11 @@ body::before {
   font-size: 0.9rem;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  background: linear-gradient(135deg, var(--color-saddle-brown), var(--color-royal-gold));
+  background: linear-gradient(
+    135deg,
+    var(--color-saddle-brown),
+    var(--color-royal-gold)
+  );
   color: #000000;
   box-shadow: 0 6px 16px rgba(132, 129, 112, 0.35);
   transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
@@ -354,7 +385,11 @@ body::before {
 .study-load-download-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 10px 24px rgba(130, 70, 21, 0.25);
-  background: linear-gradient(135deg, var(--color-royal-gold), var(--color-saddle-brown));
+  background: linear-gradient(
+    135deg,
+    var(--color-royal-gold),
+    var(--color-saddle-brown)
+  );
 }
 
 .study-load-download-btn:active {
@@ -378,6 +413,41 @@ body::before {
   grid-template-columns: 200px 1fr;
   gap: 32px;
   align-items: start;
+}
+
+/* Make #contentArea a rectangular card that matches .dashboard-hero
+   visual treatment. Keep a slight vertical overlap so the hero and
+   content feel connected; provide a mobile fallback. */
+#contentArea {
+  width: min(1100px, 100%);
+  margin: -24px auto 0;
+  padding: 44px 36px 56px;
+  position: relative;
+  z-index: 0;
+  color: #000000;
+  background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(254, 245, 215, 0.88)
+    ),
+    linear-gradient(135deg, rgba(238, 211, 78, 0.2), rgba(130, 70, 21, 0.1));
+  border: 1px solid rgba(130, 70, 21, 0.2);
+  box-shadow: 0 26px 45px rgba(58, 51, 46, 0.12);
+  overflow: hidden;
+  border-radius: 28px;
+}
+
+/* Keep spinner padding sane inside the rectangular card. */
+#contentArea > .text-center {
+  padding: 12px 6px;
+}
+
+@media (max-width: 720px) {
+  #contentArea {
+    margin: 12px auto 0;
+    padding: 20px;
+    border-radius: 18px;
+  }
 }
 
 .profile-image-container {
@@ -502,15 +572,15 @@ body::before {
     grid-template-columns: 1fr;
     gap: 24px;
   }
-  
+
   .profile-image-container {
     justify-content: center;
   }
-  
+
   .settings-actions {
     flex-direction: column;
   }
-  
+
   .settings-save-btn {
     width: 100%;
   }
@@ -582,7 +652,11 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(145deg, rgba(130, 70, 21, 0.9), rgba(238, 211, 78, 0.85));
+  background: linear-gradient(
+    145deg,
+    rgba(130, 70, 21, 0.9),
+    rgba(238, 211, 78, 0.85)
+  );
   color: #000000;
   border-radius: 14px;
   font-size: 1.2rem;
@@ -627,12 +701,20 @@ body::before {
 }
 
 .financial-item.status-success {
-  background: linear-gradient(145deg, rgba(216, 218, 202, 0.65), rgba(255, 255, 255, 0.9));
+  background: linear-gradient(
+    145deg,
+    rgba(216, 218, 202, 0.65),
+    rgba(255, 255, 255, 0.9)
+  );
   border-color: rgba(193, 196, 181, 0.8);
 }
 
 .financial-item.status-warning {
-  background: linear-gradient(145deg, rgba(255, 214, 153, 0.55), rgba(255, 255, 255, 0.92));
+  background: linear-gradient(
+    145deg,
+    rgba(255, 214, 153, 0.55),
+    rgba(255, 255, 255, 0.92)
+  );
   border-color: rgba(255, 186, 114, 0.6);
 }
 
@@ -652,12 +734,20 @@ body::before {
 }
 
 .financial-item.status-success .financial-icon {
-  background: linear-gradient(145deg, rgba(170, 176, 150, 0.4), rgba(216, 218, 202, 0.9));
+  background: linear-gradient(
+    145deg,
+    rgba(170, 176, 150, 0.4),
+    rgba(216, 218, 202, 0.9)
+  );
   color: #314232;
 }
 
 .financial-item.status-warning .financial-icon {
-  background: linear-gradient(145deg, rgba(255, 196, 132, 0.45), rgba(255, 221, 160, 0.9));
+  background: linear-gradient(
+    145deg,
+    rgba(255, 196, 132, 0.45),
+    rgba(255, 221, 160, 0.9)
+  );
   color: #a35200;
 }
 
@@ -776,21 +866,21 @@ body::before {
     padding: 26px 28px;
     flex-direction: column;
   }
-  
+
   .hero-action-group {
     gap: 10px;
   }
-  
+
   .hero-action {
     width: 100%;
     justify-content: center;
   }
-  
+
   .hero-spotlight {
     width: 100%;
     grid-template-columns: 1fr;
   }
-  
+
   .page-container {
     flex-direction: column;
   }
@@ -810,12 +900,12 @@ body::before {
   .home-main {
     padding: 16px;
   }
-  
+
   .records-container {
     padding: 16px;
     gap: 16px;
   }
-  
+
   .records-title {
     font-size: 1.5rem;
   }
@@ -824,7 +914,7 @@ body::before {
   .financial-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .info-card {
     padding: 20px;
   }
@@ -875,7 +965,11 @@ body::before {
   gap: 12px;
   margin-bottom: 20px;
   padding: 16px 20px;
-  background: linear-gradient(135deg, rgba(236, 226, 210, 0.6), rgba(255, 250, 240, 0.8));
+  background: linear-gradient(
+    135deg,
+    rgba(236, 226, 210, 0.6),
+    rgba(255, 250, 240, 0.8)
+  );
   border-radius: 16px;
   border: 1px solid rgba(130, 70, 21, 0.25);
 }
@@ -912,7 +1006,11 @@ body::before {
 }
 
 .grade-card-modern {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(250, 245, 238, 0.98));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.95),
+    rgba(250, 245, 238, 0.98)
+  );
   border-radius: 20px;
   padding: 24px;
   border: 1px solid rgba(130, 70, 21, 0.2);
@@ -923,13 +1021,17 @@ body::before {
 }
 
 .grade-card-modern::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 4px;
-  background: linear-gradient(90deg, var(--color-saddle-brown), var(--color-royal-gold));
+  background: linear-gradient(
+    90deg,
+    var(--color-saddle-brown),
+    var(--color-royal-gold)
+  );
   opacity: 0.6;
 }
 
@@ -979,7 +1081,11 @@ body::before {
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  background: linear-gradient(135deg, rgba(130, 70, 21, 0.2), rgba(238, 211, 78, 0.15));
+  background: linear-gradient(
+    135deg,
+    rgba(130, 70, 21, 0.2),
+    rgba(238, 211, 78, 0.15)
+  );
   color: #000000;
   border-radius: 12px;
   font-weight: 700;
@@ -1041,11 +1147,11 @@ body::before {
   .grades-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .grade-card-modern {
     padding: 20px;
   }
-  
+
   .semester-header {
     flex-wrap: wrap;
   }
@@ -1100,7 +1206,11 @@ body::before {
   align-items: center;
   gap: 8px;
   padding: 10px 20px;
-  background: linear-gradient(135deg, var(--color-saddle-brown), var(--color-royal-gold));
+  background: linear-gradient(
+    135deg,
+    var(--color-saddle-brown),
+    var(--color-royal-gold)
+  );
   color: #000000;
   border: none;
   border-radius: 12px;
@@ -1123,7 +1233,11 @@ body::before {
 }
 
 .announcement-card-modern {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(250, 245, 238, 0.98));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.95),
+    rgba(250, 245, 238, 0.98)
+  );
   border-radius: 20px;
   padding: 24px;
   border: 1px solid rgba(130, 70, 21, 0.2);
@@ -1136,13 +1250,17 @@ body::before {
 }
 
 .announcement-card-modern::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 4px;
-  background: linear-gradient(90deg, var(--color-saddle-brown), var(--color-royal-gold));
+  background: linear-gradient(
+    90deg,
+    var(--color-saddle-brown),
+    var(--color-royal-gold)
+  );
   opacity: 0.6;
 }
 
@@ -1236,7 +1354,11 @@ body::before {
 }
 
 .project-card-modern {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(250, 245, 238, 0.98));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.95),
+    rgba(250, 245, 238, 0.98)
+  );
   border-radius: 20px;
   padding: 24px;
   border: 1px solid rgba(130, 70, 21, 0.2);
@@ -1247,13 +1369,17 @@ body::before {
 }
 
 .project-card-modern::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 4px;
-  background: linear-gradient(90deg, var(--color-saddle-brown), var(--color-royal-gold));
+  background: linear-gradient(
+    90deg,
+    var(--color-saddle-brown),
+    var(--color-royal-gold)
+  );
   opacity: 0.6;
 }
 
@@ -1360,25 +1486,25 @@ body::before {
   .projects-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .announcement-card-modern,
   .project-card-modern {
     padding: 20px;
   }
-  
+
   .announcements-filter-form {
     flex-direction: column;
   }
-  
+
   .filter-group {
     width: 100%;
   }
-  
+
   .filter-btn {
     width: 100%;
     justify-content: center;
   }
-  
+
   .project-title-section {
     flex-direction: column;
     align-items: flex-start;
@@ -1438,7 +1564,7 @@ body::before {
   display: inline-block;
   width: 24px;
   height: 24px;
-  background: linear-gradient(135deg, #824615, #EED34E);
+  background: linear-gradient(135deg, #824615, #eed34e);
   color: #000000;
   border-radius: 50%;
   text-align: center;
@@ -1607,7 +1733,7 @@ body::before {
   font-weight: 600;
   font-size: 1rem;
   border-radius: 8px;
-  background: linear-gradient(135deg, #824615, #EED34E);
+  background: linear-gradient(135deg, #824615, #eed34e);
   color: #000000;
   border: none;
   box-shadow: 0 6px 16px rgba(130, 70, 21, 0.3);
@@ -1628,7 +1754,11 @@ body::before {
 }
 
 .teacher-card-modern {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(250, 245, 238, 0.98));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.95),
+    rgba(250, 245, 238, 0.98)
+  );
   border-radius: 20px;
   padding: 20px;
   border: 1px solid rgba(130, 70, 21, 0.18);
@@ -1640,13 +1770,13 @@ body::before {
 }
 
 .teacher-card-modern::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 4px;
-  background: linear-gradient(90deg, #824615, #EED34E);
+  background: linear-gradient(90deg, #824615, #eed34e);
   opacity: 0.6;
 }
 
@@ -1741,7 +1871,7 @@ body::before {
   padding: 10px 16px;
   font-weight: 600;
   border-radius: 8px;
-  background: linear-gradient(135deg, #824615, #EED34E);
+  background: linear-gradient(135deg, #824615, #eed34e);
   color: #000000;
   border: none;
   text-decoration: none;
@@ -1765,33 +1895,33 @@ body::before {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .rating-option {
     width: 100%;
   }
-  
+
   .satisfaction-scale {
     gap: 4px;
   }
-  
+
   .satisfaction-option {
     min-width: 50px;
     max-width: 60px;
     padding: 8px 4px;
   }
-  
+
   .teachers-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .teacher-card-modern {
     padding: 16px;
   }
-  
+
   .teacher-name {
     font-size: 1rem;
   }
-  
+
   @media (max-width: 576px) {
     .teachers-grid {
       grid-template-columns: 1fr;
@@ -1884,7 +2014,7 @@ body::before {
   display: inline-block;
   width: 24px;
   height: 24px;
-  background: linear-gradient(135deg, #824615, #EED34E);
+  background: linear-gradient(135deg, #824615, #eed34e);
   color: #000000;
   border-radius: 50%;
   text-align: center;
@@ -1935,7 +2065,7 @@ body::before {
 
 .stat-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #824615, #EED34E);
+  background: linear-gradient(90deg, #824615, #eed34e);
   border-radius: 6px;
   transition: width 0.3s ease;
 }

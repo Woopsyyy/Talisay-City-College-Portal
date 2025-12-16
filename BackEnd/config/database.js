@@ -1,145 +1,265 @@
+// BackEnd/config/database.js
+// BackEnd/config/database.js
 const { Pool } = require("pg");
 require("dotenv").config();
 const Logger = require("./logger");
+const dns = require("dns");
+const dnsPromises = require("dns").promises;
+
+
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+  console.log("DNS servers configured: 8.8.8.8, 1.1.1.1, 8.8.4.4");
+} catch (e) {
+  console.warn(`Failed to set DNS servers: ${e.message}`);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 class Database {
   constructor() {
     this.pool = null;
+    this.ipv4Address = null;
+    this.ipv4FallbackTried = false;
   }
 
   async connect() {
-    // Don't reconnect if already connected
-    if (this.pool) {
-      return this.pool;
+    if (this.pool) return this.pool;
+
+    const maxRetries = parseInt(process.env.DB_CONNECT_RETRIES || "3", 10);
+    const initialDelay = parseInt(
+      process.env.DB_CONNECT_INITIAL_DELAY_MS || "1000",
+      10
+    );
+
+    const host =
+      process.env.SUPABASE_DB_HOST ||
+      "aws-0-ap-southeast-1.pooler.supabase.com";
+    const user = process.env.SUPABASE_DB_USER || "postgres.YOUR_PROJECT_REF";
+    const password = process.env.SUPABASE_DB_PASSWORD || "YOUR_DB_PASSWORD";
+    const database = process.env.SUPABASE_DB_DATABASE || "postgres";
+    const port = parseInt(process.env.SUPABASE_DB_PORT || "5432", 10);
+
+    // Pre-resolve hostname to IP address to avoid DNS issues
+    // CRITICAL: pg library uses dns.lookup() internally which ignores dns.setServers()
+    // So we MUST resolve to IP first, then use IP address in connection
+    if (!this.ipv4Address) {
+      Logger.database(`Pre-resolving hostname: ${host}`);
+      let resolved = false;
+      
+      // Strategy 1: Try dns.resolve4() with custom DNS servers
+      try {
+        const addresses = await dnsPromises.resolve4(host);
+        if (addresses && addresses.length > 0) {
+          this.ipv4Address = addresses[0];
+          Logger.database(`✓ Resolved ${host} to IPv4: ${this.ipv4Address}`);
+          resolved = true;
+        }
+      } catch (e4) {
+        Logger.warning(`resolve4 failed: ${e4.message}`);
+      }
+      
+      // Strategy 2: Try dns.resolve6() if IPv4 failed
+      if (!resolved) {
+        try {
+          const addresses = await dnsPromises.resolve6(host);
+          if (addresses && addresses.length > 0) {
+            this.ipv4Address = addresses[0];
+            Logger.database(`✓ Resolved ${host} to IPv6: ${this.ipv4Address}`);
+            resolved = true;
+          }
+        } catch (e6) {
+          Logger.warning(`resolve6 failed: ${e6.message}`);
+        }
+      }
+      
+      // Strategy 3: Last resort - use dns.lookup() (system DNS)
+      if (!resolved) {
+        try {
+          const res = await dnsPromises.lookup(host, { family: 0 });
+          if (res && res.address) {
+            this.ipv4Address = res.address;
+            Logger.database(`✓ Resolved ${host} via system DNS to: ${this.ipv4Address}`);
+            resolved = true;
+          }
+        } catch (e7) {
+          Logger.warning(`lookup failed: ${e7.message}`);
+        }
+      }
+      
+      if (!resolved) {
+        Logger.warning(`⚠ Could not pre-resolve ${host} - will try during connection (may fail)`);
+      }
+    } else {
+      Logger.database(`Using cached IP address: ${this.ipv4Address} for ${host}`);
     }
 
-    try {
-      // Check if using Supabase or local PostgreSQL
-      const isSupabase = !!process.env.SUPABASE_DB_HOST;
+    const sslEnabled =
+      String(process.env.SUPABASE_DB_SSL || "true").toLowerCase() === "true";
+    const rejectUnauthorized =
+      String(
+        process.env.DB_SSL_REJECT_UNAUTHORIZED || "false"
+      ).toLowerCase() === "true";
 
-      const dbConfig = {
-        host: isSupabase
-          ? process.env.SUPABASE_DB_HOST
-          : process.env.DB_HOST || "localhost",
-        user: isSupabase
-          ? process.env.SUPABASE_DB_USER
-          : process.env.DB_USER || "postgres",
-        password: isSupabase
-          ? process.env.SUPABASE_DB_PASSWORD
-          : process.env.DB_PASSWORD || "",
-        database: isSupabase
-          ? process.env.SUPABASE_DB_DATABASE
-          : process.env.DB_NAME || "accountmanager",
-        port: parseInt(
-          isSupabase
-            ? process.env.SUPABASE_DB_PORT || "5432"
-            : process.env.DB_PORT || "5432"
-        ),
-        max: 10, // Maximum number of clients in the pool
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
-        // Supabase requires SSL, local dev can be disabled
-        ssl: isSupabase
-          ? { rejectUnauthorized: false }
-          : process.env.DB_SSL === "true"
-          ? { rejectUnauthorized: false }
-          : false,
-      };
+    const baseConfig = {
+      max: parseInt(process.env.DB_POOL_MAX || "10", 10),
+      idleTimeoutMillis: parseInt(
+        process.env.DB_IDLE_TIMEOUT_MS || "30000",
+        10
+      ),
+      connectionTimeoutMillis: parseInt(
+        process.env.DB_CONNECTION_TIMEOUT_MS || "10000",
+        10
+      ),
+      host,
+      user,
+      password,
+      database,
+      port,
+      ssl: sslEnabled ? { rejectUnauthorized } : false,
+    };
 
-      // Log connection attempt (without password)
-      const dbType = isSupabase ? "Supabase PostgreSQL" : "Local PostgreSQL";
-      Logger.database(`Connecting to ${dbType}...`);
+    let lastError = null;
 
-      this.pool = new Pool(dbConfig);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const dbConfig = { ...baseConfig };
+        
+        // ALWAYS use IP address if we have it (pg library's DNS doesn't respect dns.setServers)
+        if (this.ipv4Address) {
+          dbConfig.host = this.ipv4Address;
+          Logger.database(`Using resolved IP: ${this.ipv4Address} instead of hostname`);
+        } else {
+          Logger.warning(`No resolved IP available, using hostname (may fail): ${host}`);
+        }
 
-      // Test connection
-      const client = await this.pool.connect();
-      Logger.database("Connected successfully");
-      client.release();
-
-      return this.pool;
-    } catch (error) {
-      Logger.error("Database connection failed", error);
-
-      // Provide helpful error messages
-      if (error.code === "ECONNREFUSED") {
-        Logger.warning("PostgreSQL server is not running or not accessible");
-      } else if (error.code === "28P01" || error.message.includes("password")) {
-        Logger.warning("Authentication failed - check credentials in .env");
-      } else if (
-        error.code === "3D000" ||
-        error.message.includes("does not exist")
-      ) {
-        Logger.warning("Database does not exist - check configuration");
-      } else if (error.message.includes("invalid response")) {
-        Logger.warning(
-          "Connection protocol error - check port and database type"
+        Logger.database(
+          `Attempting DB connect to ${dbConfig.user}@${
+            dbConfig.host
+          } (attempt ${attempt + 1}/${maxRetries + 1})`
         );
-      }
 
-      // Don't throw - allow server to continue
-      // Connection will be retried on next query
-      this.pool = null;
-      throw error;
+        this.pool = new Pool(dbConfig);
+
+        this.pool.on("error", (err) => {
+          Logger.error("Unexpected idle client error", err.message || err);
+        });
+
+        const client = await this.pool.connect();
+        Logger.database("Connected successfully");
+        client.release();
+        return this.pool;
+      } catch (error) {
+        lastError = error;
+
+        if (error.code === "ENOTFOUND" && !this.ipv4FallbackTried) {
+          Logger.warning("DNS resolution failed, trying resolve fallback");
+          this.ipv4FallbackTried = true;
+          try {
+            // Try dns.resolve4() which respects dns.setServers()
+            try {
+              const addresses = await dnsPromises.resolve4(host);
+              if (addresses && addresses.length > 0) {
+                this.ipv4Address = addresses[0];
+                Logger.database(
+                  `Resolved IPv4 ${this.ipv4Address} for ${host}, retrying`
+                );
+              }
+            } catch (e4) {
+              // Try IPv6
+              try {
+                const addresses = await dnsPromises.resolve6(host);
+                if (addresses && addresses.length > 0) {
+                  this.ipv4Address = addresses[0];
+                  Logger.database(
+                    `Resolved IPv6 ${this.ipv4Address} for ${host}, retrying`
+                  );
+                }
+              } catch (e6) {
+                // Last resort: system DNS lookup
+                const res = await dnsPromises.lookup(host, { family: 0 });
+                if (res && res.address) {
+                  this.ipv4Address = res.address;
+                  Logger.database(
+                    `Resolved via system DNS ${this.ipv4Address} for ${host}, retrying`
+                  );
+                }
+              }
+            }
+          } catch (dnsErr) {
+            Logger.warning(
+              `DNS lookup fallback failed: ${dnsErr.message || dnsErr}`
+            );
+          }
+        } else if (
+          error.message &&
+          error.message.toLowerCase().includes("tenant or user not found")
+        ) {
+          Logger.warning(
+            "Tenant or user not found - check SUPABASE_DB_USER matches project ref and password"
+          );
+        } else if (
+          error.code === "28P01" ||
+          (error.message && error.message.toLowerCase().includes("password"))
+        ) {
+          Logger.warning(
+            "Authentication failed - check DB user/password in environment"
+          );
+        } else if (error.code === "ECONNREFUSED") {
+          Logger.warning(
+            "PostgreSQL server refused connection - check host/port and firewall"
+          );
+        } else if (error.code === "ETIMEDOUT") {
+          Logger.warning(
+            "Connection attempt timed out - network or firewall may be blocking port 5432"
+          );
+        }
+
+        if (this.pool) await this.pool.end();
+        this.pool = null;
+
+        if (attempt < maxRetries) {
+          const delay = initialDelay * Math.pow(2, attempt);
+          Logger.database(`Retrying DB connection in ${delay}ms`);
+          await sleep(delay);
+          continue;
+        }
+
+        Logger.error(
+          "Database connection failed after retries",
+          error.message || error
+        );
+        throw lastError;
+      }
     }
   }
 
   async getConnection() {
-    if (!this.pool) {
-      await this.connect();
-    }
+    if (!this.pool) await this.connect();
     return this.pool;
   }
 
   async query(sql, params) {
-    try {
-      // Connect if not already connected
-      if (!this.pool) {
-        await this.connect();
-      }
+    if (!this.pool) await this.connect();
 
-      // PostgreSQL uses $1, $2, etc. for parameters
-      // If params are provided, we need to convert ? to $1, $2, etc.
-      let queryText = sql;
-      if (params && params.length > 0) {
-        let paramIndex = 1;
-        queryText = sql.replace(/\?/g, () => `$${paramIndex++}`);
-      }
-
-      const result = await this.pool.query(queryText, params);
-
-      // PostgreSQL returns { rows: [], rowCount: number }
-      // For compatibility with MySQL-style code:
-      // - If it's an INSERT with RETURNING, return the row with insertId
-      // - If it's a SELECT returning multiple rows, return array
-      // - If it's a SELECT returning one row, return the row object
-      // - If it's an UPDATE/DELETE, return result object with rowCount
-
-      if (result.rows.length === 0) {
-        // For UPDATE/DELETE queries that don't have RETURNING clause
-        // Return the result object so rowCount is available
-        if (
-          sql.trim().toUpperCase().startsWith("UPDATE") ||
-          sql.trim().toUpperCase().startsWith("DELETE")
-        ) {
-          return result; // { rowCount: number }
-        }
-        return [];
-      }
-
-      // Check if this looks like an INSERT with RETURNING (has id in first row)
-      if (result.rows.length === 1 && result.rows[0].id) {
-        const row = result.rows[0];
-        row.insertId = row.id; // Add insertId for compatibility
-        return row;
-      }
-
-      // For SELECT queries, return array of rows
-      return result.rows;
-    } catch (error) {
-      Logger.error("Query error", error);
-      throw error;
+    let queryText = sql;
+    if (params && params.length > 0) {
+      let paramIndex = 1;
+      queryText = sql.replace(/\?/g, () => `$${paramIndex++}`);
     }
+
+    const result = await this.pool.query(queryText, params);
+
+    if (result.rows.length === 1 && result.rows[0].id) {
+      result.rows[0].insertId = result.rows[0].id;
+    }
+
+    // For UPDATE/DELETE queries without RETURNING
+    if (result.rows.length === 0) return result;
+
+    return result.rows;
   }
 
   async close() {
@@ -150,7 +270,5 @@ class Database {
   }
 }
 
-// Singleton instance
-const db = new Database();
-
-module.exports = db;
+// Export singleton
+module.exports = new Database();

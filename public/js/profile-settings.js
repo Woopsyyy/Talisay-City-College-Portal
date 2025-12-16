@@ -26,7 +26,7 @@ const ProfileSettings = {
                     <circle cx="12" cy="13" r="4"></circle>
                   </svg>
                 </div>
-                <input type="file" id="profileImageInput" class="profile-picture-input" accept="image/*" />
+                <input type="file" id="profileImageInput" name="profile_image" class="profile-picture-input" accept="image/*" />
               </div>
               <div class="profile-info-text">
                 <h3>Profile Picture</h3>
@@ -261,9 +261,43 @@ const ProfileSettings = {
               "Profile updated successfully!",
               "success"
             );
-            // Update current user
+            // Update current user via callback
             if (onProfileUpdate) {
               onProfileUpdate(result.user);
+            }
+
+            // Also proactively update the sidebar image (best-effort)
+            try {
+              const sidebarImage = document.getElementById("sidebarUserImage");
+              if (sidebarImage && result.user) {
+                (async () => {
+                  let src =
+                    result.user.avatar_url || result.user.image_path || "";
+                  if (
+                    src &&
+                    !src.startsWith("http") &&
+                    !src.startsWith("images/") &&
+                    !src.startsWith("/TCC/public/")
+                  ) {
+                    // Request signed URL from backend
+                    try {
+                      src = await window.getAvatarUrl(
+                        result.user.id,
+                        result.user.image_path
+                      );
+                    } catch (e) {
+                      console.error("Could not get avatar URL", e);
+                      src = "images/sample.jpg";
+                    }
+                  } else if (src && src.startsWith("/TCC/public/")) {
+                    src = src.replace("/TCC/public/", "");
+                  }
+                  if (!src) src = "images/sample.jpg";
+                  sidebarImage.src = src;
+                })();
+              }
+            } catch (e) {
+              console.error("Sidebar update after profile save failed", e);
             }
           } else {
             ProfileSettings.showAlert(

@@ -1,3 +1,4 @@
+require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 
 // Supabase admin client using service role key (for server-side operations)

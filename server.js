@@ -92,8 +92,21 @@ app.use("/api/student", studentRoutes);
 app.use("/api/avatar", avatarRoutes);
 
 // Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", message: "Server is running" });
+app.get("/health", async (req, res) => {
+  try {
+    // lightweight DB check
+    const db = require("./BackEnd/config/database");
+    await db.query("SELECT 1");
+    res.json({ status: "ok", message: "Server and database are reachable" });
+  } catch (err) {
+    res
+      .status(503)
+      .json({
+        status: "error",
+        message: "Database unreachable",
+        detail: err.message,
+      });
+  }
 });
 
 // Catch 404 and forward to error handler
@@ -115,6 +128,13 @@ app.use((err, req, res, next) => {
 // Ensure avatars bucket exists (best-effort)
 async function ensureAvatarsBucket() {
   try {
+    // Check if Supabase URL is configured
+    const supabaseUrl = process.env.SUPABASE_URL;
+    if (!supabaseUrl) {
+      Logger.warning("SUPABASE_URL not set - skipping bucket creation");
+      return;
+    }
+
     const { data, error } = await supabaseAdmin.storage.createBucket(
       STORAGE_BUCKET,
       { public: false }
@@ -128,8 +148,7 @@ async function ensureAvatarsBucket() {
         Logger.warning(`Storage bucket '${STORAGE_BUCKET}' already exists`);
       } else {
         Logger.warning(
-          "Could not create storage bucket: " +
-            (error && error.message ? error.message : String(error))
+          `Could not create storage bucket: ${msg} (bucket may already exist or require manual creation in Supabase dashboard)`
         );
       }
     } else {
@@ -137,15 +156,22 @@ async function ensureAvatarsBucket() {
     }
   } catch (err) {
     // Some Supabase projects may not allow bucket creation via the SQL sandbox or client
-    Logger.warning(
-      "Unable to auto-create storage bucket (continue if created manually): " +
-        (err && err.message ? err.message : String(err))
-    );
+    const errMsg = err.message || String(err);
+    if (errMsg.includes("fetch failed") || errMsg.includes("ENOTFOUND")) {
+      Logger.warning(
+        `Storage bucket creation failed (network/DNS issue): ${errMsg}. Bucket may need to be created manually in Supabase dashboard.`
+      );
+    } else {
+      Logger.warning(
+        `Unable to auto-create storage bucket: ${errMsg} (continue if created manually)`
+      );
+    }
   }
 }
 
 ensureAvatarsBucket().finally(() => {
-  app.listen(PORT, () => {
-    Logger.serverStarted(PORT, process.env.NODE_ENV || "development");
+  const HOST = process.env.HOST || "0.0.0.0";
+  app.listen(PORT, HOST, () => {
+    Logger.serverStarted(PORT, process.env.NODE_ENV || "development", HOST);
   });
 });

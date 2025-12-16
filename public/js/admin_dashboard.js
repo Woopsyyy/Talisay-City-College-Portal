@@ -138,6 +138,27 @@ function formatProjectDate(dateString) {
   }
 }
 
+// Format announcement date
+function formatAnnouncementDate(dateString) {
+  if (!dateString) return "Date not specified";
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) {
+      return dateString;
+    }
+    const options = {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    };
+    return date.toLocaleDateString("en-US", options);
+  } catch (e) {
+    return dateString;
+  }
+}
+
 // View configurations
 const viewConfigs = {
   teacher_management: { title: "Teacher Management", icon: "bi-person-badge" },
@@ -3047,367 +3068,248 @@ async function loadSubjectsSection() {
     }
 
     let html = `
-            <div class="records-container">
-                <div class="records-header">
-                    <h2 class="records-title">
-                        <i class="bi bi-journal-text"></i> Subject Catalog
-                    </h2>
-                    <p class="records-subtitle">Centralize subject codes, titles, and units to avoid typos when building study loads.</p>
-            </div>
-                <div class="records-main">
-                    <div class="info-card">
-                        <div class="card-header-modern">
-                            <i class="bi bi-pencil-square"></i>
-                            <h3>${
-                              editSubjectRow
-                                ? "Edit Subject"
-                                : "Add New Subject"
-                            }</h3>
-                        </div>
-                <form id="subjectForm" class="form-small">
-                            <input type="hidden" name="action" value="${
-                              editSubjectRow ? "update" : "create"
-                            }" />
-                            ${
-                              editSubjectRow
-                                ? `<input type="hidden" name="id" value="${editSubjectRow.id}" />`
-                                : ""
-                            }
-                            <div class="row g-3">
-                                <div class="col-md-3">
-                                    <label class="admin-form-label" for="subjectCodeInput">
-                                        <i class="bi bi-upc-scan"></i> Subject Code
-                                    </label>
-                                    <input id="subjectCodeInput" name="subject_code" class="form-control form-control-lg" placeholder="e.g. IT101" value="${
-                                      editSubjectRow
-                                        ? escapeHtml(
-                                            editSubjectRow.subject_code || ""
-                                          )
-                                        : ""
-                                    }" required />
-                    </div>
-                                <div class="col-md-4">
-                                    <label class="admin-form-label" for="subjectTitleInput">
-                                        <i class="bi bi-journal-text"></i> Descriptive Title
-                                    </label>
-                                    <input id="subjectTitleInput" name="title" class="form-control form-control-lg" placeholder="Descriptive Title" value="${
-                                      editSubjectRow
-                                        ? escapeHtml(editSubjectRow.title || "")
-                                        : ""
-                                    }" required />
-                    </div>
-                                <div class="col-md-2">
-                                    <label class="admin-form-label" for="subjectUnitsInput">
-                                        <i class="bi bi-hash"></i> Units
-                                    </label>
-                                    <input id="subjectUnitsInput" name="units" type="number" min="0" step="0.5" class="form-control form-control-lg" value="${
-                                      editSubjectRow
-                                        ? parseFloat(editSubjectRow.units) || ""
-                                        : ""
-                                    }" required />
-                    </div>
-                                <div class="col-md-3">
-                                    <label class="admin-form-label" for="subjectCourseSelect">
-                                        <i class="bi bi-mortarboard"></i> Course
-                                    </label>
-                                    <select id="subjectCourseSelect" name="course" class="form-select form-select-lg" required data-course-select style="min-width: 100%;">
-                                        <option value="">Select course...</option>
-                                        <option value="All Courses">All Courses</option>
-                                        ${Object.keys(courseMajorConfig)
-                                          .map(
-                                            (courseKey) => `
-                                            <option value="${escapeHtml(
-                                              courseKey
-                                            )}" ${
-                                              editSubjectRow &&
-                                              editSubjectRow.course ===
-                                                courseKey
-                                                ? "selected"
-                                                : ""
-                                            }>
-                                                ${escapeHtml(courseKey)}
-                                            </option>
-                                        `
-                                          )
-                                          .join("")}
-                                    </select>
-                    </div>
-                                <div class="col-md-4">
-                                    <label class="admin-form-label" for="subjectMajorSelect">
-                                        <i class="bi bi-diagram-3"></i> Major
-                                    </label>
-                                    <select id="subjectMajorSelect" name="major" class="form-select form-select-lg" required data-major-select>
-                                        <option value="">Select major...</option>
-                                        ${Object.keys(courseMajorConfig)
-                                          .map((courseKey) => {
-                                            const majorsList =
-                                              courseMajorConfig[courseKey];
-                                            return majorsList
-                                              .map(
-                                                (majorName) => `
-                                                <option value="${escapeHtml(
-                                                  majorName
-                                                )}" data-course="${escapeHtml(
-                                                  courseKey
-                                                )}" ${
-                                                  editSubjectRow &&
-                                                  editSubjectRow.major ===
-                                                    majorName
-                                                    ? "selected"
-                                                    : ""
-                                                }>
-                                                    ${escapeHtml(majorName)}
-                                                </option>
-                                            `
-                                              )
-                                              .join("");
-                                          })
-                                          .join("")}
-                                    </select>
-                    </div>
-                                <div class="col-md-2">
-                                    <label class="admin-form-label" for="subjectYearSelect">
-                                        <i class="bi bi-calendar-year"></i> Year Level
-                                    </label>
-                                    <select id="subjectYearSelect" name="year_level" class="form-select form-select-lg" required>
-                                        <option value="">Select year...</option>
-                                        ${[1, 2, 3, 4]
-                                          .map(
-                                            (y) => `
-                                            <option value="${y}" ${
-                                              editSubjectRow &&
-                                              parseInt(
-                                                editSubjectRow.year_level
-                                              ) === y
-                                                ? "selected"
-                                                : ""
-                                            }>
-                                                ${formatOrdinal(y)}
-                                            </option>
-                                        `
-                                          )
-                                          .join("")}
-                                    </select>
-                    </div>
-                                <div class="col-md-2">
-                                    <label class="admin-form-label" for="subjectSemesterSelect">
-                                        <i class="bi bi-clock-history"></i> Semester
-                                    </label>
-                                    <select id="subjectSemesterSelect" name="semester" class="form-select form-select-lg" required style="min-width: 100%;">
-                                        <option value="All Semesters">All Semesters</option>
-                                        ${semesterOptions
-                                          .map(
-                                            (semOption) => `
-                                            <option value="${escapeHtml(
-                                              semOption
-                                            )}" ${
-                                              editSubjectRow &&
-                                              (editSubjectRow.semester ||
-                                                "") === semOption
-                                                ? "selected"
-                                                : !editSubjectRow &&
-                                                  semOption === "First Semester"
-                                                ? "selected"
-                                                : ""
-                                            }>
-                                                ${escapeHtml(semOption)}
-                                            </option>
-                                        `
-                                          )
-                                          .join("")}
-                        </select>
-                    </div>
-                            </div>
-                            <div class="mt-3 d-flex gap-2">
-                                <button class="btn btn-primary btn-lg" type="submit">
-                                    <i class="bi bi-check-circle me-2"></i>${
-                                      editSubjectRow
-                                        ? "Save Changes"
-                                        : "Add Subject"
-                                    }
-                                </button>
-                                ${
-                                  editSubjectRow
-                                    ? `
-                                    <a href="admin_dashboard.html?section=subjects" class="btn btn-outline-secondary btn-lg">
-                                        <i class="bi bi-x-circle me-2"></i>Cancel
-                                    </a>
-                                `
-                                    : ""
-                                }
-                            </div>
-                </form>
-                    </div>
+      <div class="subject-catalog admin-card">
+        <div class="subject-catalog-header d-flex align-items-center gap-3 mb-4">
+          <div class="subject-catalog-icon p-3 rounded-xl bg-gradient-to-br border">
+            <i class="bi bi-journal-text" style="font-size:1.25rem; color:var(--color-tech-blue)"></i>
+          </div>
+          <div>
+            <h2 class="mb-0">Subject Catalog</h2>
+            <p class="mb-0 text-muted">Centralize subject codes, titles, and units to avoid typos when building study loads.</p>
+          </div>
+        </div>
 
-                    <div class="info-card">
-                        <div class="card-header-modern">
-                            <i class="bi bi-list-task"></i>
-                            <h3>Subject List</h3>
-                            <span class="badge bg-secondary ms-auto" id="subjectCountBadge">${
-                              subjects.length
-                            } total</span>
-                        </div>
-                        ${
-                          subjects.length === 0
-                            ? `
-                            <p class="text-muted mb-0">No subjects recorded yet. Add one using the form above.</p>
-                        `
-                            : `
-                        <div class="mb-3">
-                            <div class="row g-2">
-                                <div class="col-md-3">
-                                    <label class="form-label small">Filter by Course</label>
-                                    <select id="filterCourse" class="form-select form-select-sm">
-                                        <option value="">All Courses</option>
-                                        ${Object.keys(courseMajorConfig)
-                                          .map(
-                                            (courseKey) => `
-                                            <option value="${escapeHtml(
-                                              courseKey
-                                            )}">${escapeHtml(
-                                              courseKey
-                                            )}</option>
-                                        `
-                                          )
-                                          .join("")}
-                                    </select>
-                                </div>
-                                <div class="col-md-3">
-                                    <label class="form-label small">Filter by Major</label>
-                                    <select id="filterMajor" class="form-select form-select-sm">
-                                        <option value="">All Majors</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-2">
-                                    <label class="form-label small">Filter by Year</label>
-                                    <select id="filterYear" class="form-select form-select-sm">
-                                        <option value="">All Years</option>
-                                        ${[1, 2, 3, 4]
-                                          .map(
-                                            (y) => `
-                                            <option value="${y}">${formatOrdinal(
-                                              y
-                                            )}</option>
-                                        `
-                                          )
-                                          .join("")}
-                                    </select>
-                                </div>
-                                <div class="col-md-2">
-                                    <label class="form-label small">Filter by Semester</label>
-                                    <select id="filterSemester" class="form-select form-select-sm">
-                                        <option value="">All Semesters</option>
-                                        ${semesterOptions
-                                          .map(
-                                            (semOption) => `
-                                            <option value="${escapeHtml(
-                                              semOption
-                                            )}">${escapeHtml(
-                                              semOption
-                                            )}</option>
-                                        `
-                                          )
-                                          .join("")}
-                                    </select>
-                                </div>
-                                <div class="col-md-2 d-flex align-items-end">
-                                    <button type="button" class="btn btn-outline-secondary btn-sm w-100" id="clearFilters">
-                                        <i class="bi bi-x-circle"></i> Clear
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                <div class="table-responsive">
-                                <table class="table table-hover align-middle">
-                        <thead>
-                            <tr>
-                                <th>Code</th>
-                                <th>Title</th>
-                                            <th>Units</th>
-                                <th>Course</th>
-                                <th>Major</th>
-                                <th>Year</th>
-                                            <th>Semester</th>
-                                            <th>Updated</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="subjectTableBody">
-                                        ${subjects
-                                          .map((subject) => {
-                                            const updatedDate =
-                                              subject.updated_at
-                                                ? new Date(
-                                                    subject.updated_at
-                                                  ).toLocaleDateString(
-                                                    "en-US",
-                                                    {
-                                                      month: "short",
-                                                      day: "numeric",
-                                                      year: "numeric",
-                                                    }
-                                                  )
-                                                : "N/A";
-                                            return `
-                                <tr>
-                                                    <td><strong>${escapeHtml(
-                                                      subject.subject_code ||
-                                                        "N/A"
-                                                    )}</strong></td>
-                                                    <td>${escapeHtml(
-                                                      subject.title || "N/A"
-                                                    )}</td>
-                                                    <td>${
-                                                      parseFloat(
-                                                        subject.units
-                                                      ) || 0
-                                                    }</td>
-                                                    <td>${escapeHtml(
-                                                      subject.course || "N/A"
-                                                    )}</td>
-                                                    <td>${escapeHtml(
-                                                      subject.major || "N/A"
-                                                    )}</td>
-                                                    <td>${formatOrdinal(
-                                                      parseInt(
-                                                        subject.year_level
-                                                      ) || 1
-                                                    )}</td>
-                                                    <td>${escapeHtml(
-                                                      subject.semester || "N/A"
-                                                    )}</td>
-                                                    <td>${escapeHtml(
-                                                      updatedDate
-                                                    )}</td>
-                                                    <td>
-                                                        <div class="d-flex gap-2">
-                                                            <a href="admin_dashboard.html?section=subjects&edit_subject_id=${
-                                                              subject.id
-                                                            }" class="btn btn-sm btn-outline-primary" title="Edit Subject">
-                                                                <i class="bi bi-pencil"></i>
-                                                            </a>
-                                                            <button type="button" class="btn btn-sm btn-outline-danger" title="Delete Subject" onclick="deleteSubject(${
-                                                              subject.id
-                                                            }, '${escapeHtml(
-                                              subject.subject_code || ""
-                                            )}')">
-                                                                <i class="bi bi-trash"></i>
-                                                            </button>
-                                                        </div>
-                                    </td>
-                                </tr>
-                                            `;
-                                          })
-                                          .join("")}
-                        </tbody>
-                    </table>
-                        </div>
-                        `
-                        }
-                    </div>
+        <div class="row g-4">
+          <div class="col-lg-6">
+            <div class="card subject-card p-4">
+              <div class="d-flex align-items-center mb-3 gap-2">
+                <i class="bi bi-plus-circle" style="color:var(--color-sky-surge)"></i>
+                <h4 class="mb-0">${
+                  editSubjectRow ? "Edit Subject" : "Add New Subject"
+                }</h4>
+              </div>
+
+              <form id="subjectForm" class="needs-validation" novalidate>
+                <input type="hidden" name="action" value="${
+                  editSubjectRow ? "update" : "create"
+                }" />
+                ${
+                  editSubjectRow
+                    ? `<input type="hidden" name="id" value="${editSubjectRow.id}" />`
+                    : ""
+                }
+                <div class="mb-3">
+                  <label class="form-label">Subject Code</label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-transparent border-end-0"><i class="bi bi-upc-scan"></i></span>
+                    <input id="subjectCodeInput" name="subject_code" class="form-control form-control-lg border-start-0" placeholder="e.g. IT101" value="${
+                      editSubjectRow
+                        ? escapeHtml(editSubjectRow.subject_code || "")
+                        : ""
+                    }" required />
+                  </div>
                 </div>
+
+                <div class="mb-3">
+                  <label class="form-label">Descriptive Title</label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-transparent border-end-0"><i class="bi bi-journal-text"></i></span>
+                    <input id="subjectTitleInput" name="title" class="form-control form-control-lg border-start-0" placeholder="Introduction to Computing" value="${
+                      editSubjectRow
+                        ? escapeHtml(editSubjectRow.title || "")
+                        : ""
+                    }" required />
+                  </div>
+                </div>
+
+                <div class="row g-2">
+                  <div class="col-4">
+                    <label class="form-label">Units</label>
+                    <input id="subjectUnitsInput" name="units" type="number" min="0" step="0.5" class="form-control" value="${
+                      editSubjectRow
+                        ? parseFloat(editSubjectRow.units) || ""
+                        : ""
+                    }" required />
+                  </div>
+                  <div class="col-8">
+                    <label class="form-label">Course</label>
+                    <select id="subjectCourseSelect" name="course" class="form-select" required data-course-select>
+                      <option value="">Select course...</option>
+                      <option value="All Courses">All Courses</option>
+                      ${Object.keys(courseMajorConfig)
+                        .map(
+                          (courseKey) =>
+                            `<option value="${escapeHtml(courseKey)}" ${
+                              editSubjectRow &&
+                              editSubjectRow.course === courseKey
+                                ? "selected"
+                                : ""
+                            }>${escapeHtml(courseKey)}</option>`
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+                </div>
+
+                <div class="row g-2 mt-2">
+                  <div class="col-6">
+                    <label class="form-label">Major</label>
+                    <select id="subjectMajorSelect" name="major" class="form-select" data-major-select>
+                      <option value="">Select major...</option>
+                      ${Object.keys(courseMajorConfig)
+                        .map((courseKey) =>
+                          courseMajorConfig[courseKey]
+                            .map(
+                              (majorName) =>
+                                `<option value="${escapeHtml(
+                                  majorName
+                                )}" data-course="${escapeHtml(courseKey)}" ${
+                                  editSubjectRow &&
+                                  editSubjectRow.major === majorName
+                                    ? "selected"
+                                    : ""
+                                }>${escapeHtml(majorName)}</option>`
+                            )
+                            .join("")
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+                  <div class="col-3">
+                    <label class="form-label">Year Level</label>
+                    <select id="subjectYearSelect" name="year_level" class="form-select" required>
+                      <option value="">Select year...</option>
+                      ${[1, 2, 3, 4]
+                        .map(
+                          (y) =>
+                            `<option value="${y}" ${
+                              editSubjectRow &&
+                              parseInt(editSubjectRow.year_level) === y
+                                ? "selected"
+                                : ""
+                            }>${formatOrdinal(y)}</option>`
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+                  <div class="col-3">
+                    <label class="form-label">Semester</label>
+                    <select id="subjectSemesterSelect" name="semester" class="form-select" required>
+                      <option value="All Semesters">All Semesters</option>
+                      ${semesterOptions
+                        .map(
+                          (sem) =>
+                            `<option value="${escapeHtml(sem)}" ${
+                              editSubjectRow &&
+                              (editSubjectRow.semester || "") === sem
+                                ? "selected"
+                                : !editSubjectRow && sem === "First Semester"
+                                ? "selected"
+                                : ""
+                            }>${escapeHtml(sem)}</option>`
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+                </div>
+
+                <div class="mt-3 d-flex gap-2">
+                  <button class="btn backup-primary-btn w-100" type="submit">${
+                    editSubjectRow ? "Save Changes" : "Add Subject"
+                  }</button>
+                  ${
+                    editSubjectRow
+                      ? `<a href="admin_dashboard.html?section=subjects" class="btn backup-outline-btn">Cancel</a>`
+                      : ""
+                  }
+                </div>
+              </form>
             </div>
-        `;
+          </div>
+
+          <div class="col-lg-6">
+            <div class="card subject-card p-4">
+              <div class="d-flex align-items-center mb-3 gap-2">
+                <i class="bi bi-list" style="color:var(--color-tech-blue)"></i>
+                <h4 class="mb-0">Subject List <small class="text-muted">${
+                  subjects.length
+                } total</small></h4>
+              </div>
+
+              <div class="mb-3 row g-2">
+                <div class="col-6">
+                  <select id="filterCourse" class="form-select">
+                    <option value="">All Courses</option>
+                    ${Object.keys(courseMajorConfig)
+                      .map(
+                        (courseKey) =>
+                          `<option value="${escapeHtml(
+                            courseKey
+                          )}">${escapeHtml(courseKey)}</option>`
+                      )
+                      .join("")}
+                  </select>
+                </div>
+                <div class="col-6">
+                  <select id="filterMajor" class="form-select">
+                    <option value="">All Majors</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="subject-list" style="max-height:480px; overflow:auto">
+                <table class="table table-hover align-middle">
+                  <thead>
+                    <tr><th>Code</th><th>Title</th><th>Units</th><th>Year</th><th>Semester</th><th>Actions</th></tr>
+                  </thead>
+                  <tbody id="subjectTableBody">
+                    ${subjects
+                      .map((subject) => {
+                        const updatedDate = subject.updated_at
+                          ? new Date(subject.updated_at).toLocaleDateString(
+                              "en-US",
+                              {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                              }
+                            )
+                          : "N/A";
+                        return `
+                        <tr>
+                          <td><strong>${escapeHtml(
+                            subject.subject_code || "N/A"
+                          )}</strong></td>
+                          <td>${escapeHtml(subject.title || "N/A")}</td>
+                          <td>${parseFloat(subject.units) || 0}</td>
+                          <td>${formatOrdinal(
+                            parseInt(subject.year_level) || 1
+                          )}</td>
+                          <td>${escapeHtml(subject.semester || "N/A")}</td>
+                          <td>
+                            <div class="d-flex gap-2 action-group">
+                              <a href="admin_dashboard.html?section=subjects&edit_subject_id=${
+                                subject.id
+                              }" class="action-pill edit" title="Edit Subject"><i class="bi bi-pencil"></i><span class="visually-hidden">Edit</span></a>
+                              <button type="button" class="action-pill delete" title="Delete Subject" onclick="deleteSubject(${
+                                subject.id
+                              }, '${escapeHtml(
+                          subject.subject_code || ""
+                        )}')"><i class="bi bi-trash"></i><span class="visually-hidden">Delete</span></button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                      })
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
 
     contentArea.innerHTML = html;
 
@@ -3636,61 +3538,92 @@ async function loadAnnouncementsSection() {
       : [];
 
     let html = `
-            <div class="records-container">
-                <div class="records-header">
-                    <h2 class="records-title">
-                        <i class="bi bi-megaphone-fill"></i> Announcements
-                    </h2>
-                    <p class="records-subtitle">Compose fresh updates, pin urgent bulletins, and keep the campus informed with streamlined editing tools.</p>
+        <div class="records-container">
+          <div class="records-header">
+            <h2 class="records-title">
+              <i class="bi bi-megaphone-fill"></i> Announcements
+            </h2>
+            <p class="records-subtitle">Compose fresh updates, pin urgent bulletins, and keep the campus informed with streamlined editing tools.</p>
+          </div>
+          <div class="records-main">
+            <div class="subject-catalog">
+              <div class="subject-card announcement-form-container">
+                <div class="card-header-modern text-center">
+                  <i class="bi bi-megaphone-fill"></i>
+                  <h3>Create New Announcement</h3>
                 </div>
-                <div class="records-main">
-                    <div class="info-card">
-                        <div class="card-header-modern">
-                            <i class="bi bi-megaphone-fill"></i>
-                            <h3>Create New Announcement</h3>
-                        </div>
-                <form id="announcementForm" class="form-small">
-                    <div class="mb-2">
-                        <label class="form-label" for="announcementTitle">Title</label>
-                        <input type="text" id="announcementTitle" name="title" class="form-control" required>
+                <form id="announcementForm" class="announcement-form-centered">
+                  <div class="mb-3">
+                    <label class="form-label" for="announcementTitle">
+                      <i class="bi bi-type"></i> Title
+                    </label>
+                    <div class="input-icon-wrapper">
+                      <i class="bi bi-type input-icon"></i>
+                      <input type="text" id="announcementTitle" name="title" class="form-control form-control-lg" placeholder="Enter announcement title" required>
                     </div>
-                    <div class="mb-2">
-                        <label class="form-label" for="announcementContent">Content</label>
-                        <textarea id="announcementContent" name="content" class="form-control" rows="3" required></textarea>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="announcementContent">
+                      <i class="bi bi-file-text"></i> Content
+                    </label>
+                    <div class="input-icon-wrapper">
+                      <i class="bi bi-file-text input-icon textarea-icon"></i>
+                      <textarea id="announcementContent" name="content" class="form-control form-control-lg" rows="5" placeholder="Enter announcement content" required></textarea>
                     </div>
-                    <div class="row g-2 mb-2">
-                        <div class="col">
-                            <label class="form-label" for="announcementYear">Year</label>
-                            <select name="year" id="announcementYear" class="form-select">
-                                <option value="">All</option>
-                                <option value="1">1</option>
-                                <option value="2">2</option>
-                                <option value="3">3</option>
-                                <option value="4">4</option>
-                            </select>
-                        </div>
-                        <div class="col">
-                            <label class="form-label" for="announcementDepartment">Department</label>
-                            <select name="department" id="announcementDepartment" class="form-select" data-course-select>
-                                <option value="">All</option>
-                                <option value="IT">IT</option>
-                                <option value="HM">HM</option>
-                                <option value="BSED">BSED</option>
-                                <option value="BEED">BEED</option>
-                                <option value="TOURISM">TOURISM</option>
-                            </select>
-                        </div>
-                        <div class="col">
-                            <label class="form-label" for="announcementMajor">Major</label>
-                            <select name="major" id="announcementMajor" class="form-select" data-major-select>
-                                <option value="">(none)</option>
-                            </select>
-                        </div>
+                  </div>
+                  <div class="row g-3 mb-3">
+                    <div class="col-md-4">
+                      <label class="form-label" for="announcementYear">
+                        <i class="bi bi-calendar-year"></i> Year
+                      </label>
+                      <div class="input-icon-wrapper">
+                        <i class="bi bi-calendar-year input-icon select-icon"></i>
+                        <select name="year" id="announcementYear" class="form-select form-select-lg">
+                          <option value="">All Years</option>
+                          <option value="1">1st Year</option>
+                          <option value="2">2nd Year</option>
+                          <option value="3">3rd Year</option>
+                          <option value="4">4th Year</option>
+                        </select>
+                      </div>
                     </div>
-                    <button type="submit" class="btn btn-primary">Save Announcement</button>
+                    <div class="col-md-4">
+                      <label class="form-label" for="announcementDepartment">
+                        <i class="bi bi-building"></i> Department
+                      </label>
+                      <div class="input-icon-wrapper">
+                        <i class="bi bi-building input-icon select-icon"></i>
+                        <select name="department" id="announcementDepartment" class="form-select form-select-lg" data-course-select>
+                          <option value="">All Departments</option>
+                          <option value="IT">IT</option>
+                          <option value="BEED">BEED</option>
+                          <option value="BSED">BSED</option>
+                          <option value="TOURISM">TOURISM</option>
+                          <option value="HM">HM</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label" for="announcementMajor">
+                        <i class="bi bi-diagram-3"></i> Major
+                      </label>
+                      <div class="input-icon-wrapper">
+                        <i class="bi bi-diagram-3 input-icon select-icon"></i>
+                        <select name="major" id="announcementMajor" class="form-select form-select-lg" data-major-select>
+                          <option value="">All Majors</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="text-center">
+                    <button type="submit" class="backup-primary-btn btn-lg px-5">
+                      <i class="bi bi-check-circle me-2"></i>Save Announcement
+                    </button>
+                  </div>
                 </form>
-                    </div>
-        `;
+              </div>
+            </div>
+      `;
 
     if (announcementsList.length === 0) {
       html += `
@@ -3718,9 +3651,7 @@ async function loadAnnouncementsSection() {
                                 <div class="announcement-meta">
                                     <span class="announcement-date">
                                         <i class="bi bi-calendar3"></i>
-                                        ${escapeHtml(
-                                          a.date || "Date not specified"
-                                        )}
+                                        ${formatAnnouncementDate(a.date)}
                                     </span>
                                 </div>
                             </div>
@@ -3793,23 +3724,11 @@ async function loadAnnouncementsSection() {
     const deptSelect = document.getElementById("announcementDepartment");
     const majorSelect = document.getElementById("announcementMajor");
     if (deptSelect && majorSelect) {
-      const courseMajorConfig = {
-        IT: ["Computer Technology", "Electronics"],
-        BSED: [
-          "English",
-          "Physical Education",
-          "Math",
-          "Filipino",
-          "Social Science",
-        ],
-        HM: ["General"],
-        BEED: ["General"],
-        TOURISM: ["General"],
-      };
+      // Use the global courseMajorConfig
       function updateMajorOptions() {
         const course = deptSelect.value;
         const majors = courseMajorConfig[course] || [];
-        majorSelect.innerHTML = '<option value="">(none)</option>';
+        majorSelect.innerHTML = '<option value="">All Majors</option>';
         majors.forEach((major) => {
           const opt = document.createElement("option");
           opt.value = major;
@@ -3829,6 +3748,7 @@ async function loadAnnouncementsSection() {
         handleAnnouncementSubmit(e);
       });
     }
+
 
     // Handle edit mode from URL
     const urlParams = new URLSearchParams(window.location.search);
