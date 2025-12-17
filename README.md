@@ -127,6 +127,39 @@ For technical issues or questions:
 - ✅ Never share your credentials with others
 - ✅ Report suspicious activity to administrators
 
+## 🔐 Forgot Password (Gmail Verification Code)
+
+The forgot-password flow (`/forgot_password.html`) uses a **2-step reset**:
+
+- **Send Code**: user enters username → server verifies the account exists and is **linked to Google (Gmail)** → generates a 6-digit code → stores it in the DB with an expiration → emails the code via Nodemailer.
+- **Reset Password**: user enters the code + new password → server validates code + expiration → hashes the new password with `bcryptjs` → updates the password and clears the reset token.
+
+### Required DB columns (PostgreSQL)
+
+The Node backend will auto-add these columns at runtime (best-effort) if they don't exist:
+
+- `users.google_email` (TEXT): the user's Gmail address (e.g. `name@gmail.com`)
+- `users.google_linked` (BOOLEAN): whether the account is linked to Google (optional; `google_email` is also used)
+- `users.reset_code` (TEXT): stored as a SHA-256 hash of the 6-digit code (+ optional pepper)
+- `users.reset_code_expires` (TIMESTAMP): expiration timestamp
+
+### Required environment variables (email)
+
+Configure **either** generic SMTP **or** Gmail app password:
+
+- **SMTP**
+  - `MAIL_HOST`, `MAIL_PORT`, `MAIL_SECURE`
+  - `MAIL_USER`, `MAIL_PASS`
+  - optional: `MAIL_FROM`
+- **Gmail**
+  - `GMAIL_USER`
+  - `GMAIL_APP_PASSWORD` (or `GMAIL_PASS`)
+
+Optional:
+
+- `RESET_CODE_TTL_MINUTES` (defaults to 10; clamped to 10–15)
+- `RESET_CODE_PEPPER` (recommended): extra secret mixed into the code hash
+
 ## 🎨 Interface Overview
 
 ### Dashboard

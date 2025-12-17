@@ -77,11 +77,11 @@ const heroSpotlights = {
   },
   settings: {
     hero_copy:
-      "Personalize your profile, update your login details, and keep your account aligned with your current information.",
+      "Update your profile details, keep your Gmail linked for secure password reset, and keep your account aligned with your current information.",
     spotlight_eyebrow: "Account controls",
     spotlight_title: "Settings",
     spotlight_copy:
-      "Update your username, display name, password, and profile picture to keep your account up to date.",
+      "Update your username, display name, Gmail link (for password reset), and profile picture to keep your account up to date.",
   },
 };
 

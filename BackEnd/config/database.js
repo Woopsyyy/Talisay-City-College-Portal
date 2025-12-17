@@ -256,8 +256,13 @@ class Database {
       result.rows[0].insertId = result.rows[0].id;
     }
 
-    // For UPDATE/DELETE queries without RETURNING
-    if (result.rows.length === 0) return result;
+    // IMPORTANT:
+    // - For SELECT with 0 rows, return [] (callers expect arrays and use .length checks)
+    // - For UPDATE/DELETE/INSERT without RETURNING, keep returning the pg Result object
+    if (result.rows.length === 0) {
+      if (String(result.command || "").toUpperCase() === "SELECT") return [];
+      return result;
+    }
 
     return result.rows;
   }

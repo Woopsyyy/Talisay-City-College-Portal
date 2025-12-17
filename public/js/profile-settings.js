@@ -96,27 +96,46 @@ const ProfileSettings = {
 
             <div class="form-fields">
               <div class="form-field">
-                <label class="form-label" for="newPassword">New Password</label>
+                <label class="form-label">Gmail (Google-linked)</label>
                 <div class="form-input-wrapper">
-                  <svg class="form-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                  <input type="password" id="newPassword" name="password" class="form-input" placeholder="Enter new password" />
+                  <button type="button" id="googleLinkBtn" class="icon-btn" title="${
+                    user?.google_linked
+                      ? "Connected to Google"
+                      : "Connect your Google account"
+                  }">
+                    <!-- Google icon -->
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21.35 11.1h-9.2v2.84h5.26c-.23 1.33-1.13 2.46-2.4 3.17v2.64h3.88c2.27-2.09 3.58-5.17 3.58-8.65 0-.6-.05-1.18-.17-1.74z"></path>
+                      <path d="M12.15 21.99c2.67 0 4.9-.88 6.53-2.4l-3.88-2.64c-1.08.73-2.47 1.16-3.99 1.16-3.06 0-5.65-2.06-6.58-4.83H1.45v3.03c1.66 3.3 5.08 5.68 9.2 5.68z"></path>
+                      <path d="M5.57 13.07a6.01 6.01 0 010-3.98V6.06H1.45a10.96 10.96 0 000 11.88l4.12-3.03z"></path>
+                      <path d="M12.15 4.84c1.44 0 2.73.5 3.76 1.48l2.82-2.82C16.98 2.03 14.65 1 12.15 1 8.03 1 4.61 3.39 2.95 6.69l4.12 3.03c.93-2.77 3.52-4.88 5.08-4.88z"></path>
+                    </svg>
+                  </button>
+                  <span id="googleLinkStatus" class="google-status">${
+                    user?.google_linked ? "Connected" : "Not connected"
+                  }</span>
                 </div>
-                <p class="form-hint">Leave blank if you don't want to change your password</p>
+                <p class="form-hint">Click the Google icon to link your Gmail for password resets.</p>
               </div>
-
               <div class="form-field">
-                <label class="form-label" for="confirmPassword">Confirm New Password</label>
+                <label class="form-label" for="profilePassword">New Password</label>
                 <div class="form-input-wrapper">
                   <svg class="form-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                    <path d="M12 17a2 2 0 0 0 2-2v-3a4 4 0 1 0-8 0v3a2 2 0 0 0 2 2h4z"></path>
+                    <path d="M8 11a4 4 0 0 1 8 0v3"></path>
                   </svg>
-                  <input type="password" id="confirmPassword" name="confirm_password" class="form-input" placeholder="Confirm new password" />
-                  <div class="form-input-validation" id="passwordValidation" style="display: none;"></div>
+                  <input type="password" id="profilePassword" name="password" class="form-input" placeholder="Enter new password (leave blank to keep current)" />
                 </div>
-                <p class="form-error" id="passwordError" style="display: none;">Passwords do not match</p>
+                <p class="form-hint">Leave empty to keep your current password.</p>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="profileConfirmPassword">Confirm New Password</label>
+                <div class="form-input-wrapper">
+                  <svg class="form-input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 6L9 17l-5-5"></path>
+                  </svg>
+                  <input type="password" id="profileConfirmPassword" class="form-input" placeholder="Confirm new password" />
+                </div>
               </div>
             </div>
           </div>
@@ -174,47 +193,6 @@ const ProfileSettings = {
       });
     }
 
-    // Password validation
-    const newPasswordInput = document.getElementById("newPassword");
-    const confirmPasswordInput = document.getElementById("confirmPassword");
-    const passwordValidation = document.getElementById("passwordValidation");
-    const passwordError = document.getElementById("passwordError");
-
-    const validatePasswords = () => {
-      const newPwd = newPasswordInput?.value || "";
-      const confirmPwd = confirmPasswordInput?.value || "";
-
-      if (!confirmPwd) {
-        if (passwordValidation) passwordValidation.style.display = "none";
-        if (passwordError) passwordError.style.display = "none";
-        return;
-      }
-
-      const match = newPwd === confirmPwd && newPwd !== "";
-      if (passwordValidation) {
-        passwordValidation.style.display = match ? "block" : "block";
-        passwordValidation.className =
-          "form-input-validation " + (match ? "success" : "error");
-        if (match) {
-          passwordValidation.innerHTML =
-            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-        } else {
-          passwordValidation.innerHTML =
-            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-        }
-      }
-      if (passwordError) {
-        passwordError.style.display = match ? "none" : "block";
-      }
-    };
-
-    if (confirmPasswordInput) {
-      confirmPasswordInput.addEventListener("input", validatePasswords);
-    }
-    if (newPasswordInput) {
-      newPasswordInput.addEventListener("input", validatePasswords);
-    }
-
     // Form submission
     const form = document.getElementById("profileSettingsForm");
     const saveBtn = document.getElementById("saveBtn");
@@ -233,20 +211,27 @@ const ProfileSettings = {
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
 
-        const formData = new FormData(form);
-        const password = formData.get("password");
-        const confirmPassword = formData.get("confirm_password");
+        // Validate password confirmation client-side if provided
+        const passwordEl = document.getElementById("profilePassword");
+        const confirmEl = document.getElementById("profileConfirmPassword");
+        const password = passwordEl?.value || "";
+        const confirm = confirmEl?.value || "";
 
-        // Validate password match
-        if (password && password.trim() !== "") {
-          if (password !== confirmPassword) {
+        if (password || confirm) {
+          if (password !== confirm) {
             ProfileSettings.showAlert("Passwords do not match", "error");
             return;
           }
-        } else {
-          formData.delete("password");
+          if (password.length > 0 && password.length < 8) {
+            ProfileSettings.showAlert(
+              "Password must be at least 8 characters",
+              "error"
+            );
+            return;
+          }
         }
-        formData.delete("confirm_password");
+
+        const formData = new FormData(form);
 
         // Disable submit button
         if (saveBtn) {
@@ -299,6 +284,13 @@ const ProfileSettings = {
             } catch (e) {
               console.error("Sidebar update after profile save failed", e);
             }
+            // Clear password fields after successful update
+            try {
+              if (passwordEl) passwordEl.value = "";
+              if (confirmEl) confirmEl.value = "";
+            } catch (e) {
+              // ignore
+            }
           } else {
             ProfileSettings.showAlert(
               result.error || "Failed to update profile",
@@ -316,6 +308,61 @@ const ProfileSettings = {
             saveBtn.innerHTML =
               '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Save Changes';
           }
+        }
+
+        // Google link button behavior (open OAuth in popup and refresh session)
+        const googleBtn = document.getElementById("googleLinkBtn");
+        const googleStatus = document.getElementById("googleLinkStatus");
+        if (googleBtn) {
+          googleBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            const popup = window.open(
+              "/api/auth/google",
+              "google_oauth",
+              "width=600,height=700"
+            );
+            if (!popup) {
+              ProfileSettings.showAlert(
+                "Popup blocked. Please allow popups for this site.",
+                "error"
+              );
+              return;
+            }
+
+            const poll = setInterval(async () => {
+              try {
+                if (popup.closed) {
+                  clearInterval(poll);
+                  try {
+                    const session = await AuthAPI.checkSession();
+                    if (session && session.user) {
+                      const linked = !!session.user.google_linked;
+                      if (googleStatus)
+                        googleStatus.textContent = linked
+                          ? "Connected"
+                          : "Not connected";
+                      if (onProfileUpdate) onProfileUpdate(session.user);
+                      ProfileSettings.showAlert(
+                        linked
+                          ? "Google account linked."
+                          : "Google account not linked.",
+                        "success"
+                      );
+                    }
+                  } catch (err) {
+                    console.error("Error refreshing session after OAuth", err);
+                    ProfileSettings.showAlert(
+                      "Could not verify link status.",
+                      "error"
+                    );
+                  }
+                }
+              } catch (err) {
+                clearInterval(poll);
+                console.error("OAuth popup monitor error", err);
+              }
+            }, 500);
+          });
         }
       });
     }

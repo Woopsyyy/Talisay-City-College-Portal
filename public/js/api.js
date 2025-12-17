@@ -496,10 +496,34 @@ const AuthAPI = {
     return apiCall("/auth/check");
   },
 
-  resetPassword: async (username) => {
-    return apiCall("/auth/reset-password", {
+  sendResetCode: async (username) => {
+    return apiCall("/auth/send-reset-code", {
       method: "POST",
       body: { username },
+    });
+  },
+
+  validateResetCode: async (username, code) => {
+    return apiCall("/auth/validate-reset-code", {
+      method: "POST",
+      body: { username, code },
+    });
+  },
+
+  resetPasswordWithCode: async (
+    username,
+    code,
+    newPassword,
+    confirmNewPassword
+  ) => {
+    return apiCall("/auth/reset-password", {
+      method: "POST",
+      body: {
+        username,
+        code,
+        new_password: newPassword,
+        confirm_new_password: confirmNewPassword,
+      },
     });
   },
 

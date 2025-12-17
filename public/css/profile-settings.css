@@ -518,6 +518,51 @@ body.profile-settings {
   width: 1rem;
   height: 1rem;
   border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Google link icon button */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--card), var(--secondary));
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.icon-btn svg {
+  width: 20px;
+  height: 20px;
+  color: #202124;
+}
+
+.icon-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.06);
+}
+
+.google-status {
+  margin-left: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  vertical-align: middle;
+}
+
+.google-status.connected {
+  color: var(--success);
+}
+
+/* Tighter layout for the security row */
+.form-field .form-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
   border-top: 2px solid white;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
