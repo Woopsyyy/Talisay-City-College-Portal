@@ -4,4 +4,4 @@
 /BackEnd/backups
 .DS_Store
 Thumbs.db
-.env
+.agent
