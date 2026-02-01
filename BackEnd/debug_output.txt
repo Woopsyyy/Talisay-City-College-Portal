@@ -1,0 +1,66 @@
+=== STUDY LOAD DEBUG ===
+
+1. Students with assignments:
+Array
+(
+    [0] => Array
+        (
+            [id] => 4
+            [username] => Josh
+            [full_name] => Josh Paculaba
+            [section] => Altruism
+            [year_level] => 3
+        )
+
+    [1] => Array
+        (
+            [id] => 7
+            [username] => andre
+            [full_name] => Andre Roblon
+            [section] => Altruism
+            [year_level] => 3
+        )
+
+    [2] => Array
+        (
+            [id] => 8
+            [username] => bon
+            [full_name] => Bon Joey
+            [section] => Altruism
+            [year_level] => 3
+        )
+
+    [3] => Array
+        (
+            [id] => 9
+            [username] => earl
+            [full_name] => Earl Kenneth Canete
+            [section] => Altruism
+            [year_level] => 3
+        )
+
+    [4] => Array
+        (
+            [id] => 10
+            [username] => erichelle
+            [full_name] => Erichelle Rabago Aumentado
+            [section] => Altruism
+            [year_level] => 3
+        )
+
+)
+
+2. Testing with: Josh Paculaba - Section: Altruism
+
+3. Data for section 'Altruism':
+Array
+(
+)
+
+WARNING: No section_subjects data for 'Altruism'
+
+4. All sections in section_subjects:
+Array
+(
+)
+
