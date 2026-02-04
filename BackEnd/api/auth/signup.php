@@ -101,7 +101,7 @@ try {
     
     if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] === UPLOAD_ERR_OK) {
         error_log("Profile picture upload detected for user $userId");
-        $uploadDir = __DIR__ . '/../../Database/upload/';
+        $uploadDir = UPLOAD_DIR;
         if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
         
         $file = $_FILES['profile_picture'];

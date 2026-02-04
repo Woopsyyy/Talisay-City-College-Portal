@@ -10,7 +10,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
 
 try {
     $pdo = Database::connect();
-    $uploadDir = __DIR__ . '/../../Database/upload/';
+    $uploadDir = UPLOAD_DIR;
     
     
     if (!is_dir($uploadDir)) {

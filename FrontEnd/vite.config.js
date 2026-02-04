@@ -5,19 +5,21 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: true, // Allow network access
+    host: true,
+    port: 3000,
+    watch: {
+      usePolling: true, // Required for Windows Docker to detect changes
+    },
     proxy: {
       '/api': {
-        target: 'http://localhost/TCC%20(react%20+%20mysql%20+%20php)/BackEnd',
+        target: 'http://backend',
         changeOrigin: true,
-        secure: false,
-        rewrite: (path) => path, // Keep /api as is
+        rewrite: (path) => path,
       },
       '/Database': {
-        target: 'http://localhost/TCC%20(react%20+%20mysql%20+%20php)/BackEnd',
+        target: 'http://backend',
         changeOrigin: true,
-        secure: false,
-        rewrite: (path) => path, // Keep /Database as is
+        rewrite: (path) => path,
       },
     },
   },

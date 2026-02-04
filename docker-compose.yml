@@ -1,0 +1,79 @@
+services:
+  # Database Service
+  db:
+    image: mysql:8.0
+    container_name: tcc-db
+    restart: always
+    environment:
+      MYSQL_DATABASE: tccportal
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_PASSWORD: ''
+      MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - tcc-network
+
+  # Backend Service (PHP)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tcc-backend
+    restart: always
+    ports:
+      - "8000:80"
+    environment:
+      DB_HOST: db
+      DB_NAME: tccportal
+      DB_USER: root
+      DB_PASS: root
+    volumes:
+      - ./BackEnd:/var/www/html
+      - ./Database:/var/www/html/Database
+    depends_on:
+      - db
+    networks:
+      - tcc-network
+
+  # phpMyAdmin Service
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: tcc-phpmyadmin
+    restart: always
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: db
+      PMA_USER: root
+      PMA_PASSWORD: root
+    depends_on:
+      - db
+    networks:
+      - tcc-network
+
+  # Frontend Service (React)
+  frontend:
+    image: node:20-alpine
+    container_name: tcc-frontend
+    working_dir: /app
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./FrontEnd:/app
+      - /app/node_modules # Keep container node_modules independent from host
+    command: sh -c "npm install && npm run dev:client -- --port 3000 --host"
+    depends_on:
+      - backend
+    networks:
+      - tcc-network
+
+networks:
+  tcc-network:
+    driver: bridge
+
+volumes:
+  db_data:

@@ -1,7 +1,11 @@
 <?php
 
 
-require_once __DIR__ . '/../config/database.php';
+if (file_exists(__DIR__ . '/../BackEnd/config/database.php')) {
+    require_once __DIR__ . '/../BackEnd/config/database.php';
+} else {
+    require_once __DIR__ . '/../config/database.php';
+}
 
 class DatabaseSetup {
     private $pdo;
@@ -34,7 +38,7 @@ class DatabaseSetup {
         $port = getenv('DB_PORT') ?: '3306';
         $dbname = getenv('DB_NAME') ?: 'tccportal';
         $user = getenv('DB_USER') ?: 'root';
-        $password = getenv('DB_PASSWORD') ?: '';
+        $password = getenv('DB_PASS') ?: '';
 
         try {
             
@@ -101,7 +105,7 @@ class DatabaseSetup {
     
     
     public function initializeSchema() {
-        $schemaFile = __DIR__ . '/../Database/schema.sql';
+        $schemaFile = __DIR__ . '/schema.sql';
         return $this->executeSqlFile($schemaFile);
     }
     

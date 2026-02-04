@@ -3,7 +3,7 @@
 require_once __DIR__ . '/config/db.php';
 
 $files = [
-    __DIR__ . '/Database/migrations/fix_user_assignment_columns.sql'
+    __DIR__ . '/../Database/migrations/fix_user_assignment_columns.sql'
 ];
 
 try {

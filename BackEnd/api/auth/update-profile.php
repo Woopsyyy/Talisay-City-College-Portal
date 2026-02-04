@@ -59,7 +59,7 @@ try {
     
     $imagePath = null;
     if (isset($_FILES['profile_image']) && $_FILES['profile_image']['error'] === UPLOAD_ERR_OK) {
-        $uploadDir = __DIR__ . '/../../Database/upload/';
+        $uploadDir = UPLOAD_DIR;
         if (!is_dir($uploadDir)) {
             mkdir($uploadDir, 0755, true);
         }

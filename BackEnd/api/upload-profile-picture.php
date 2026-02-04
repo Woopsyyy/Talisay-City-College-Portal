@@ -8,7 +8,7 @@ if (!isset($_SESSION['user_id'])) {
     Response::unauthorized();
 }
 
-$uploadDir = __DIR__ . '/../Database/upload/';
+$uploadDir = UPLOAD_DIR;
 
 
 if (!is_dir($uploadDir)) {

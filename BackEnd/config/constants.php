@@ -7,11 +7,11 @@ define('APP_DEBUG', true);
 define('TIMEZONE', 'Asia/Manila');
 
 
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'tccportal');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-define('DB_CHARSET', 'utf8mb4');
+define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
+define('DB_NAME', getenv('DB_NAME') ?: 'tccportal');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') ?: '');
+define('DB_CHARSET', getenv('DB_CHARSET') ?: 'utf8mb4');
 
 
 define('HASH_ALGO', PASSWORD_ARGON2ID);
@@ -29,7 +29,15 @@ define('ALLOWED_FILE_TYPES', [
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 ]);
-define('UPLOAD_DIR', __DIR__ . '/../public/uploads/');
+// Database and Upload paths
+$baseDir = dirname(__DIR__);
+$rootPath = dirname($baseDir);
+if (file_exists($rootPath . '/Database')) {
+    define('DATABASE_DIR', $rootPath . '/Database/');
+} else {
+    define('DATABASE_DIR', $baseDir . '/Database/');
+}
+define('UPLOAD_DIR', DATABASE_DIR . 'upload/');
 
 
 define('RATE_LIMIT_REQUESTS', 60); 
