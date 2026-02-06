@@ -40,6 +40,8 @@ const RecordsView = () => {
             let sanctionText = "No";
             let sanctionDays = null;
             let sanctionNote = "";
+            let gender = "-";
+            let studentStatus = "Regular";
 
             const assignmentData = Array.isArray(assignment) && assignment.length > 0 ? assignment[0] : assignment;
             
@@ -53,6 +55,10 @@ const RecordsView = () => {
                 paymentStatus = assignmentData.payment || "paid";
                 owingAmount = assignmentData.amount_lacking || null;
                 sanctions = assignmentData.sanctions || null;
+                
+                // Gender and Status from API
+                gender = assignmentData.gender || "-";
+                studentStatus = assignmentData.student_status || "Regular";
                 
                 if (assignmentData.sanction_reason) {
                     sanctionNote = assignmentData.sanction_reason;
@@ -108,7 +114,9 @@ const RecordsView = () => {
                 sanctions,
                 sanctionText,
                 sanctionDays,
-                sanctionNote
+                sanctionNote,
+                gender,
+                studentStatus
             });
         } catch (err) {
             console.error(err);
@@ -187,6 +195,22 @@ const RecordsView = () => {
                         <InfoMeta>
                             <InfoLabel>Section</InfoLabel>
                             <InfoValue>{data.section}</InfoValue>
+                        </InfoMeta>
+                    </InfoRow>
+
+                    <InfoRow>
+                        <IconBox><Users size={20} /></IconBox>
+                        <InfoMeta>
+                            <InfoLabel>Gender</InfoLabel>
+                            <InfoValue>{data.gender}</InfoValue>
+                        </InfoMeta>
+                    </InfoRow>
+
+                    <InfoRow>
+                        <IconBox><CheckCircle size={20} /></IconBox>
+                        <InfoMeta>
+                            <InfoLabel>Student Status</InfoLabel>
+                            <InfoValue>{data.studentStatus}</InfoValue>
                         </InfoMeta>
                     </InfoRow>
                 </CardBody>

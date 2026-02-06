@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { TeacherAPI } from '../../../services/api';
 import Loader from '../../Loader';
@@ -7,6 +7,19 @@ import { Calendar, Clock, MapPin, BookOpen, User } from 'lucide-react';
 const ScheduleView = () => {
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  const formatTime = (timeString) => {
+    if (!timeString) return "TBA";
+    try {
+        const [hours, minutes] = timeString.split(':');
+        const hour = parseInt(hours);
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        const displayHour = hour % 12 || 12;
+        return `${displayHour}:${minutes} ${ampm}`;
+    } catch (e) {
+        return timeString;
+    }
+  };
 
   useEffect(() => {
     const fetchSchedule = async () => {
@@ -24,21 +37,18 @@ const ScheduleView = () => {
 
   if (loading) return <Loader />;
 
-  
   const dayOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  const schedulesByDay = {};
-  
-  schedules.forEach(schedule => {
-      const day = schedule.day || "Unknown";
-      if (!schedulesByDay[day]) schedulesByDay[day] = [];
-      schedulesByDay[day].push(schedule);
-  });
+  const schedulesByDay = useMemo(() => {
+      const grouped = {};
+      schedules.forEach(schedule => {
+          const day = schedule.day || "Unknown";
+          if (!grouped[day]) grouped[day] = [];
+          grouped[day].push(schedule);
+      });
+      return grouped;
+  }, [schedules]);
 
-  const sortedDays = Object.keys(schedulesByDay).sort((a, b) => {
-      const posA = dayOrder.indexOf(a);
-      const posB = dayOrder.indexOf(b);
-      return posA - posB;
-  });
+  const sortedDays = useMemo(() => dayOrder.filter(day => schedulesByDay[day]), [dayOrder, schedulesByDay]);
 
   return (
     <Container>
@@ -64,19 +74,25 @@ const ScheduleView = () => {
                           {schedulesByDay[day].map((sched, idx) => (
                               <ClassCard key={idx}>
                                   <TimeBadge>
-                                      <Clock size={14} />
-                                      {sched.time_start} - {sched.time_end}
+                                      <Clock size={16} />
+                                      {formatTime(sched.time_start)} - {formatTime(sched.time_end)}
                                   </TimeBadge>
                                   <CardContent>
-                                      <SubjectName>{sched.subject}</SubjectName>
-                                      <DetailRow>
-                                          <BookOpen size={14} />
-                                          <span>{sched.year} - {sched.section}</span>
-                                      </DetailRow>
-                                      <DetailRow>
-                                          <MapPin size={14} />
-                                          <span>{sched.room || "TBA"}</span>
-                                      </DetailRow>
+                                      <SubjectName>{sched.subject_name || sched.subject}</SubjectName>
+                                      <InfoSection>
+                                          <DetailRow>
+                                              <User size={14} />
+                                              <span>{sched.year} - {sched.section}</span>
+                                          </DetailRow>
+                                          <DetailRow>
+                                              <MapPin size={14} />
+                                              <span>building: {sched.building || "TBA"}</span>
+                                          </DetailRow>
+                                          <DetailRow>
+                                              <MapPin size={14} />
+                                              <span>floor: {sched.room || "TBA"}</span>
+                                          </DetailRow>
+                                      </InfoSection>
                                   </CardContent>
                                   <CardDecoration />
                               </ClassCard>
@@ -146,13 +162,17 @@ const CardContent = styled.div`
 `;
 
 const SubjectName = styled.h4`
-    font-size: 1.1rem; color: var(--text-primary); margin: 0 0 1rem 0; font-weight: 700;
+    font-size: 1.2rem; color: var(--accent-primary); margin: 0 0 1rem 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+`;
+
+const InfoSection = styled.div`
+    display: flex; flex-direction: column; gap: 0.5rem;
 `;
 
 const DetailRow = styled.div`
-    display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;
+    display: flex; align-items: center; gap: 0.75rem; color: var(--text-secondary); font-size: 0.95rem; font-weight: 500;
     &:last-child { margin-bottom: 0; }
-    svg { color: var(--accent-primary); }
+    svg { color: var(--accent-primary); opacity: 0.8; }
 `;
 
 const CardDecoration = styled.div`

@@ -1,6 +1,17 @@
 import axios from 'axios';
 
-const API_BASE = '/api';
+const getApiBase = () => {
+  // If we are on localhost, we use /api (proxied by Vite)
+  // If we are on an external IP (e.g. 192.168.x.x), we need to hit the backend directly (port 8000)
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return '/api';
+  }
+  // For external devices, hit the backend port 8001
+  return `http://${host}:8001/api`;
+};
+
+const API_BASE = getApiBase();
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -10,12 +21,80 @@ const api = axios.create({
   },
 });
 
+let pendingRequests = 0;
+let loadingListeners = [];
+
+const notifyLoading = () => {
+  const isLoading = pendingRequests > 0;
+  loadingListeners.forEach((fn) => {
+    try { fn(isLoading); } catch (err) { console.error('Loading listener error', err); }
+  });
+};
+
+const shouldTrackLoading = (config) => {
+  return !(config && config.meta && config.meta.silent);
+};
+
+export const subscribeToApiLoading = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  loadingListeners.push(listener);
+  listener(pendingRequests > 0); // initial state
+  return () => {
+    loadingListeners = loadingListeners.filter((l) => l !== listener);
+  };
+};
+
+
+const extractApiError = (error) => {
+  const data = error.response?.data;
+  if (data?.error) return data.error;
+  if (data?.message) return data.message;
+  if (data?.errors && typeof data.errors === 'object') {
+    const firstKey = Object.keys(data.errors)[0];
+    if (firstKey && Array.isArray(data.errors[firstKey]) && data.errors[firstKey][0]) {
+      return data.errors[firstKey][0];
+    }
+  }
+  if (error.response?.status === 401) return 'Unauthorized';
+  if (error.response?.status === 419) return 'Session expired. Please refresh and try again.';
+  return error.message || 'API request failed';
+};
+
+api.interceptors.request.use(
+  (config) => {
+    const track = shouldTrackLoading(config);
+    config._trackLoading = track;
+    if (track) {
+      pendingRequests += 1;
+      notifyLoading();
+    }
+    return config;
+  },
+  (error) => {
+    const track = shouldTrackLoading(error.config);
+    if (track) {
+      pendingRequests = Math.max(0, pendingRequests - 1);
+      notifyLoading();
+    }
+    return Promise.reject(error);
+  }
+);
 
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    if (response.config && response.config._trackLoading) {
+      pendingRequests = Math.max(0, pendingRequests - 1);
+      notifyLoading();
+    }
+    return response.data;
+  },
   (error) => {
+    if (error.config && error.config._trackLoading) {
+      pendingRequests = Math.max(0, pendingRequests - 1);
+      notifyLoading();
+    }
     console.error('API call error:', error);
-    const customError = new Error(error.response?.data?.error || 'API request failed');
+    const customError = new Error(extractApiError(error));
     customError.status = error.response?.status;
     throw customError;
   }
@@ -60,11 +139,15 @@ export const getAvatarUrl = async (_userId, imagePath) => {
 
 export const AdminAPI = {
   getUsers: () => api.get('/admin/users'),
+  getDashboardStats: () => api.get('/admin/dashboard-stats'),
   getUserAssignments: () => api.get('/admin/user-assignments'),
   createUserAssignment: (assignment) => api.post('/admin/user-assignments', assignment),
   updateUserAssignment: (id, assignment) => api.put(`/admin/user-assignments/${id}`, assignment),
   deleteUserAssignment: (id) => api.delete(`/admin/user-assignments/${id}`),
   updateUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
+  updateUserRoles: (userId, roles) => api.put(`/admin/users/${userId}/roles`, { roles }),
+  updateUserSubRole: (userId, subRole) => api.put(`/admin/users/${userId}/sub-role`, { sub_role: subRole }),
+  updateUserGender: (userId, gender) => api.put(`/admin/users/${userId}/gender`, { gender }),
   deleteUser: (userId) => api.delete(`/admin/users/${userId}`),
 
   getSections: () => api.get('/admin/sections'),
@@ -85,7 +168,7 @@ export const AdminAPI = {
   createSchedule: (schedule) => api.post('/admin/schedules', schedule),
   deleteSchedule: (id) => api.delete(`/admin/schedules/${id}`),
 
-  getBuildings: () => api.get('/admin/buildings'),
+  getBuildings: (params) => api.get('/admin/buildings', params ? { params } : undefined),
   createBuilding: (building) => api.post('/admin/buildings', building),
   deleteBuilding: (name) => api.delete(`/admin/buildings/${encodeURIComponent(name)}`),
 
@@ -100,7 +183,6 @@ export const AdminAPI = {
   deleteAnnouncement: (id) => api.delete(`/admin/announcements/${id}`),
 
   cleanupPictures: () => api.post('/admin/cleanup-pictures'),
-  cleanupCodebase: () => api.post('/admin/cleanup-codebase'),
 
   getProjects: () => api.get('/admin/projects'),
   createProject: (project) => api.post('/admin/projects', project),
@@ -138,12 +220,13 @@ export const AdminAPI = {
 export const StudentAPI = {
   getAssignment: () => api.get('/student/assignment'),
   getGrades: () => api.get('/student/grades'),
-  getStudyLoad: () => api.get('/student/study-load'),
+  getStudyLoad: (semester) => api.get('/student/study-load', { params: semester ? { semester } : {} }),
   getAnnouncements: () => api.get('/student/announcements'),
   getProjects: () => api.get('/student/projects'),
   getCampusProjects: () => api.get('/student/campus-projects'),
   getEvaluationSettings: () => api.get('/student/evaluation-settings'),
   getEvaluationTeachers: () => api.get('/student/evaluation/teachers'),
+  getEvaluation: (teacherId) => api.get(`/student/evaluation/get-evaluation?teacher_id=${teacherId}`),
   submitEvaluation: (data) => api.post('/student/evaluation/submit', data),
 };
 
@@ -159,7 +242,11 @@ export const TeacherAPI = {
   updateGrade: (id, grade) => api.put(`/teacher/grades/${id}`, grade),
   deleteGrade: (id) => api.delete(`/teacher/grades/${id}`),
   getStudentsBySection: (section) => api.get(`/teacher/students?section=${encodeURIComponent(section)}`),
-  getEvaluationStatistics: () => api.get('/teacher/evaluation-statistics'),
+  getEvaluationStatistics: (semester) => api.get(`/teacher/evaluation-statistics${semester ? `?semester=${encodeURIComponent(semester)}` : ''}`),
+};
+
+export const PublicAPI = {
+  getStats: () => api.get('/public/stats'),
 };
 
 
@@ -218,7 +305,7 @@ export const AuthAPI = {
 
   
   check: async () => {
-    const data = await api.get('/auth/check');
+    const data = await api.get('/auth/check', { meta: { silent: true } });
     return data;
   },
 

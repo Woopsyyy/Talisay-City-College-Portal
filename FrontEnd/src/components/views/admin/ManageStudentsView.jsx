@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
@@ -32,14 +32,17 @@ const ManageStudentsView = () => {
         section: '',
         department: '',
         major: '',
+        semester: '1st Semester',
         lacking_payment: 'no', 
         amount_lacking: '',
         has_sanction: 'no',    
-        sanction_reason: ''
+        sanction_reason: '',
+        student_status: 'Regular'
     });
 
     const [userSuggestions, setUserSuggestions] = useState([]);
     const [showSuggestions, setShowSuggestions] = useState(false);
+    const searchTimeoutRef = useRef(null);
 
     
     const [filters, setFilters] = useState({
@@ -54,6 +57,14 @@ const ManageStudentsView = () => {
 
     useEffect(() => {
         fetchData();
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (searchTimeoutRef.current) {
+                clearTimeout(searchTimeoutRef.current);
+            }
+        };
     }, []);
 
     const showToast = (message, type = 'success') => {
@@ -118,19 +129,25 @@ const ManageStudentsView = () => {
         const query = e.target.value;
         setAssignForm(prev => ({ ...prev, full_name: query, existing_user_id: '' })); 
         
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+
         if (query.length < 2) {
             setUserSuggestions([]);
             setShowSuggestions(false);
             return;
         }
 
-        try {
-            const suggestions = await AdminAPI.getUserSuggestions(query);
-            setUserSuggestions(suggestions || []);
-            setShowSuggestions(true);
-        } catch (err) {
-            console.error("Error searching users:", err);
-        }
+        searchTimeoutRef.current = setTimeout(async () => {
+            try {
+                const suggestions = await AdminAPI.getUserSuggestions(query);
+                setUserSuggestions(suggestions || []);
+                setShowSuggestions(true);
+            } catch (err) {
+                console.error("Error searching users:", err);
+            }
+        }, 300);
     };
 
     const selectUser = (user) => {
@@ -159,10 +176,12 @@ const ManageStudentsView = () => {
             section: assignment.section || '',
             department: assignment.department || '',
             major: assignment.major || '',
+            semester: assignment.semester || '1st Semester',
             lacking_payment: assignment.payment === 'owing' ? 'yes' : 'no',
             amount_lacking: assignment.amount_lacking || '',
             has_sanction: assignment.sanctions || assignment.sanctions === 1 ? 'yes' : 'no',
-            sanction_reason: assignment.sanction_reason || ''
+            sanction_reason: assignment.sanction_reason || '',
+            student_status: assignment.student_status || 'Regular'
         });
         setIsAssignmentModalOpen(true);
     };
@@ -191,10 +210,12 @@ const ManageStudentsView = () => {
             section: '',
             department: '',
             major: '',
+            semester: '1st Semester',
             lacking_payment: 'no',
             amount_lacking: '',
             has_sanction: 'no',
-            sanction_reason: ''
+            sanction_reason: '',
+            student_status: 'Regular'
         });
     };
 
@@ -215,10 +236,15 @@ const ManageStudentsView = () => {
             const payload = {
                 ...assignForm,
                 user_id: assignForm.existing_user_id || null,
+                section: assignForm.section,
+                department: assignForm.department,
+                major: assignForm.major,
+                semester: assignForm.semester,
                 payment: assignForm.lacking_payment === 'yes' ? 'owing' : 'paid',
                 amount_lacking: assignForm.lacking_payment === 'yes' ? assignForm.amount_lacking : null,
                 sanctions: assignForm.has_sanction === 'yes',
-                sanction_reason: assignForm.has_sanction === 'yes' ? assignForm.sanction_reason : ''
+                sanction_reason: assignForm.has_sanction === 'yes' ? assignForm.sanction_reason : '',
+                student_status: assignForm.student_status
             };
 
             if (assignForm.id) {
@@ -305,10 +331,16 @@ const ManageStudentsView = () => {
     };
 
     
-    const availableSections = [...new Set(sections.map(s => s.section_name))].sort();
-    const availableDepartments = Object.keys(COURSE_MAJOR_CONFIG);
-    const filterMajorsOptions = filters.department ? COURSE_MAJOR_CONFIG[filters.department] : [];
-    const formMajorsOptions = assignForm.department ? COURSE_MAJOR_CONFIG[assignForm.department] : [];
+    const availableSections = useMemo(() => [...new Set(sections.map(s => s.section_name))].sort(), [sections]);
+    const availableDepartments = useMemo(() => Object.keys(COURSE_MAJOR_CONFIG), []);
+    const filterMajorsOptions = useMemo(
+        () => (filters.department ? COURSE_MAJOR_CONFIG[filters.department] : []),
+        [filters.department]
+    );
+    const formMajorsOptions = useMemo(
+        () => (assignForm.department ? COURSE_MAJOR_CONFIG[assignForm.department] : []),
+        [assignForm.department]
+    );
     
     
     const getYearFromLevel = (level) => {
@@ -323,7 +355,7 @@ const ManageStudentsView = () => {
         .slice()
         .sort((a, b) => a.section_name.localeCompare(b.section_name));
 
-    const filteredAssignments = assignments.filter(a => {
+    const filteredAssignments = useMemo(() => assignments.filter(a => {
         if (filters.query) {
             const q = filters.query.toLowerCase();
             const matchName = a.username?.toLowerCase().includes(q) || a.full_name?.toLowerCase().includes(q);
@@ -339,7 +371,7 @@ const ManageStudentsView = () => {
         if (filters.lacking_payment && a.payment !== 'owing') return false;
         if (filters.has_sanctions && !a.sanctions) return false;
         return true;
-    });
+    }), [assignments, filters]);
 
     return (
         <StyledContainer>
@@ -471,11 +503,12 @@ const ManageStudentsView = () => {
                                 <thead>
                                     <tr>
                                         <th>Full Name</th>
-                                        <th>Role</th>
+                                        <th>Brief Role</th>
                                         <th>Year</th>
                                         <th>Section</th>
                                         <th>Department</th>
                                         <th>Major</th>
+                                        <th>Type</th>
                                         <th>Status</th>
                                         <th className="text-end">Actions</th>
                                     </tr>
@@ -503,6 +536,7 @@ const ManageStudentsView = () => {
                                                 <td>{a.section}</td>
                                                 <td>{a.department}</td>
                                                 <td>{a.major}</td>
+                                                <td>{a.student_status || 'Regular'}</td>
                                                 <td>
                                                     {a.payment === 'owing' && <StatusBadge className="warning">Payment</StatusBadge>}
                                                     {(a.sanctions === 1 || a.sanctions === true) && <StatusBadge className="danger">Sanctioned</StatusBadge>}
@@ -587,6 +621,25 @@ const ManageStudentsView = () => {
                                                     <Input type="number" name="amount_lacking" placeholder="e.g. 500" value={assignForm.amount_lacking} onChange={handleAssignInputChange} required />
                                                 </div>
                                             )}
+                                        </div>
+                                    </div>
+
+                                    <div className="col-12">
+                                        <div className="row g-3">
+                                            <div className="col-md-6">
+                                                <FormLabel>Semester</FormLabel>
+                                                <Select name="semester" value={assignForm.semester} onChange={handleAssignInputChange}>
+                                                    <option value="1st Semester">1st Semester</option>
+                                                    <option value="2nd Semester">2nd Semester</option>
+                                                </Select>
+                                            </div>
+                                            <div className="col-md-6">
+                                                <FormLabel>Student Status</FormLabel>
+                                                <Select name="student_status" value={assignForm.student_status} onChange={handleAssignInputChange}>
+                                                    <option value="Regular">Regular</option>
+                                                    <option value="Irregular">Irregular</option>
+                                                </Select>
+                                            </div>
                                         </div>
                                     </div>
 

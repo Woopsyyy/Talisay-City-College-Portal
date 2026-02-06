@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { AuthAPI, getAvatarUrl } from '../../../services/api';
+import { useAuth } from '../../../context/AuthContext';
 import { User, Lock, Mail, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle } from 'lucide-react';
 
 const SettingsView = ({ currentUser }) => {
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState(null);
     const [previewUrl, setPreviewUrl] = useState("images/sample.jpg");
+    const { checkAuth } = useAuth();
     
     
     const [formData, setFormData] = useState({
         username: '',
         full_name: '',
+        gender: '',
         password: '',
         confirmPassword: ''
     });
@@ -21,7 +24,8 @@ const SettingsView = ({ currentUser }) => {
             setFormData(prev => ({
                 ...prev,
                 username: currentUser.username || '',
-                full_name: currentUser.full_name || ''
+                full_name: currentUser.full_name || '',
+                gender: (currentUser.gender || '').toLowerCase()
             }));
 
             
@@ -66,6 +70,7 @@ const SettingsView = ({ currentUser }) => {
         const submitData = new FormData();
         submitData.append('username', formData.username);
         submitData.append('full_name', formData.full_name);
+        if (formData.gender) submitData.append('gender', formData.gender);
         if (formData.password) submitData.append('password', formData.password);
         
         const fileInput = document.getElementById('profileImageInput');
@@ -76,8 +81,8 @@ const SettingsView = ({ currentUser }) => {
         try {
             const result = await AuthAPI.updateProfile(submitData);
             if (result.success) {
-                setMessage({ type: 'success', text: 'Profile updated successfully! Reloading...' });
-                setTimeout(() => window.location.reload(), 1500);
+                await checkAuth();
+                setMessage({ type: 'success', text: 'Profile updated successfully!' });
             } else {
                 setMessage({ type: 'danger', text: result.error || 'Failed to update profile' });
             }
@@ -166,6 +171,18 @@ const SettingsView = ({ currentUser }) => {
                                             required 
                                         />
                                     </InputWrapper>
+                                </FormGroup>
+                                <FormGroup>
+                                    <Label>Gender</Label>
+                                    <Select
+                                        value={formData.gender}
+                                        onChange={e => setFormData({...formData, gender: e.target.value})}
+                                    >
+                                        <option value="">Select</option>
+                                        <option value="male">Male</option>
+                                        <option value="female">Female</option>
+                                        <option value="lgbtq+">LGBTQ+</option>
+                                    </Select>
                                 </FormGroup>
                             </CardBody>
                         </Card>
@@ -312,6 +329,17 @@ const Input = styled.input`
   width: 100%; padding: 10px 12px 10px 40px; border-radius: 8px; border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary); font-size: 0.95rem;
   &:focus { outline: none; border-color: var(--accent-primary); ring: 2px solid var(--accent-primary); }
+`;
+
+const Select = styled.select`
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  &:focus { outline: none; border-color: var(--accent-primary); }
 `;
 
 const Divider = styled.div`

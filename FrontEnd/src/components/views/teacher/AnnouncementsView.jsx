@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { TeacherAPI } from '../../../services/api';
 import { 
@@ -105,7 +105,7 @@ const AnnouncementsView = () => {
         return { icon: Users, label: targetRole, color: '#6b7280' };
     };
 
-    const calculateStats = () => {
+    const stats = useMemo(() => {
         const urgent = announcements.filter(a => (a.priority || '').toLowerCase() === 'high').length;
         const recent = announcements.filter(a => {
             const date = new Date(a.published_at);
@@ -114,14 +114,12 @@ const AnnouncementsView = () => {
         }).length;
 
         return { total: announcements.length, urgent, recent };
-    };
+    }, [announcements]);
 
-    const filteredAnnouncements = announcements.filter(a => {
+    const filteredAnnouncements = useMemo(() => announcements.filter(a => {
         if (priorityFilter === 'all') return true;
         return (a.priority || 'medium').toLowerCase() === priorityFilter;
-    });
-
-    const stats = calculateStats();
+    }), [announcements, priorityFilter]);
 
     if (loading) {
         return (

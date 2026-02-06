@@ -1,34 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
-import { AuthAPI, getAvatarUrl } from "../services/api";
+import { useAuth } from "../context/AuthContext";
 import {
   LayoutDashboard,
-  Megaphone,
-  Building2,
-  FolderKanban,
   Users,
   UserCog,
-  GraduationCap,
-  ClipboardCheck,
-  Layers,
-  BookOpen,
-  BarChart3,
   Settings,
   LogOut,
 } from "lucide-react";
-import AnnouncementsView from "../components/views/admin/AnnouncementsView";
-import TeacherManagementView from "../components/views/admin/TeacherManagementView";
 import DashboardOverview from "../components/views/admin/DashboardOverview";
-import FacilitiesView from "../components/views/admin/FacilitiesView";
-import ProjectsView from "../components/views/admin/ProjectsView";
 import ManageStudentsView from "../components/views/admin/ManageStudentsView";
 import ManageUsersView from "../components/views/admin/ManageUsersView";
-import EvaluationView from "../components/views/admin/EvaluationView";
-import SectionsView from "../components/views/admin/SectionsView";
-import SubjectsView from "../components/views/admin/SubjectsView";
-import StudyLoadView from "../components/views/admin/StudyLoadView";
-import GradeSystemView from "../components/views/admin/GradeSystemView";
 import SettingsView from "../components/views/admin/SettingsView";
 import Loader from "../components/Loader";
 import ClockCard from "../components/common/ClockCard";
@@ -36,39 +19,27 @@ import ThemeToggle from "../components/common/ThemeToggle";
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState(null);
-  const [currentSection, setCurrentSection] = useState("overview");
-  const [avatarUrl, setAvatarUrl] = useState("/images/sample.jpg");
-  const [loading, setLoading] = useState(true);
+  const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
+  const location = useLocation();
+  const pathParts = location.pathname.split('/');
+  const currentSection = pathParts[pathParts.length - 1] === 'dashboard' ? 'overview' : pathParts[pathParts.length - 1];
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const data = await AuthAPI.checkSession();
-        if (data.authenticated && data.user.role === "admin") {
-          setCurrentUser(data.user);
-          if (data.user.avatar_url) {
-            setAvatarUrl(data.user.avatar_url);
-          } else if (data.user.image_path) {
-            const url = await getAvatarUrl(data.user.id, data.user.image_path);
-            setAvatarUrl(url);
-          }
-        } else {
-          navigate("/");
-        }
-      } catch (_) {
-        navigate("/");
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAuth();
-  }, [navigate]);
+    const roles = Array.isArray(currentUser?.roles) && currentUser.roles.length
+      ? currentUser.roles
+      : currentUser?.role ? [currentUser.role] : [];
+    if (!authLoading && (!currentUser || !roles.includes("admin"))) {
+      if (roles.includes('teacher')) navigate('/teachers');
+      else if (roles.includes('student')) navigate('/home');
+      else if (roles.includes('nt')) navigate('/nt/dashboard');
+      else navigate("/");
+    }
+  }, [authLoading, currentUser, navigate]);
 
   const handleLogout = async (e) => {
     e.preventDefault();
     try {
-      await AuthAPI.logout();
+      await logout();
       navigate("/");
     } catch (_) {
       navigate("/");
@@ -77,17 +48,8 @@ const AdminDashboard = () => {
 
   const navItems = [
     { id: "overview", icon: LayoutDashboard, label: "Overview" },
-    { id: "announcements", icon: Megaphone, label: "Announcements" },
-    { id: "buildings", icon: Building2, label: "Buildings" },
-    { id: "projects", icon: FolderKanban, label: "Projects" },
     { id: "manage_students", icon: Users, label: "Manage Students" },
     { id: "manage_user", icon: UserCog, label: "Manage Users" },
-    { id: "teacher_management", icon: GraduationCap, label: "Teachers" },
-    { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
-    { id: "sections", icon: Layers, label: "Sections" },
-    { id: "subjects", icon: BookOpen, label: "Subjects" },
-    { id: "study_load", icon: BookOpen, label: "Study Load" },
-    { id: "grade_system", icon: BarChart3, label: "Grade System" },
     { id: "settings", icon: Settings, label: "Settings" },
   ];
 
@@ -100,18 +62,6 @@ const AdminDashboard = () => {
       title: "Announcements",
       copy: "Broadcast important updates and news to the entire campus community instantly.",
     },
-    teacher_management: {
-      title: "Teacher Management",
-      copy: "Oversee faculty assignments, manage schedules, and ensure optimal subject coverage.",
-    },
-    buildings: {
-      title: "Buildings & Facilities",
-      copy: "Manage campus infrastructure, track room usage, and organize section allocations.",
-    },
-    projects: {
-      title: "Campus Projects",
-      copy: "Monitor ongoing development projects, track budgets, and oversee completion statuses.",
-    },
     manage_students: {
       title: "Manage Students",
       copy: "Handle student enrollments, section assignments, and monitor financial statuses.",
@@ -120,26 +70,6 @@ const AdminDashboard = () => {
       title: "User Roles",
       copy: "Manage user permissions, assign roles, and control access across the platform.",
     },
-    evaluation: {
-      title: "Evaluation System",
-      copy: "Configure teacher evaluation settings and view performance leaderboards.",
-    },
-    sections: {
-      title: "Section Management",
-      copy: "Organize student sections by year level and manage academic groupings.",
-    },
-    subjects: {
-      title: "Subject Catalog",
-      copy: "Maintain the comprehensive list of academic subjects, units, and curriculum details.",
-    },
-    study_load: {
-      title: "Study Load",
-      copy: "Curate and assign subject loads to sections based on course and year level requirements.",
-    },
-    grade_system: {
-      title: "Grade System",
-      copy: "View student academic records, monitor performance, and manage grade data.",
-    },
     settings: {
       title: "System Settings",
       copy: "Perform maintenance tasks, clean up database records, and manage system configurations.",
@@ -147,39 +77,19 @@ const AdminDashboard = () => {
   };
 
   const renderContent = () => {
-    switch (currentSection) {
-      case "overview":
-        return <DashboardOverview />;
-      case "announcements":
-        return <AnnouncementsView />;
-      case "teacher_management":
-        return <TeacherManagementView />;
-      case "buildings":
-        return <FacilitiesView />;
-      case "projects":
-        return <ProjectsView />;
-      case "manage_students":
-        return <ManageStudentsView />;
-      case "manage_user":
-        return <ManageUsersView />;
-      case "evaluation":
-        return <EvaluationView />;
-      case "sections":
-        return <SectionsView />;
-      case "subjects":
-        return <SubjectsView />;
-      case "study_load":
-        return <StudyLoadView />;
-      case "grade_system":
-        return <GradeSystemView />;
-      case "settings":
-        return <SettingsView />;
-      default:
-        return null;
-    }
+    return (
+      <Routes>
+        <Route path="overview" element={<DashboardOverview />} />
+        <Route path="manage_students" element={<ManageStudentsView />} />
+        <Route path="manage_user" element={<ManageUsersView />} />
+        <Route path="settings" element={<SettingsView />} />
+        <Route path="/" element={<Navigate to="overview" replace />} />
+        <Route path="*" element={<Navigate to="overview" replace />} />
+      </Routes>
+    );
   };
 
-  if (loading) {
+  if (authLoading && !currentUser) {
     return (
       <div
         style={{
@@ -194,6 +104,11 @@ const AdminDashboard = () => {
       </div>
     );
   }
+
+  const currentRoles = Array.isArray(currentUser?.roles) && currentUser.roles.length
+    ? currentUser.roles
+    : currentUser?.role ? [currentUser.role] : [];
+  if (!currentUser || !currentRoles.includes("admin")) return null;
 
   return (
     <DashboardContainer>
@@ -225,7 +140,7 @@ const AdminDashboard = () => {
             <NavItem
               key={item.id}
               $active={currentSection === item.id}
-              onClick={() => setCurrentSection(item.id)}
+              onClick={() => navigate(`/admin/dashboard/${item.id}`)}
             >
               <item.icon size={20} />
               <span>{item.label}</span>
@@ -361,7 +276,6 @@ const Nav = styled.nav`
   flex-direction: column;
   gap: 4px;
 
-  /* Scrollbar styling */
   &::-webkit-scrollbar {
     width: 4px;
   }
@@ -393,7 +307,7 @@ const NavItem = styled.button`
 
   &:hover {
     background: var(--bg-tertiary);
-    color: var(--accent-highlight); /* Teal Hover */
+    color: var(--accent-highlight);
     transform: translateX(4px);
   }
 `;

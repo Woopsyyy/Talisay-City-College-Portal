@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import { AuthAPI } from "../services/api";
 import usePageStyle from "../hooks/usePageStyle";
 
 const Login = () => {
   usePageStyle("/css/login.css");
+  const { login, user, authLoading } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -13,10 +15,17 @@ const Login = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    
-    document.documentElement.setAttribute("data-theme", "light");
+    if (user && !authLoading) {
+      const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role || "student"];
+      if (roles.includes("admin")) navigate("/admin/dashboard");
+      else if (roles.includes("nt")) navigate("/nt/dashboard");
+      else if (roles.includes("teacher")) navigate("/teachers");
+      else navigate("/home");
+    }
+  }, [user, authLoading, navigate]);
 
-    
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", "light");
     const params = new URLSearchParams(window.location.search);
     if (params.get("signup") === "success") {
       setSignupSuccess(true);
@@ -32,17 +41,8 @@ const Login = () => {
     setError("");
 
     try {
-      
-      const data = await AuthAPI.login(username, password);
-      const role = data.user?.role || "student";
-
-      if (role === "admin") {
-        navigate("/admin/dashboard");
-      } else if (role === "teacher") {
-        navigate("/teachers");
-      } else {
-        navigate("/home");
-      }
+      const data = await login(username, password);
+      // useAuth useEffect will handle navigation
     } catch (err) {
       console.error("Login error:", err);
       setError(err.message || "Invalid login credentials.");
@@ -57,7 +57,7 @@ const Login = () => {
       <div className="login-card">
         <div className="login-header">
           <img
-            src="/images/tcc logo.png"
+            src="/images/tcc-logo.png"
             alt="Talisay City College logo"
             className="school-logo"
           />

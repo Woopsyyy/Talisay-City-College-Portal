@@ -10,14 +10,17 @@ export default defineConfig({
     watch: {
       usePolling: true, // Required for Windows Docker to detect changes
     },
+    hmr: {
+      clientPort: 24678,
+    },
     proxy: {
       '/api': {
-        target: 'http://backend',
+        target: 'http://laravel-backend',
         changeOrigin: true,
         rewrite: (path) => path,
       },
-      '/Database': {
-        target: 'http://backend',
+      '/uploads': {
+        target: 'http://laravel-backend',
         changeOrigin: true,
         rewrite: (path) => path,
       },

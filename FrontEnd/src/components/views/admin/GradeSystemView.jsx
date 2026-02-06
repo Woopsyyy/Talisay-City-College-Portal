@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { formatOrdinal } from '../../../utils/formatting';
@@ -87,61 +87,88 @@ const GradeSystemView = () => {
 
   
 
-  const availableYears = [...new Set(grades.map(g => g.year).filter(Boolean))].sort();
-  const availableSections = [...new Set(userAssignments.map(a => a.section).filter(Boolean))].sort();
+  const availableYears = useMemo(
+    () => [...new Set(grades.map(g => g.year).filter(Boolean))].sort(),
+    [grades]
+  );
+  const availableSections = useMemo(
+    () => [...new Set(userAssignments.map(a => a.section).filter(Boolean))].sort(),
+    [userAssignments]
+  );
 
-  const groupedGrades = {}; 
+  const studentsById = useMemo(() => {
+    const map = new Map();
+    students.forEach(s => {
+      if (s.id != null) map.set(String(s.id), s);
+    });
+    return map;
+  }, [students]);
 
-  grades.forEach(grade => {
-    
-    if (selectedYear && grade.year !== selectedYear) return;
+  const studentsByUsername = useMemo(() => {
+    const map = new Map();
+    students.forEach(s => {
+      if (s.username) map.set(String(s.username), s);
+    });
+    return map;
+  }, [students]);
 
-    
-    if (selectedSection) {
-      const student = students.find(s => 
-        (grade.user_id && s.id === grade.user_id) || 
-        (grade.username && s.username === grade.username)
-      );
-      if (!student) return;
+  const assignmentsByKey = useMemo(() => {
+    const map = new Map();
+    userAssignments.forEach(a => {
+      if (a.user_id != null) map.set(`id:${String(a.user_id)}`, a);
+      if (a.username) map.set(`un:${String(a.username)}`, a);
+    });
+    return map;
+  }, [userAssignments]);
 
-      const assignment = userAssignments.find(a => 
-        (a.user_id && a.user_id === student.id) ||
-        (a.username === student.username)
-      );
+  const groupedGrades = useMemo(() => {
+    const grouped = {};
 
-      if (!assignment || assignment.section !== selectedSection) return;
-    }
+    grades.forEach(grade => {
+      if (selectedYear && grade.year !== selectedYear) return;
 
-    const yearKey = grade.year || "Unknown";
-    if (!groupedGrades[yearKey]) groupedGrades[yearKey] = {};
+      const student =
+        grade.user_id != null
+          ? studentsById.get(String(grade.user_id))
+          : studentsByUsername.get(String(grade.username || ''));
 
-    const studentId = grade.user_id || grade.username; 
-    const student = students.find(s => 
-      (grade.user_id && s.id === grade.user_id) || 
-      (grade.username && s.username === grade.username)
-    );
-
-    if (!groupedGrades[yearKey][studentId]) {
-      let imagePath = null;
-      if (student && student.image_path) {
-         let rawPath = student.image_path;
-         if (rawPath.startsWith("/TCC/public/")) rawPath = rawPath.replace("/TCC/public/", "");
-         else if (rawPath.startsWith("/TCC/database/pictures/")) rawPath = rawPath.replace("/TCC/database/pictures/", "database/pictures/");
-         
-         imagePath = rawPath.startsWith("http") || rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+      if (selectedSection) {
+        if (!student) return;
+        const assignment =
+          student.id != null
+            ? assignmentsByKey.get(`id:${String(student.id)}`)
+            : assignmentsByKey.get(`un:${String(student.username || '')}`);
+        if (!assignment || assignment.section !== selectedSection) return;
       }
 
-      groupedGrades[yearKey][studentId] = {
-        studentObj: student,
-        displayName: grade.student_name || grade.username || (student ? (student.full_name || student.username) : "Unknown"),
-        imagePath: imagePath,
-        semesters: { "First Semester": [], "Second Semester": [] }
-      };
-    }
+      const yearKey = grade.year || "Unknown";
+      if (!grouped[yearKey]) grouped[yearKey] = {};
 
-    const semKey = grade.semester === "Second Semester" ? "Second Semester" : "First Semester";
-    groupedGrades[yearKey][studentId].semesters[semKey].push(grade);
-  });
+      const studentKey = grade.user_id || grade.username;
+      if (!grouped[yearKey][studentKey]) {
+        let imagePath = null;
+        if (student && student.image_path) {
+          let rawPath = student.image_path;
+          if (rawPath.startsWith("/TCC/public/")) rawPath = rawPath.replace("/TCC/public/", "");
+          else if (rawPath.startsWith("/TCC/database/pictures/")) rawPath = rawPath.replace("/TCC/database/pictures/", "database/pictures/");
+
+          imagePath = rawPath.startsWith("http") || rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+        }
+
+        grouped[yearKey][studentKey] = {
+          studentObj: student,
+          displayName: grade.student_name || grade.username || (student ? (student.full_name || student.username) : "Unknown"),
+          imagePath: imagePath,
+          semesters: { "First Semester": [], "Second Semester": [] }
+        };
+      }
+
+      const semKey = grade.semester === "Second Semester" ? "Second Semester" : "First Semester";
+      grouped[yearKey][studentKey].semesters[semKey].push(grade);
+    });
+
+    return grouped;
+  }, [grades, selectedYear, selectedSection, studentsById, studentsByUsername, assignmentsByKey]);
 
   const calculateStats = (gradeList) => {
     let scoreSum = 0;

@@ -1,24 +1,34 @@
 <?php
 
+return [
 
-function handleCors() {
-    
-    
-    if (isset($_SERVER['HTTP_ORIGIN'])) {
-        header("Access-Control-Allow-Origin: {$_SERVER['HTTP_ORIGIN']}");
-        header('Access-Control-Allow-Credentials: true');
-        header('Access-Control-Max-Age: 86400');    
-    }
+    /*
+    |----------------------------------------------------------------------
+    | Cross-Origin Resource Sharing (CORS) Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Here you may configure your settings for cross-origin resource sharing
+    | or "CORS". This determines what cross-origin operations may execute
+    | in web browsers. You are free to adjust these settings as needed.
+    |
+    | To learn more: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+    |
+    */
 
-    
-    if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
-        if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD']))
-            header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");         
+    'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
-        if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']))
-            header("Access-Control-Allow-Headers: {$_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']}");
+    'allowed_methods' => ['*'],
 
-        exit(0);
-    }
-}
-?>
+    'allowed_origins' => ['*'],
+
+    'allowed_origins_patterns' => [],
+
+    'allowed_headers' => ['*'],
+
+    'exposed_headers' => [],
+
+    'max_age' => 0,
+
+    'supports_credentials' => true,
+
+];

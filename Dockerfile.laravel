@@ -1,0 +1,64 @@
+# Use official PHP image with Apache
+FROM php:8.4-apache
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    zip \
+    unzip \
+    git \
+    curl \
+    libonig-dev \
+    libxml2-dev \
+    default-mysql-client \
+    autoconf \
+    g++ \
+    make
+
+# Install Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Clear cache
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions
+RUN docker-php-ext-install pdo_mysql mysqli mbstring exif pcntl bcmath gd opcache
+
+# Install Redis extension
+RUN pecl install redis && docker-php-ext-enable redis
+
+# OPcache configuration
+RUN echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.interned_strings_buffer=8" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.max_accelerated_files=4000" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.revalidate_freq=2" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.fast_shutdown=1" >> /usr/local/etc/php/conf.d/opcache.ini \
+    && echo "opcache.enable_cli=1" >> /usr/local/etc/php/conf.d/opcache.ini
+
+# Increase PHP upload limits for large database backups
+RUN echo "upload_max_filesize = 256M" > /usr/local/etc/php/conf.d/uploads.ini && \
+    echo "post_max_size = 256M" >> /usr/local/etc/php/conf.d/uploads.ini && \
+    echo "memory_limit = 512M" >> /usr/local/etc/php/conf.d/uploads.ini
+
+# Enable Apache mod_rewrite
+RUN a2enmod rewrite
+
+# Set Apache root to Laravel's public folder
+ENV APACHE_DOCUMENT_ROOT /var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy the application (only if exists, otherwise it will be volume mounted)
+COPY ./BackEnd /var/www/html
+
+# Change ownership
+RUN chown -R www-data:www-data /var/www/html
+
+EXPOSE 80
+
+CMD ["apache2-foreground"]

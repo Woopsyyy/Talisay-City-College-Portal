@@ -7,11 +7,13 @@ import { Star, MessageSquare, TrendingUp, Users } from 'lucide-react';
 const EvaluationView = () => {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [selectedSemester, setSelectedSemester] = useState('1st Semester');
 
     useEffect(() => {
         const fetchStats = async () => {
+            setLoading(true);
             try {
-                const data = await TeacherAPI.getEvaluationStatistics();
+                const data = await TeacherAPI.getEvaluationStatistics(selectedSemester);
                 
                 setStats(data || { average_rating: 0, total_evaluations: 0, comments: [] });
             } catch (err) {
@@ -22,7 +24,11 @@ const EvaluationView = () => {
             }
         };
         fetchStats();
-    }, []);
+    }, [selectedSemester]);
+
+    const handleSemesterChange = (semester) => {
+        setSelectedSemester(semester);
+    };
 
     if (loading) return <Loader />;
 
@@ -33,7 +39,23 @@ const EvaluationView = () => {
                     <Title>Performance Evaluation</Title>
                     <Subtitle>Summary of student feedback and performance metrics</Subtitle>
                 </div>
-                <Star size={32} color="var(--accent-primary)" fill="var(--accent-primary)" />
+                <ActionGroup>
+                    <SemesterTabs>
+                        <Tab 
+                            $active={selectedSemester === '1st Semester'} 
+                            onClick={() => handleSemesterChange('1st Semester')}
+                        >
+                            1st Sem
+                        </Tab>
+                        <Tab 
+                            $active={selectedSemester === '2nd Semester'} 
+                            onClick={() => handleSemesterChange('2nd Semester')}
+                        >
+                            2nd Sem
+                        </Tab>
+                    </SemesterTabs>
+                    <Star size={32} color="var(--accent-primary)" fill="var(--accent-primary)" />
+                </ActionGroup>
             </Header>
 
             <StatsGrid>
@@ -111,6 +133,10 @@ const Container = styled.div`
 
 const Header = styled.div`
     display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2.5rem;
+    @media (max-width: 768px) {
+        flex-direction: column;
+        gap: 1.5rem;
+    }
 `;
 
 const Title = styled.h2`
@@ -119,6 +145,39 @@ const Title = styled.h2`
 
 const Subtitle = styled.p`
     color: var(--text-secondary); margin: 0; font-size: 1rem;
+`;
+
+const ActionGroup = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+`;
+
+const SemesterTabs = styled.div`
+    display: flex;
+    background: var(--bg-secondary);
+    padding: 4px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+`;
+
+const Tab = styled.button`
+    padding: 0.6rem 1.25rem;
+    border-radius: 9px;
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    background: ${props => props.$active ? 'var(--accent-primary)' : 'transparent'};
+    color: ${props => props.$active ? 'white' : 'var(--text-secondary)'};
+    box-shadow: ${props => props.$active ? '0 4px 12px rgba(var(--accent-primary-rgb), 0.3)' : 'none'};
+
+    &:hover {
+        color: ${props => props.$active ? 'white' : 'var(--text-primary)'};
+        background: ${props => props.$active ? 'var(--accent-primary)' : 'rgba(0,0,0,0.05)'};
+    }
 `;
 
 const StatsGrid = styled.div`

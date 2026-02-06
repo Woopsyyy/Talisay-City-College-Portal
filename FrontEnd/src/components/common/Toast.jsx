@@ -44,7 +44,7 @@ const ToastContainer = styled.div`
   align-items: center;
   gap: 12px;
   font-weight: 600;
-  z-index: 2000;
+  z-index: 4000;
   animation: ${slideIn} 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   border-left: 4px solid ${props => {
      if (props.$type === 'error') return '#ef4444';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { StudentAPI } from '../../../services/api';
 import { 
@@ -65,7 +65,7 @@ const TransparencyView = () => {
         }
     };
 
-    const calculateStats = () => {
+    const stats = useMemo(() => {
         const totalBudget = projects.reduce((sum, proj) => {
             const cleaned = String(proj.budget || '0').replace(/[₱,]/g, '');
             const num = parseFloat(cleaned);
@@ -76,9 +76,7 @@ const TransparencyView = () => {
         const ongoing = projects.filter(p => (p.status || '').toLowerCase() === 'ongoing').length;
 
         return { totalBudget, completed, ongoing, total: projects.length };
-    };
-
-    const stats = calculateStats();
+    }, [projects]);
 
     if (loading) {
         return (

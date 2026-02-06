@@ -10,7 +10,7 @@ const VerifyOtp = () => {
     return (
         <div className="login-card" id="loginCard">
             <div className="login-header">
-                <img src="/images/tcc logo.png" alt="TCC Logo" className="school-logo" />
+                <img src="/images/tcc-logo.png" alt="TCC Logo" className="school-logo" />
                 <h2 className="mb-2">Talisay City College</h2>
             </div>
             <h3 className="mb-3">Verify Code</h3>

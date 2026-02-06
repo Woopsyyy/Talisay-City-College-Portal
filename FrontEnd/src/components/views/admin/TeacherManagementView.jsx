@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { 
@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
+import useDebouncedValue from '../../../hooks/useDebouncedValue';
 
 const TeacherManagementView = () => {
   const [loading, setLoading] = useState(true);
@@ -65,6 +66,10 @@ const TeacherManagementView = () => {
     room: '',
     class_type: 'day'
   });
+
+  const debouncedTeacherQuery = useDebouncedValue(assignForm.teacherName, 200);
+  const debouncedAssignSubjectQuery = useDebouncedValue(assignForm.subjectCode, 200);
+  const debouncedScheduleSubjectQuery = useDebouncedValue(scheduleForm.subject, 200);
 
   useEffect(() => {
     fetchData();
@@ -126,19 +131,21 @@ const TeacherManagementView = () => {
   };
 
   
-  const teachersList = teachers.map(t => ({
+  const teachersList = useMemo(() => teachers.map(t => ({
     id: t.id,
     name: t.full_name || t.username
-  })).sort((a, b) => a.name.localeCompare(b.name));
+  })).sort((a, b) => a.name.localeCompare(b.name)), [teachers]);
 
-  const allInstructors = new Set();
-  assignments.forEach(a => { if(a.teacher_name || a.full_name) allInstructors.add(a.teacher_name || a.full_name) });
-  schedules.forEach(s => { if(s.instructor) allInstructors.add(s.instructor) });
-  teachers.forEach(t => { if(t.full_name || t.username) allInstructors.add(t.full_name || t.username) });
-  const sortedInstructorNames = Array.from(allInstructors).sort();
+  const sortedInstructorNames = useMemo(() => {
+    const allInstructors = new Set();
+    assignments.forEach(a => { if (a.teacher_name || a.full_name) allInstructors.add(a.teacher_name || a.full_name); });
+    schedules.forEach(s => { if (s.instructor) allInstructors.add(s.instructor); });
+    teachers.forEach(t => { if (t.full_name || t.username) allInstructors.add(t.full_name || t.username); });
+    return Array.from(allInstructors).sort();
+  }, [assignments, schedules, teachers]);
 
   
-  const availableRooms = React.useMemo(() => {
+  const availableRooms = useMemo(() => {
     if (!scheduleForm.building) return [];
     
     const selectedBuilding = buildings.find(b => b.name === scheduleForm.building);
@@ -159,7 +166,7 @@ const TeacherManagementView = () => {
   }, [scheduleForm.building, buildings]);
 
   
-  const filteredSchedules = schedules.filter(s => {
+  const filteredSchedules = useMemo(() => schedules.filter(s => {
     if (selectedTeacherFilter && s.instructor !== selectedTeacherFilter) return false;
     if (yearFilter && String(s.year) !== yearFilter) return false;
     if (sectionFilter && s.section !== sectionFilter) return false;
@@ -170,15 +177,15 @@ const TeacherManagementView = () => {
     const dayB = days.indexOf(b.day);
     if (dayA !== dayB) return dayA - dayB;
     return (a.time_start || "").localeCompare(b.time_start || "");
-  });
+  }), [schedules, selectedTeacherFilter, yearFilter, sectionFilter]);
 
   
-  const filteredAssignments = assignments.filter(ta => {
+  const filteredAssignments = useMemo(() => assignments.filter(ta => {
       if (!assignForm.teacherName) return false; 
       const tName = (ta.full_name || ta.teacher_name || '').toLowerCase();
       const q = assignForm.teacherName.toLowerCase();
       return tName.includes(q);
-  });
+  }), [assignments, assignForm.teacherName]);
 
   
   const handleAssignSubmit = async (e) => {
@@ -290,42 +297,57 @@ const TeacherManagementView = () => {
   
   const handleTeacherSearch = (val) => {
     setAssignForm(prev => ({ ...prev, teacherName: val }));
-    if (val.length < 1) {
-      setTeacherSuggestions([]);
-      setShowTeacherSuggestions(false);
-      return;
-    }
-    const matches = teachersList
-      .filter(t => t.name.toLowerCase().includes(val.toLowerCase()))
-      .slice(0, 10);
-    setTeacherSuggestions(matches);
-    setShowTeacherSuggestions(true);
   };
 
   
   const handleAssignSubjectSearch = (val) => {
     setAssignForm(prev => ({ ...prev, subjectCode: val }));
-    if (val.length < 1) {
-      setTeacherSubjectSuggestions([]);
-      setShowTeacherSubjectSuggestions(false);
-      return;
-    }
-    const matches = subjects
-      .filter(s => s.subject_code.toLowerCase().includes(val.toLowerCase()) || s.title.toLowerCase().includes(val.toLowerCase()))
-      .slice(0, 10);
-    setTeacherSubjectSuggestions(matches);
-    setShowTeacherSubjectSuggestions(true);
   };
 
   const handleScheduleSubjectSearch = (val) => {
     setScheduleForm(prev => ({ ...prev, subject: val }));
-    if (val.length < 1) {
-      setSubjectSuggestions([]);
-      setShowSubjectSuggestions(false);
+  };
+
+  useEffect(() => {
+    const q = debouncedTeacherQuery.trim().toLowerCase();
+    if (!q) {
+      setTeacherSuggestions([]);
+      return;
+    }
+    const matches = teachersList
+      .filter(t => t.name.toLowerCase().includes(q))
+      .slice(0, 10);
+    setTeacherSuggestions(matches);
+  }, [debouncedTeacherQuery, teachersList]);
+
+  useEffect(() => {
+    const q = debouncedAssignSubjectQuery.trim().toLowerCase();
+    if (!q) {
+      setTeacherSubjectSuggestions([]);
       return;
     }
     const matches = subjects
-      .filter(s => s.subject_code.toLowerCase().includes(val.toLowerCase()) || s.title.toLowerCase().includes(val.toLowerCase()))
+      .filter(s => {
+        const code = (s.subject_code || '').toLowerCase();
+        const title = (s.title || s.subject_name || '').toLowerCase();
+        return code.includes(q) || title.includes(q);
+      })
+      .slice(0, 10);
+    setTeacherSubjectSuggestions(matches);
+  }, [debouncedAssignSubjectQuery, subjects]);
+
+  useEffect(() => {
+    const q = debouncedScheduleSubjectQuery.trim().toLowerCase();
+    if (!q) {
+      setSubjectSuggestions([]);
+      return;
+    }
+    const matches = subjects
+      .filter(s => {
+        const code = (s.subject_code || '').toLowerCase();
+        const title = (s.title || s.subject_name || '').toLowerCase();
+        return code.includes(q) || title.includes(q);
+      })
       .map(s => {
         const assign = assignments.find(a => a.subject_code === s.subject_code);
         return {
@@ -335,8 +357,7 @@ const TeacherManagementView = () => {
       })
       .slice(0, 10);
     setSubjectSuggestions(matches);
-    setShowSubjectSuggestions(true);
-  };
+  }, [debouncedScheduleSubjectQuery, subjects, assignments]);
 
   const formatTime = (timeStr) => {
     if (!timeStr) return "";

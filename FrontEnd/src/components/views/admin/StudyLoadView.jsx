@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import Toast from '../../common/Toast';
@@ -18,6 +18,7 @@ const StudyLoadView = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [suggestions, setSuggestions] = useState([]);
     const [selectedSubjectCode, setSelectedSubjectCode] = useState('');
+    const searchTimeoutRef = useRef(null);
     
     
     const defaultSchedule = {
@@ -30,6 +31,14 @@ const StudyLoadView = () => {
 
     useEffect(() => {
         fetchSections();
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (searchTimeoutRef.current) {
+                clearTimeout(searchTimeoutRef.current);
+            }
+        };
     }, []);
 
     const fetchSections = async () => {
@@ -81,16 +90,23 @@ const StudyLoadView = () => {
         const term = e.target.value;
         setSearchTerm(term);
         setSelectedSubjectCode(''); 
-        
-        if (term.length > 0) {
+
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+
+        if (term.length === 0) {
+            setSuggestions([]);
+            return;
+        }
+
+        searchTimeoutRef.current = setTimeout(() => {
             const filtered = allSubjects.filter(s => 
                 s.subject_code.toLowerCase().includes(term.toLowerCase()) || 
                 s.subject_name.toLowerCase().includes(term.toLowerCase())
             );
             setSuggestions(filtered.slice(0, 10)); 
-        } else {
-            setSuggestions([]);
-        }
+        }, 200);
     };
 
     const handleSelectSuggestion = (subject) => {
@@ -146,10 +162,10 @@ const StudyLoadView = () => {
         }
     };
 
-    const handleDeleteSubject = async (scheduleId) => {
+    const handleDeleteSubject = async (studyLoadId) => {
         if (!window.confirm("Remove this subject from study load?")) return;
         try {
-            await AdminAPI.deleteSchedule(scheduleId);
+            await AdminAPI.deleteStudyLoad(studyLoadId);
             const details = await AdminAPI.getSectionLoadDetails(selectedSection.id);
             setStudyLoadDetails(Array.isArray(details) ? details : []);
             setToast({ message: "Subject removed successfully", type: 'success' });
@@ -159,11 +175,13 @@ const StudyLoadView = () => {
     };
 
     
-    const filteredSections = activeYear === 'All' 
-        ? sections 
-        : sections.filter(s => String(s.grade_level) === String(activeYear));
+    const filteredSections = useMemo(() => (
+        activeYear === 'All' 
+            ? sections 
+            : sections.filter(s => String(s.grade_level) === String(activeYear))
+    ), [activeYear, sections]);
     
-    const yearLevels = ['1', '2', '3', '4'];
+    const yearLevels = useMemo(() => ['1', '2', '3', '4'], []);
 
     const getOrdinal = (n) => {
         const s = ["th", "st", "nd", "rd"];
@@ -193,60 +211,63 @@ const StudyLoadView = () => {
     };
 
     
-    const firstSemSubjects = studyLoadDetails.filter(s => s.semester === 'First Semester' || s.semester === '1st Semester');
-    const secondSemSubjects = studyLoadDetails.filter(s => s.semester === 'Second Semester' || s.semester === '2nd Semester');
-    const otherSubjects = studyLoadDetails.filter(s => 
-        !['First Semester', '1st Semester', 'Second Semester', '2nd Semester'].includes(s.semester)
+    const firstSemSubjects = useMemo(
+        () => studyLoadDetails.filter(s => s.semester === 'First Semester' || s.semester === '1st Semester'),
+        [studyLoadDetails]
+    );
+    const secondSemSubjects = useMemo(
+        () => studyLoadDetails.filter(s => s.semester === 'Second Semester' || s.semester === '2nd Semester'),
+        [studyLoadDetails]
+    );
+    const otherSubjects = useMemo(
+        () => studyLoadDetails.filter(s =>
+            !['First Semester', '1st Semester', 'Second Semester', '2nd Semester'].includes(s.semester)
+        ),
+        [studyLoadDetails]
     );
 
     const renderSubjectTable = (subjects, validSem, title) => (
         <div className={`printable-section ${printingSem && printingSem !== validSem ? 'hidden-print' : ''}`}>
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'2rem', marginBottom:'1rem'}}>
-                <h3 className="section-header">{title}</h3>
-                <DownloadButton onClick={() => handleDownload(validSem)} disabled={subjects.length === 0} className="no-print">
-                    <Download size={20} /> Download {title}
-                </DownloadButton>
-            </div>
+            <TableHeader className="no-print">
+                <SectionHeader>{title}</SectionHeader>
+                <PremiumDownloadButton onClick={() => handleDownload(validSem)} disabled={subjects.length === 0}>
+                    <Download size={18} /> Download {title}
+                </PremiumDownloadButton>
+            </TableHeader>
             
             <SubjectTable>
                 <thead>
                     <tr>
-                        <th>Code</th>
-                        <th>Description</th>
-                        <th>Units</th>
-                        <th>Days</th>
-                        <th>Time</th>
-                        <th>Instructor</th>
-                        <th className="no-print" style={{ width: '50px' }}></th>
+                        <th style={{ width: '120px' }}>Subject Code</th>
+                        <th>Descriptive Title</th>
+                        <th style={{ width: '80px', textAlign: 'center' }}>Units</th>
+                        <th className="no-print" style={{ width: '60px' }}></th>
                     </tr>
                 </thead>
                 <tbody>
                     {detailsLoading ? (
-                        <tr><td colSpan="7" className="text-center">Loading...</td></tr>
+                        <tr><td colSpan="4" className="text-center">Loading Data...</td></tr>
                     ) : subjects.length === 0 ? (
-                        <tr><td colSpan="7" className="text-center empty">No subjects assigned for {title}.</td></tr>
+                        <tr><td colSpan="4" className="text-center empty">No subjects enrolled for this semester.</td></tr>
                     ) : (
                         subjects.map((sub, idx) => (
                             <tr key={idx}>
-                                <td><Code>{sub.subject_code}</Code></td>
-                                <td>{sub.subject_title}</td>
-                                <td>{sub.units}</td>
-                                <td>{sub.day_of_week === 'Monday' && sub.time_start === '00:00:00' ? 'TBA' : (sub.day_of_week || 'TBA')}</td>
-                                <td>{formatTime(sub.time_start) === 'TBA' ? 'TBA' : `${formatTime(sub.time_start)} - ${formatTime(sub.time_end)}`}</td>
-                                <td>{sub.teacher || 'TBA'}</td>
+                                <td><CodeBadge>{sub.subject_code}</CodeBadge></td>
+                                <td className="subject-title-cell">{sub.subject_title}</td>
+                                <td style={{ textAlign: 'center' }}><strong>{sub.units}</strong></td>
                                 <td className="no-print">
-                                    <DeleteButton onClick={() => handleDeleteSubject(sub.id)} title="Remove Subject">
+                                    <DeleteAction onClick={() => handleDeleteSubject(sub.id)} title="Remove Subject">
                                         <Trash2 size={16} />
-                                    </DeleteButton>
+                                    </DeleteAction>
                                 </td>
                             </tr>
                         ))
                     )}
                     {!detailsLoading && subjects.length > 0 && (
                         <TotalRow>
-                            <td colSpan="2"><strong>Total Units</strong></td>
-                            <td><strong>{subjects.reduce((sum, s) => sum + parseFloat(s.units || 0), 0)}</strong></td>
-                            <td colSpan="4"></td>
+                            <td colSpan="2" style={{ textAlign: 'right', paddingRight: '2rem' }}><strong>TOTAL UNITS ENROLLED:</strong></td>
+                            <td style={{ textAlign: 'center' }}><strong>{subjects.reduce((sum, s) => sum + parseFloat(s.units || 0), 0)}</strong></td>
+                            <td className="no-print"></td>
                         </TotalRow>
                     )}
                 </tbody>
@@ -263,28 +284,45 @@ const StudyLoadView = () => {
                     </BackButton>
                 </DetailHeader>
 
-                <PrintableArea>
-                    <DocHeader>
-                        <h1>Talisay City College</h1>
-                        <h3>Office of the Registrar</h3>
-                        <h2>Official Study Load</h2>
-                        {printingSem && <h3 style={{marginTop:'5px', color:'#555'}}>{printingSem}</h3>}
-                    </DocHeader>
+                <PrintContainer id="study-load-printable">
+                    <PrintHeader>
+                        <LogoSection>
+                            <GraduationCap size={48} color="#0056b3" />
+                        </LogoSection>
+                        <HeaderText>
+                            <h1>Talisay City College</h1>
+                            <p>Poblacion, Talisay City, Cebu, 6045</p>
+                            <h3>OFFICE OF THE REGISTRAR</h3>
+                        </HeaderText>
+                    </PrintHeader>
 
-                    <SectionInfoCard>
-                        <InfoRow>
-                            <InfoLabel>Section:</InfoLabel>
-                            <InfoValue>{selectedSection.section_name}</InfoValue>
-                        </InfoRow>
-                         <InfoRow>
-                            <InfoLabel>Year Level:</InfoLabel>
-                            <InfoValue>{selectedSection.grade_level} Year</InfoValue>
-                        </InfoRow>
-                        <InfoRow>
-                            <InfoLabel>Course/Major:</InfoLabel>
-                            <InfoValue>{selectedSection.course} {selectedSection.major ? `(${selectedSection.major})` : ''}</InfoValue>
-                        </InfoRow>
-                    </SectionInfoCard>
+                    <DocumentTitleSection>
+                        <h2>OFFICIAL STUDY LOAD</h2>
+                        {printingSem && <div className="semester-badge">{printingSem}</div>}
+                    </DocumentTitleSection>
+
+                    <InfoGrid>
+                        <InfoBox>
+                            <label>STUDENT SECTION</label>
+                            <span>{selectedSection.section_name}</span>
+                        </InfoBox>
+                         <InfoBox>
+                            <label>YEAR LEVEL</label>
+                            <span>{selectedSection.grade_level}{getOrdinal(selectedSection.grade_level)} Year</span>
+                        </InfoBox>
+                        <InfoBox $span={2}>
+                            <label>COURSE & MAJOR</label>
+                            <span>{selectedSection.course} {selectedSection.major ? `• ${selectedSection.major}` : ''}</span>
+                        </InfoBox>
+                        <InfoBox>
+                            <label>ACADEMIC YEAR</label>
+                            <span>2025 - 2026</span>
+                        </InfoBox>
+                        <InfoBox>
+                            <label>DATE ISSUED</label>
+                            <span>{new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                        </InfoBox>
+                    </InfoGrid>
 
                     {}
                     <AssignmentCard className="no-print">
@@ -321,19 +359,39 @@ const StudyLoadView = () => {
                     {renderSubjectTable(secondSemSubjects, 'Second Semester', 'Second Semester')}
                     {otherSubjects.length > 0 && renderSubjectTable(otherSubjects, 'Other', 'Other Subjects')}
 
-                    <FooterNote>
-                        <p>This document serves as an official copy of the study load for the specified section.</p>
-                        <p>Generated on {new Date().toLocaleDateString()}</p>
-                    </FooterNote>
-                </PrintableArea>
+                    <SignatureSection>
+                        <div className="sig-block">
+                            <div className="line"></div>
+                            <span>Registrar Signature</span>
+                        </div>
+                        <div className="sig-block">
+                            <div className="line"></div>
+                            <span>Authorized Personnel</span>
+                        </div>
+                    </SignatureSection>
+
+                    <OfficialSeal>
+                        <p>NOT VALID WITHOUT OFFICIAL SEAL</p>
+                    </OfficialSeal>
+                </PrintContainer>
 
                 <style>{`
-                    .section-header { font-size: 1.2rem; font-weight: 700; color: var(--text-primary); margin: 0; }
                     @media print {
+                        body * { visibility: hidden; pointer-events: none; }
+                        #study-load-printable, #study-load-printable * { visibility: visible; }
+                        #study-load-printable { 
+                            position: absolute; 
+                            left: 0; 
+                            top: 0; 
+                            width: 100%;
+                            padding: 0;
+                            margin: 0;
+                            box-shadow: none;
+                            border: none;
+                        }
                         .no-print { display: none !important; }
                         .hidden-print { display: none !important; }
-                        body { background: white; margin: 0; padding: 20px; }
-                        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                        @page { size: auto; margin: 15mm; }
                     }
                 `}</style>
             </DetailContainer>
@@ -407,7 +465,6 @@ const StudyLoadView = () => {
     );
 };
 
-
 const Container = styled.div`
   max-width: 1400px; margin: 0 auto; animation: fadeIn 0.4s ease-out;
 `;
@@ -467,7 +524,6 @@ const ClickHint = styled.div`
 const LoadingState = styled.div` padding: 3rem; text-align: center; color: var(--text-secondary); `;
 const EmptyState = styled.div` padding: 3rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; color: var(--text-secondary); svg { opacity: 0.5; } `;
 
-
 const DetailContainer = styled.div`
     max-width: 1000px; margin: 0 auto; background: var(--bg-primary); min-height: 80vh;
 `;
@@ -481,52 +537,218 @@ const BackButton = styled.button`
     &:hover { color: var(--text-primary); }
 `;
 
-const DownloadButton = styled.button`
-    display: flex; align-items: center; gap: 8px; background: var(--accent-primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer;
-    &:hover { background: var(--accent-highlight); }
-    &:disabled { background: var(--bg-tertiary); color: var(--text-secondary); cursor: not-allowed; }
+const PrintContainer = styled.div`
+    background: white; 
+    padding: 4rem; 
+    border-radius: 12px; 
+    box-shadow: 0 10px 25px rgba(0,0,0,0.05); 
+    color: #1a1a1a;
+    font-family: 'Inter', system-ui, sans-serif;
+    border: 1px solid #eef0f2;
+    position: relative;
+    max-width: 900px;
+    margin: 0 auto;
+
+    @media print { 
+        box-shadow: none; 
+        padding: 0; 
+        border: none;
+        max-width: 100%;
+    }
 `;
 
-const DeleteButton = styled.button`
-    background: none; border: none; color: #ef4444; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center;
-    &:hover { background: rgba(239, 68, 68, 0.1); }
+const PrintHeader = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    margin-bottom: 3rem;
+    padding-bottom: 2rem;
+    border-bottom: 3px double #0056b3;
 `;
 
-const PrintableArea = styled.div`
-    background: white; padding: 3rem; border-radius: 8px; box-shadow: var(--shadow-sm); color: black;
-    @media print { box-shadow: none; padding: 0; }
+const LogoSection = styled.div`
+    background: #f8fafc;
+    width: 90px;
+    height: 90px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid #e2e8f0;
 `;
 
-const DocHeader = styled.div`
-    text-align: center; margin-bottom: 2.5rem; border-bottom: 2px solid #eee; padding-bottom: 1.5rem;
-    h1 { font-size: 1.8rem; font-weight: 800; margin: 0 0 5px 0; color: #111; }
-    h3 { font-size: 1.1rem; font-weight: 500; margin: 0 0 10px 0; color: #555; }
-    h2 { font-size: 1.4rem; font-weight: 700; margin: 10px 0 0 0; color: #333; text-transform: uppercase; letter-spacing: 1px; }
+const HeaderText = styled.div`
+    h1 { font-size: 2.2rem; font-weight: 900; margin: 0; color: #003366; letter-spacing: -0.5px; }
+    p { font-size: 0.9rem; color: #64748b; margin: 5px 0; font-weight: 500; }
+    h3 { font-size: 1.1rem; font-weight: 700; margin: 10px 0 0 0; color: #0056b3; text-transform: uppercase; letter-spacing: 2px; }
 `;
 
-const SectionInfoCard = styled.div`
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 2rem; background: #f9fafb; padding: 1.5rem; border-radius: 8px; border: 1px solid #eee;
+const DocumentTitleSection = styled.div`
+    text-align: center;
+    margin-bottom: 3rem;
+    h2 { font-size: 1.8rem; font-weight: 900; color: #1e293b; margin: 0; border-bottom: 2px solid #334155; display: inline-block; padding-bottom: 5px; }
+    .semester-badge { 
+        margin-top: 15px; 
+        font-size: 1rem; 
+        font-weight: 700; 
+        color: #007bff; 
+        text-transform: uppercase;
+    }
 `;
 
-const InfoRow = styled.div` display: flex; flex-direction: column; `;
-const InfoLabel = styled.span` font-size: 0.8rem; text-transform: uppercase; color: #666; font-weight: 600; `;
-const InfoValue = styled.span` font-size: 1.1rem; font-weight: 700; color: #111; `;
+const InfoGrid = styled.div`
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 4rem;
+    background: #f8fafc;
+    padding: 2rem;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+`;
+
+const InfoBox = styled.div`
+    grid-column: span ${props => props.$span || 1};
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    
+    label { font-size: 0.7rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }
+    span { font-size: 1.1rem; font-weight: 700; color: #0f172a; }
+`;
+
+const TableHeader = styled.div`
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+`;
+
+const SectionHeader = styled.h3`
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: #1e293b;
+    margin: 0;
+    position: relative;
+    padding-left: 15px;
+    &:before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 4px;
+        height: 80%;
+        background: #0056b3;
+        border-radius: 2px;
+    }
+`;
+
+const PremiumDownloadButton = styled.button`
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #0056b3;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px rgba(0, 86, 179, 0.2);
+
+    &:hover { background: #004494; transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0, 86, 179, 0.3); }
+    &:disabled { background: #cbd5e1; box-shadow: none; cursor: not-allowed; }
+`;
 
 const SubjectTable = styled.table`
-    width: 100%; border-collapse: collapse; margin-bottom: 2rem;
-    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-    th { background: #f3f4f6; font-weight: 700; font-size: 0.9rem; text-transform: uppercase; color: #333; }
-    td { font-size: 0.95rem; color: #111; }
-    tr.empty td { height: 100px; vertical-align: middle; color: #999; }
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 3rem;
+    
+    th {
+        background: #f1f5f9;
+        text-align: left;
+        padding: 1rem;
+        font-size: 0.8rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        color: #475569;
+        border-bottom: 2px solid #cbd5e1;
+    }
+
+    td {
+        padding: 1.25rem 1rem;
+        font-size: 1rem;
+        color: #1e293b;
+        border-bottom: 1px solid #e2e8f0;
+        vertical-align: middle;
+    }
+
+    .subject-title-cell {
+        font-weight: 600;
+        color: #0f172a;
+    }
 `;
 
-const Code = styled.span` font-family: monospace; font-weight: 600; `;
-const TotalRow = styled.tr` background: #f9fafb; td { font-weight: 700; } `;
-
-const FooterNote = styled.div`
-    margin-top: 3rem; font-size: 0.8rem; color: #666; text-align: center; border-top: 1px solid #eee; padding-top: 1rem;
+const CodeBadge = styled.span`
+    background: #f1f5f9;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: #0056b3;
+    border: 1px solid #e2e8f0;
 `;
 
+const DeleteAction = styled.button`
+    background: none;
+    border: none;
+    color: #ef4444;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    transition: all 0.2s;
+    &:hover { background: #fee2e2; transform: scale(1.1); }
+`;
+
+const TotalRow = styled.tr`
+    background: #f8fafc;
+    td { border-top: 2px solid #0f172a !important; border-bottom: none !important; }
+`;
+
+const SignatureSection = styled.div`
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4rem;
+    margin-top: 5rem;
+    padding-top: 2rem;
+
+    .sig-block {
+        text-align: center;
+        .line { border-bottom: 2px solid #1e293b; margin-bottom: 10px; }
+        span { font-size: 0.9rem; font-weight: 700; text-transform: uppercase; color: #475569; }
+    }
+`;
+
+const OfficialSeal = styled.div`
+    margin-top: 4rem;
+    text-align: center;
+    p { 
+        display: inline-block;
+        border: 2px dashed #cbd5e1;
+        padding: 15px 30px;
+        color: #94a3b8;
+        font-weight: 800;
+        font-size: 0.8rem;
+        letter-spacing: 2px;
+    }
+`;
 
 const AssignmentCard = styled.div`
     background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem;

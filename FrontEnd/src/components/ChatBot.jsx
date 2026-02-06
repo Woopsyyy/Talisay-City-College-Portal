@@ -1,21 +1,24 @@
 import React, { useState, useRef, useEffect } from "react";
 import { MessageCircle, Send, X, Sparkles } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
-import { AuthAPI, StudentAPI } from "../services/api";
+import { useAuth } from "../context/AuthContext";
+import { StudentAPI, PublicAPI } from "../services/api";
 import "./ChatBot.css";
 
 const ChatBot = () => {
+  const { user: currentUser } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([
     {
       role: "bot",
       content:
-        "👋 Hello! I'm your TCC Assistant. I can help you with:\n\n• Your sanctions and violations\n• Your enrollment status\n• Your grades and academic info\n• Your class schedule\n• Your personal information\n• Toggle dark/light mode\n• Current date and time\n\nWhat would you like to know?",
+        "👋 Hello! I'm your TCC Assistant.\n\nYou can ask about:\n• Toggle dark/light mode\n• Current date and time\n• Building count\n\nLog in to access your personal information (grades, sanctions, section, and profile).",
     },
   ]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [userCache, setUserCache] = useState(null);
+  const [memory, setMemory] = useState([]);
   const messagesEndRef = useRef(null);
   const { theme, setMode } = useTheme();
 
@@ -24,18 +27,44 @@ const ChatBot = () => {
   }, [messages, isOpen]);
 
   useEffect(() => {
-    if (isOpen && !userCache) {
+    if (isOpen && currentUser && !userCache) {
       fetchUserData();
     }
-  }, [isOpen]);
+  }, [isOpen, currentUser]);
+
+  useEffect(() => {
+    const key = currentUser
+      ? `tcc_chat_memory_${currentUser.id}`
+      : "tcc_chat_memory_public";
+    try {
+      const stored = localStorage.getItem(key);
+      setMemory(stored ? JSON.parse(stored) : []);
+    } catch {
+      setMemory([]);
+    }
+  }, [currentUser]);
+
+  const persistMemory = (nextMemory) => {
+    const key = currentUser
+      ? `tcc_chat_memory_${currentUser.id}`
+      : "tcc_chat_memory_public";
+    setMemory(nextMemory);
+    try {
+      localStorage.setItem(key, JSON.stringify(nextMemory.slice(-50)));
+    } catch {
+      // ignore storage errors
+    }
+  };
 
   const fetchUserData = async () => {
     try {
-      const session = await AuthAPI.checkSession();
-      if (session && session.user) {
-        const assignment = await StudentAPI.getAssignment();
+      if (currentUser) {
+        let assignment = null;
+        if (currentUser.role === "student") {
+          assignment = await StudentAPI.getAssignment();
+        }
         setUserCache({
-          user: session.user,
+          user: currentUser,
           assignment: assignment,
         });
       }
@@ -55,11 +84,19 @@ const ChatBot = () => {
 
     try {
       const responseText = await processQuery(input);
-      
+
       setTimeout(() => {
-         setMessages((prev) => [...prev, { role: "bot", content: responseText }]);
-         setIsTyping(false);
+        setMessages((prev) => [
+          ...prev,
+          { role: "bot", content: responseText },
+        ]);
+        setIsTyping(false);
       }, 600);
+
+      if (responseText && responseText.length < 500) {
+        const nextMemory = [...memory, { q: input, a: responseText }];
+        persistMemory(nextMemory);
+      }
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -76,7 +113,6 @@ const ChatBot = () => {
   const processQuery = async (query) => {
     const q = query.toLowerCase();
 
-    
     const otherUserIndicators = [
       "his ",
       "her ",
@@ -92,7 +128,7 @@ const ChatBot = () => {
     ];
 
     const isAskingAboutOthers = otherUserIndicators.some((indicator) =>
-      q.includes(indicator)
+      q.includes(indicator),
     );
     const isAskingAboutSelf =
       q.includes("my ") ||
@@ -105,7 +141,6 @@ const ChatBot = () => {
       return "🔒 I can only provide information about YOUR account for privacy and security reasons. Please ask about your own information using 'my' or 'I'.";
     }
 
-    
     const personalQueryKeywords = [
       "sanction",
       "grade",
@@ -117,22 +152,14 @@ const ChatBot = () => {
       "info",
       "name",
       "email",
+      "profile",
     ];
     if (personalQueryKeywords.some((keyword) => q.includes(keyword))) {
-      if (!userCache) {
-        try {
-          await fetchUserData();
-        } catch {
-          return "🔐 Please log in to access your personal information.";
-        }
-      }
-
-      if (!userCache || !userCache.user) {
-        return "🔐 You need to be logged in to access this information. Please log in first.";
+      if (!currentUser) {
+        return "🔐 Please log in to access your personal information.";
       }
     }
 
-    
     if (q.includes("dark") && (q.includes("mode") || q.includes("theme"))) {
       setMode("dark");
       return "🌙 Dark mode activated! Your eyes will thank you.";
@@ -141,14 +168,38 @@ const ChatBot = () => {
       setMode("light");
       return "☀️ Light mode activated! Let there be light!";
     }
+    if (q.includes("toggle") && (q.includes("theme") || q.includes("mode"))) {
+      const nextMode = theme === "dark" ? "light" : "dark";
+      setMode(nextMode);
+      return nextMode === "dark"
+        ? "🌙 Dark mode activated!"
+        : "☀️ Light mode activated!";
+    }
 
-    
+    const learned = findLearnedResponse(q);
+    if (learned) {
+      return learned;
+    }
+
+    if (!currentUser) {
+      if (q.includes("building")) {
+        try {
+          const stats = await PublicAPI.getStats();
+          return `🏢 There are currently **${stats.buildings || 0}** campus buildings.`;
+        } catch {
+          return "🏢 I couldn't retrieve the building count right now.";
+        }
+      }
+    }
+
     if (
       q.includes("sanction") ||
       q.includes("violation") ||
       q.includes("offense") ||
       q.includes("discipline")
     ) {
+      if (currentUser?.role !== "student")
+        return "ℹ️ Sanction lookup is only available for students.";
       try {
         const assignment =
           userCache?.assignment || (await StudentAPI.getAssignment());
@@ -165,65 +216,38 @@ const ChatBot = () => {
           return "✅ Good news! You have no active sanctions on your record. Keep up the good behavior!";
         }
       } catch (err) {
-        return "❌ I couldn't retrieve your sanction records. You might not be assigned to a section yet, or there was a connection issue.";
+        return "❌ I couldn't retrieve your sanction records.";
       }
     }
 
-    
     if (q.includes("grade") || q.includes("gpa") || q.includes("academic")) {
-      return "📊 You can view your grades and academic performance in the **My Grades** section of your dashboard.\n\nIf you need specific grade information, please visit your student portal.";
+      return "📊 You can view your grades and academic performance in the **My Grades** section of your dashboard.";
     }
 
-    
     if (
       q.includes("schedule") ||
       q.includes("class") ||
       q.includes("subject") ||
       q.includes("timetable")
     ) {
+      if (currentUser?.role !== "student")
+        return "ℹ️ Detailed schedule bot lookup is tailored for students. Please check your teacher/admin dashboard.";
       try {
         const assignment =
           userCache?.assignment || (await StudentAPI.getAssignment());
 
         if (assignment && assignment.section) {
           return `📅 **Your Class Information**\n\n🏫 **Section:** ${
-            assignment.section.section_name
-          }\n📚 **Year Level:** ${
-            assignment.section.year_level || "N/A"
+            assignment.section
           }\n\nFor detailed schedules, please check your student dashboard.`;
         } else {
-          return "📅 You don't appear to be assigned to a section yet. Please contact the registrar's office.";
+          return "📅 You don't appear to be assigned to a section yet.";
         }
       } catch (err) {
-        return "❌ I couldn't retrieve your class schedule. Please try again or contact support.";
+        return "❌ I couldn't retrieve your class schedule.";
       }
     }
 
-    
-    if (
-      q.includes("enroll") ||
-      q.includes("admission") ||
-      q.includes("register")
-    ) {
-      try {
-        const assignment =
-          userCache?.assignment || (await StudentAPI.getAssignment());
-
-        if (assignment) {
-          return `✅ **Enrollment Status: Active**\n\n🏫 You are currently enrolled in:\n• **Section:** ${
-            assignment.section?.section_name || "N/A"
-          }\n• **Year Level:** ${
-            assignment.section?.year_level || "N/A"
-          }\n\nFor enrollment concerns, visit the Admissions Office.`;
-        } else {
-          return "⚠️ You don't appear to be enrolled in any section yet. Please visit the Admissions Office for enrollment assistance.";
-        }
-      } catch (err) {
-        return "❌ I couldn't verify your enrollment status. Please contact the registrar.";
-      }
-    }
-
-    
     if (
       q.includes("my name") ||
       q.includes("my email") ||
@@ -231,44 +255,10 @@ const ChatBot = () => {
       q.includes("who am i") ||
       q.includes("profile")
     ) {
-      try {
-        const user = userCache?.user || (await AuthAPI.checkSession()).user;
-
-        if (user) {
-          return `👤 **Your Profile Information**\n\n📧 **Email:** ${user.email}\n🆔 **User ID:** ${user.id}\n👥 **Role:** ${user.role}\n\nTo update your information, please visit your profile settings.`;
-        }
-      } catch (err) {
-        return "❌ I couldn't retrieve your profile information.";
-      }
+      if (!currentUser) return "🔐 Please log in first.";
+      return `👤 **Your Profile Information**\n\n📧 **Email:** ${currentUser.email || "Not available"}\n🆔 **User ID:** ${currentUser.school_id || currentUser.id}\n👥 **Role:** ${currentUser.role}`;
     }
 
-    
-    if (
-      q.includes("section") ||
-      q.includes("classmates") ||
-      q.includes("my class")
-    ) {
-      try {
-        const assignment =
-          userCache?.assignment || (await StudentAPI.getAssignment());
-
-        if (assignment && assignment.section) {
-          return `🏫 **Your Section Details**\n\n📚 **Section Name:** ${
-            assignment.section.section_name
-          }\n📊 **Year Level:** ${
-            assignment.section.year_level || "N/A"
-          }\n👥 **Adviser:** ${
-            assignment.section.adviser_name || "Not assigned"
-          }\n\nFor classmate information, please check your section roster in the dashboard.`;
-        } else {
-          return "📚 You are not currently assigned to any section. Please contact your registrar.";
-        }
-      } catch (err) {
-        return "❌ I couldn't retrieve your section information.";
-      }
-    }
-
-    
     if (
       q.includes("time") ||
       q.includes("date") ||
@@ -286,46 +276,69 @@ const ChatBot = () => {
       return `🕐 **Current Date & Time**\n\n📅 ${dateStr}\n⏰ ${timeStr}`;
     }
 
-    
     if (
       q.includes("help") ||
       q.includes("what can you") ||
       q.includes("assist") ||
-      q.includes("how do")
+      q.includes("how do") ||
+      q.uncludes("tabang") ||
+      q.uncludes("tabang yawa")
     ) {
-      return "🤖 **I can help you with:**\n\n✓ Check your sanctions/violations\n✓ View your enrollment status\n✓ Check your section and class info\n✓ Access your profile information\n✓ Get current date and time\n✓ Toggle dark/light mode\n\n💡 Just ask me naturally! For example: 'Do I have any sanctions?' or 'What's my section?'";
+      if (!currentUser) {
+        return "🤖 **I can help you with:**\n\n✓ Toggle dark/light mode\n✓ Current date and time\n✓ Building count\n\nLog in to access your personal information.";
+      }
+      return "🤖 **I can help you with:**\n\n✓ Check your sanctions/violations\n✓ View your enrollment status\n✓ Check your section and class info\n✓ Access your profile information\n✓ Get current date and time\n✓ Toggle dark/light mode";
     }
 
-    
     if (
       q.includes("hello") ||
       q.includes("hi ") ||
       q === "hi" ||
       q.includes("hey")
     ) {
-      return "👋 Hello! How can I assist you today? Feel free to ask about your sanctions, grades, schedule, or any student-related information!";
+      return "👋 Hello! How can I assist you today?";
     }
 
-    
     if (q.includes("bye") || q.includes("goodbye") || q.includes("see you")) {
-      return "👋 Goodbye! Feel free to reach out anytime you need assistance. Have a great day!";
+      return "👋 Goodbye! Have a great day!";
     }
 
-    
     if (q.includes("thank") || q.includes("thanks")) {
-      return "😊 You're welcome! I'm always here to help. Is there anything else you'd like to know?";
+      return "😊 You're welcome!";
     }
 
-    
-    return "🤔 I'm not sure I understand that question. Try asking about:\n\n• Your sanctions\n• Your grades\n• Your schedule\n• Your enrollment\n• Dark/light mode\n\nOr type 'help' to see what I can do!";
+    return "🤔 I'm not sure I understand. Try asking about your sanctions, grades, or schedule. Or type 'help'!";
   };
 
-  const quickActions = [
-    { label: "My Sanctions", query: "Do I have any sanctions?" },
-    { label: "My Section", query: "What is my section?" },
-    { label: "Toggle Theme", query: "Toggle dark mode" },
-    { label: "Help", query: "What can you help me with?" },
-  ];
+  const findLearnedResponse = (q) => {
+    if (!memory || memory.length === 0) return null;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return null;
+    let best = { score: 0, response: null };
+    for (const item of memory) {
+      const ref = (item.q || "").toLowerCase();
+      const refTokens = ref.split(/\s+/).filter(Boolean);
+      if (refTokens.length === 0) continue;
+      const overlap = tokens.filter((t) => refTokens.includes(t)).length;
+      const score = overlap / Math.max(tokens.length, refTokens.length);
+      if (score > best.score) best = { score, response: item.a };
+    }
+    return best.score >= 0.6 ? best.response : null;
+  };
+
+  const quickActions = currentUser
+    ? [
+        { label: "My Sanctions", query: "Do I have any sanctions?" },
+        { label: "My Section", query: "What is my section?" },
+        { label: "Toggle Theme", query: "Toggle dark mode" },
+        { label: "Help", query: "What can you help me with?" },
+      ]
+    : [
+        { label: "Buildings", query: "How many buildings?" },
+        { label: "Toggle Theme", query: "Toggle dark mode" },
+        { label: "Date & Time", query: "What time is it now?" },
+        { label: "Help", query: "What can you help me with?" },
+      ];
 
   const handleQuickAction = (query) => {
     setInput(query);

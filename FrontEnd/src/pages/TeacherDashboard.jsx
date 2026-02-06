@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
-import { AuthAPI, getAvatarUrl } from "../services/api";
+import { useAuth } from "../context/AuthContext";
 import {
   Megaphone,
   CalendarDays,
@@ -25,45 +25,31 @@ import SettingsView from "../components/views/teacher/SettingsView";
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState(null);
-  const [currentSection, setCurrentSection] = useState("schedule");
-  const [avatarUrl, setAvatarUrl] = useState("/images/sample.jpg");
-  const [loading, setLoading] = useState(true);
+  const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
+  const location = useLocation();
+  const pathParts = location.pathname.split('/');
+  const currentSection = pathParts[pathParts.length - 1] === 'teachers' ? 'schedule' : pathParts[pathParts.length - 1];
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const data = await AuthAPI.checkSession();
-        if (data.authenticated && data.user.role === "teacher") {
-          setCurrentUser(data.user);
-          if (data.user.avatar_url) {
-            setAvatarUrl(data.user.avatar_url);
-          } else if (data.user.image_path) {
-            const url = await getAvatarUrl(data.user.id, data.user.image_path);
-            setAvatarUrl(url);
-          }
-        } else {
-          
-          if (data.authenticated) {
-              if (data.user.role === 'admin') navigate('/admin/dashboard');
-              else navigate('/home');
-          } else {
-              navigate("/");
-          }
-        }
-      } catch (_) {
+    const roles = Array.isArray(currentUser?.roles) && currentUser.roles.length
+      ? currentUser.roles
+      : currentUser?.role ? [currentUser.role] : [];
+    if (!authLoading && (!currentUser || !roles.includes("teacher"))) {
+      if (currentUser) {
+        if (roles.includes('admin')) navigate('/admin/dashboard');
+        else if (roles.includes('nt')) navigate('/nt/dashboard');
+        else if (roles.includes('teacher')) navigate('/teachers');
+        else navigate('/home');
+      } else {
         navigate("/");
-      } finally {
-        setLoading(false);
       }
-    };
-    checkAuth();
-  }, [navigate]);
+    }
+  }, [authLoading, currentUser, navigate]);
 
   const handleLogout = async (e) => {
     e.preventDefault();
     try {
-      await AuthAPI.logout();
+      await logout();
       navigate("/");
     } catch (_) {
       navigate("/");
@@ -107,31 +93,32 @@ const TeacherDashboard = () => {
   };
 
   const renderContent = () => {
-    switch (currentSection) {
-      case "schedule":
-        return <ScheduleView />;
-      case "announcements":
-        return <AnnouncementsView />;
-      case "transparency":
-        return <TransparencyView />;
-      case "grade_system":
-        return <GradeSystemView />;
-      case "evaluation":
-        return <EvaluationView />;
-      case "settings":
-        return <SettingsView currentUser={currentUser} />;
-      default:
-        return null;
-    }
+    return (
+      <Routes>
+        <Route path="schedule" element={<ScheduleView />} />
+        <Route path="announcements" element={<AnnouncementsView />} />
+        <Route path="transparency" element={<TransparencyView />} />
+        <Route path="grade_system" element={<GradeSystemView />} />
+        <Route path="evaluation" element={<EvaluationView />} />
+        <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+        <Route path="/" element={<Navigate to="schedule" replace />} />
+        <Route path="*" element={<Navigate to="schedule" replace />} />
+      </Routes>
+    );
   };
 
-  if (loading) {
+  if (authLoading && !currentUser) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "var(--bg-primary)" }}>
         <Loader />
       </div>
     );
   }
+
+  const currentRoles = Array.isArray(currentUser?.roles) && currentUser.roles.length
+    ? currentUser.roles
+    : currentUser?.role ? [currentUser.role] : [];
+  if (!currentUser || !currentRoles.includes("teacher")) return null;
 
   return (
     <DashboardContainer>
@@ -154,7 +141,7 @@ const TeacherDashboard = () => {
             <NavItem
               key={item.id}
               $active={currentSection === item.id}
-              onClick={() => setCurrentSection(item.id)}
+              onClick={() => navigate(`/teachers/${item.id}`)}
             >
               <item.icon size={20} />
               <span>{item.label}</span>

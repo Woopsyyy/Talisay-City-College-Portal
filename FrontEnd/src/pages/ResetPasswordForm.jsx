@@ -10,7 +10,7 @@ const ResetPasswordForm = () => {
     <div className="login-card" id="loginCard">
       <div className="login-header">
         <img
-          src="/images/tcc logo.png"
+          src="/images/tcc-logo.png"
           alt="TCC Logo"
           className="school-logo"
         />

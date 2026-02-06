@@ -21,8 +21,14 @@ const ForgotPassword = () => {
     try {
       const response = await AuthAPI.resetPassword(username);
       if (response.success) {
-        setNewPassword(response.new_password);
-        setMessage("Password reset successful!");
+        // Handle both possible structures (direct or wrapped in data)
+        const newPass = response.new_password || (response.data && response.data.new_password);
+        if (newPass) {
+            setNewPassword(newPass);
+            setMessage("Password reset successful!");
+        } else {
+            setError("Password reset indicated success, but no password was returned.");
+        }
       }
     } catch (err) {
       setError(err.message || "Failed to reset password. User may not exist.");
@@ -37,7 +43,7 @@ const ForgotPassword = () => {
       <div className="login-card" id="loginCard">
         <div className="login-header">
           <img
-            src="/images/tcc logo.png"
+            src="/images/tcc-logo.png"
             alt="TCC Logo"
             className="school-logo"
           />
@@ -83,18 +89,31 @@ const ForgotPassword = () => {
               </button>
             </>
           ) : (
-            <div className="alert alert-success mt-3 text-center">
-              <h4>Password Changed!</h4>
-              <p>Your new temporary password is:</p>
-              <div className="bg-white p-2 rounded border border-success mb-3">
-                <strong className="fs-4 text-dark">{newPassword}</strong>
+            <div className="text-center mt-4 fade-in">
+              <div className="mb-4">
+                <i className="bi bi-check-circle-fill text-success" style={{ fontSize: '3rem' }}></i>
               </div>
-              <p className="text-muted small">
-                Please copy this password and use it to log in. You can change it later in your profile settings.
+              <h4 className="mb-3 fw-bold">Password Reset Successful</h4>
+              <p className="text-muted mb-3">
+                Your password has been reset. Please use the following temporary password to log in:
               </p>
-              <Link to="/" className="btn btn-success w-100">
-                Go to Login
-              </Link>
+              
+              <div className="password-display mb-4 p-3 rounded" style={{ 
+                  background: '#f8f9fa', 
+                  border: '2px dashed #dee2e6',
+                  position: 'relative'
+              }}>
+                <code className="fs-2 fw-bold text-dark d-block">{newPassword}</code>
+                <small className="text-muted d-block mt-2">
+                    <i className="bi bi-clipboard me-1"></i> Copy this password
+                </small>
+              </div>
+
+              <div className="d-grid gap-2">
+                <Link to="/" className="btn btn-primary btn-lg">
+                  Back to Login
+                </Link>
+              </div>
             </div>
           )}
         </form>

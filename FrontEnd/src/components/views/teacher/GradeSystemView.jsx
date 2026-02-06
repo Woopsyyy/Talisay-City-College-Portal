@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { TeacherAPI } from '../../../services/api';
 import { Users, ChevronLeft, Search, Save, Award, BookOpen, Clock, Calendar } from 'lucide-react';
@@ -166,6 +166,11 @@ const GradeSystemView = () => {
     }
 
     
+    const sortedStudents = useMemo(
+        () => [...students].sort((a, b) => a.full_name.localeCompare(b.full_name)),
+        [students]
+    );
+
     return (
         <Container>
             <DetailHeader>
@@ -184,9 +189,7 @@ const GradeSystemView = () => {
                 <>
                     <StudentGrid>
                         {}
-                        {students
-                            .sort((a, b) => a.full_name.localeCompare(b.full_name))
-                            .map((student) => {
+                        {sortedStudents.map((student) => {
                                 const g = grades[student.id];
                                 return (
                                     <StudentCard key={student.id} onClick={() => handleEditClick(student)}>

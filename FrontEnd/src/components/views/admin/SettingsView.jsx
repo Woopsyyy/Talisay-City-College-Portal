@@ -1,20 +1,20 @@
 import React, { useState } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
-import { Settings, Trash2, FolderX, AlertTriangle, CheckCircle, Info, Image as ImageIcon, Database, Download, Clock } from 'lucide-react';
+import { Settings, Trash2, AlertTriangle, CheckCircle, Info, Image as ImageIcon, Database, Download, Clock, Upload } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 
 const SettingsView = () => {
     const [pictureResult, setPictureResult] = useState(null);
-    const [codebaseResult, setCodebaseResult] = useState(null);
     const [loadingPictures, setLoadingPictures] = useState(false);
-    const [loadingCodebase, setLoadingCodebase] = useState(false);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
     
     const [backups, setBackups] = useState([]);
     const [loadingBackup, setLoadingBackup] = useState(false);
     const [backupResult, setBackupResult] = useState(null);
+    const [importLoading, setImportLoading] = useState(false);
+    const [importFile, setImportFile] = useState(null);
     const [scheduleEnabled, setScheduleEnabled] = useState(false);
     const [scheduleFrequency, setScheduleFrequency] = useState('daily');
     const [scheduleTime, setScheduleTime] = useState('02:00');
@@ -37,9 +37,10 @@ const SettingsView = () => {
     const loadBackups = async () => {
         try {
             const data = await AdminAPI.getBackups();
-            setBackups(data.backups || []);
+            setBackups(Array.isArray(data) ? data : (data.backups || []));
         } catch (err) {
             console.error("Error loading backups:", err);
+            setBackups([]);
         }
     };
 
@@ -51,7 +52,8 @@ const SettingsView = () => {
         setLoadingBackup(true);
         setBackupResult(null);
         try {
-            const result = await AdminAPI.createBackup();
+            const res = await AdminAPI.createBackup();
+            const result = res.data || res;
             setBackupResult(result);
             setToast({ show: true, message: 'Database backup created successfully!', type: 'success' });
             await loadBackups();
@@ -62,6 +64,69 @@ const SettingsView = () => {
         } finally {
             setLoadingBackup(false);
         }
+    };
+
+    const handleImportDatabase = async (e) => {
+        e.preventDefault();
+        if (!importFile) {
+            setToast({ show: true, message: "Please select a database file (.sql)", type: "error" });
+            return;
+        }
+
+        setConfirmationModal({
+            isOpen: true,
+            type: 'import',
+            title: 'Import Database',
+            message: 'WARNING: This will overwrite your current database with the uploaded file. This action cannot be undone. Are you sure?'
+        });
+    };
+
+    const executeImport = async () => {
+        setImportLoading(true);
+        const formData = new FormData();
+        formData.append('database', importFile);
+
+        try {
+            // Using a separate endpoint for import
+            const apiBase = window.location.hostname === 'localhost' ? '/api' : `http://${window.location.hostname}:8001/api`;
+            const response = await fetch(`${apiBase}/admin/backup/import`, {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'Accept': 'application/json',
+                    // Note: Browser will set Content-Type with boundary automatically for FormData
+                }
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                setToast({ show: true, message: "Database imported successfully!", type: "success" });
+                setImportFile(null);
+                const fileInput = document.getElementById('db-import-file');
+                if (fileInput) fileInput.value = '';
+            } else {
+                throw new Error(result.error || "Import failed");
+            }
+        } catch (err) {
+            console.error("Import error:", err);
+            setToast({ show: true, message: "Error importing database: " + err.message, type: "error" });
+        } finally {
+            setImportLoading(false);
+        }
+    };
+
+    const handleDownloadBackup = (url, filename) => {
+        if (!url) return;
+        
+        // Use the absolute URL from the backend if available
+        const downloadUrl = url;
+        
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     };
 
     const handleScheduleChange = () => {
@@ -81,15 +146,6 @@ const SettingsView = () => {
             type: 'pictures',
             title: 'Clean Up Pictures',
             message: 'Are you sure you want to clean up unused pictures? This action cannot be undone.'
-        });
-    };
-
-    const handleCleanupCodebase = () => {
-        setConfirmationModal({
-            isOpen: true,
-            type: 'codebase',
-            title: 'Clean Up Codebase',
-            message: 'WARNING: This will permanently delete empty folders and orphaned files from your project. This action cannot be undone. Are you absolutely sure?'
         });
     };
 
@@ -119,24 +175,8 @@ const SettingsView = () => {
              } finally {
                  setLoadingPictures(false);
              }
-        } else if (type === 'codebase') {
-             setLoadingCodebase(true);
-             setCodebaseResult(null);
-             try {
-                 const result = await AdminAPI.cleanupCodebase();
-                 setCodebaseResult(result);
-                  if (result.success && result.totalDeleted > 0) {
-                     setToast({ show: true, message: `Cleanup complete. Deleted ${result.totalDeleted} items.`, type: 'success' });
-                 } else if (result.success) {
-                     setToast({ show: true, message: "Codebase is clean.", type: 'info' });
-                 }
-             } catch (err) {
-                 console.error("Cleanup codebase error:", err);
-                 setCodebaseResult({ error: err.message || "An error occurred." });
-                  setToast({ show: true, message: "Error cleaning up codebase.", type: 'error' });
-             } finally {
-                 setLoadingCodebase(false);
-             }
+        } else if (type === 'import') {
+             await executeImport();
         }
     };
 
@@ -178,7 +218,7 @@ const SettingsView = () => {
                                 
                                 <InfoBox className="blue">
                                     <Info size={16} />
-                                    Creates a complete SQL dump of the database in <code>BackEnd/backups</code>.
+                                    Creates a complete SQL dump of the database in <code>storage/app/backups</code>.
                                 </InfoBox>
 
                                 <ActionButton 
@@ -207,11 +247,14 @@ const SettingsView = () => {
                                         <h5>Recent Backups ({backups.length})</h5>
                                         {backups.slice(0, 5).map((backup, idx) => (
                                             <BackupItem key={idx}>
-                                                <div>
+                                                <div className="info">
                                                     <strong>{backup.filename}</strong>
-                                                    <small>{new Date(backup.created * 1000).toLocaleString()}</small>
+                                                    <small>{backup.created_at || new Date(backup.created * 1000).toLocaleString()}</small>
+                                                    <div className="size">{backup.size}</div>
                                                 </div>
-                                                <span>{formatSize(backup.size)}</span>
+                                                <DownloadAction onClick={() => handleDownloadBackup(backup.download_url, backup.filename)}>
+                                                    <Download size={16} />
+                                                </DownloadAction>
                                             </BackupItem>
                                         ))}
                                     </BackupList>
@@ -221,6 +264,45 @@ const SettingsView = () => {
 
                         <div className="col-lg-6">
                             <ActionCard>
+                                <ActionHeader>
+                                    <div>
+                                        <h4>Import Database</h4>
+                                        <p>Restore or upload a database file.</p>
+                                    </div>
+                                    <IconWrapper className="orange">
+                                        <Upload size={24} />
+                                    </IconWrapper>
+                                </ActionHeader>
+
+                                <InfoBox className="orange">
+                                    <AlertTriangle size={16} />
+                                    <strong>Caution:</strong> Importing will overwrite your current database.
+                                </InfoBox>
+
+                                <FormGroup style={{ marginBottom: '1rem' }}>
+                                    <label>SQL File (.sql)</label>
+                                    <div className="file-input-wrapper">
+                                        <input 
+                                            id="db-import-file"
+                                            type="file" 
+                                            accept=".sql"
+                                            onChange={(e) => setImportFile(e.target.files[0])}
+                                        />
+                                    </div>
+                                </FormGroup>
+
+                                <ActionButton 
+                                    onClick={handleImportDatabase} 
+                                    className="warning"
+                                    disabled={importLoading || !importFile}
+                                >
+                                    {importLoading ? 'Importing...' : 'Import Database'}
+                                </ActionButton>
+                            </ActionCard>
+                        </div>
+
+                        <div className="col-lg-12">
+                            <ActionCard style={{ marginTop: '1.5rem' }}>
                                 <ActionHeader>
                                     <div>
                                         <h4>Scheduled Backup</h4>
@@ -250,8 +332,8 @@ const SettingsView = () => {
                                     </ToggleSwitch>
 
                                     {scheduleEnabled && (
-                                        <>
-                                            <FormGroup>
+                                        <div className="d-flex gap-3 flex-wrap">
+                                            <FormGroup style={{ flex: 1 }}>
                                                 <label>Frequency</label>
                                                 <select 
                                                     value={scheduleFrequency} 
@@ -264,7 +346,7 @@ const SettingsView = () => {
                                                 </select>
                                             </FormGroup>
 
-                                            <FormGroup>
+                                            <FormGroup style={{ flex: 1 }}>
                                                 <label>Time</label>
                                                 <input 
                                                     type="time" 
@@ -273,11 +355,13 @@ const SettingsView = () => {
                                                 />
                                             </FormGroup>
 
-                                            <ScheduleInfo>
-                                                <CheckCircle size={16} />
-                                                Next backup: {scheduleFrequency} at {scheduleTime}
-                                            </ScheduleInfo>
-                                        </>
+                                            <div style={{ flex: '100%' }}>
+                                                <ScheduleInfo>
+                                                    <CheckCircle size={16} />
+                                                    Next backup: {scheduleFrequency} at {scheduleTime}
+                                                </ScheduleInfo>
+                                            </div>
+                                        </div>
                                     )}
                                 </ScheduleConfig>
                             </ActionCard>
@@ -308,7 +392,7 @@ const SettingsView = () => {
                                 
                                 <InfoBox className="blue">
                                     <Info size={16} />
-                                    Permanently deletes unused files from <code>Database/upload</code>.
+                                    Permanently deletes unused files from <code>uploads/profiles</code>.
                                 </InfoBox>
 
                                 <ActionButton 
@@ -343,57 +427,6 @@ const SettingsView = () => {
                             </ActionCard>
                         </div>
 
-                        {}
-                        <div className="col-lg-6">
-                            <ActionCard>
-                                <ActionHeader>
-                                    <div>
-                                        <h4>Clean Up Codebase</h4>
-                                        <p>Remove empty folders and orphaned files.</p>
-                                    </div>
-                                    <IconWrapper className="orange">
-                                        <FolderX size={24} />
-                                    </IconWrapper>
-                                </ActionHeader>
-                                
-                                <InfoBox className="orange">
-                                    <AlertTriangle size={16} />
-                                    <strong>Warning:</strong> Permanently deletes files matching cleanup patterns.
-                                </InfoBox>
-
-                                <ActionButton 
-                                    onClick={handleCleanupCodebase} 
-                                    className="warning"
-                                    disabled={loadingCodebase}
-                                >
-                                    {loadingCodebase ? 'Scanning...' : 'Start Cleanup'}
-                                </ActionButton>
-
-                                {codebaseResult && (
-                                    <ResultBox>
-                                        {codebaseResult.error ? (
-                                            <div className="error"><AlertTriangle size={14} /> {codebaseResult.error}</div>
-                                        ) : codebaseResult.success ? (
-                                            codebaseResult.totalDeleted > 0 ? (
-                                                <div className="success">
-                                                    <div><CheckCircle size={14} /> Deleted {codebaseResult.totalDeleted} items.</div>
-                                                    {codebaseResult.deleted && (
-                                                        <Details>
-                                                            <summary>View Details</summary>
-                                                            <ul>
-                                                                {codebaseResult.deleted.map((f, i) => <li key={i}>{f}</li>)}
-                                                            </ul>
-                                                        </Details>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <div className="info"><Info size={14} /> Codebase is clean.</div>
-                                            )
-                                        ) : null}
-                                    </ResultBox>
-                                )}
-                            </ActionCard>
-                        </div>
                     </div>
                 </CardBody>
             </MainCard>
@@ -554,13 +587,37 @@ const BackupItem = styled.div`
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.5rem 0;
+    padding: 0.75rem 0;
     font-size: 0.85rem;
     border-bottom: 1px solid rgba(128, 128, 128, 0.1);
     &:last-child { border-bottom: none; }
-    strong { display: block; color: var(--text-primary); font-size: 0.85rem; }
-    small { color: var(--text-secondary); font-size: 0.75rem; }
-    span { color: var(--text-secondary); font-weight: 500; }
+    
+    .info {
+        flex-grow: 1;
+        strong { display: block; color: var(--text-primary); font-size: 0.85rem; margin-bottom: 2px; }
+        small { color: var(--text-secondary); font-size: 0.75rem; display: block; margin-bottom: 2px; }
+        .size { font-size: 0.75rem; color: var(--accent-primary); font-weight: 600; }
+    }
+`;
+
+const DownloadAction = styled.button`
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-primary);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    
+    &:hover {
+        background: var(--accent-primary);
+        color: white;
+        transform: translateY(-1px);
+    }
 `;
 
 const ScheduleConfig = styled.div`

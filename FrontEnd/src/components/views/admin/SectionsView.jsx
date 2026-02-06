@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { YEAR_LEVEL_OPTIONS, COURSE_MAJOR_CONFIG } from '../../../utils/constants';
@@ -141,12 +141,12 @@ const SectionsView = () => {
         }
     };
 
-    const sectionsByYear = sections.reduce((acc, section) => {
+    const sectionsByYear = useMemo(() => sections.reduce((acc, section) => {
         const year = section.grade_level || section.year || 'Unknown';
         if (!acc[year]) acc[year] = [];
         acc[year].push(section);
         return acc;
-    }, {});
+    }, {}), [sections]);
 
     const getYearLabel = (yearNum) => {
         switch (String(yearNum)) {

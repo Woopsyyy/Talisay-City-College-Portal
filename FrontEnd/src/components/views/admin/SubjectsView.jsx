@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { COURSE_MAJOR_CONFIG, SEMESTER_OPTIONS, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
@@ -6,6 +6,7 @@ import { formatOrdinal } from '../../../utils/formatting';
 import { BookOpen, PlusCircle, Trash2, Edit2, Search, Filter, Book, Hash, GraduationCap, Calendar, Clock, Save, XCircle, X } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
+import useDebouncedValue from '../../../hooks/useDebouncedValue';
 
 const SubjectsView = () => {
     const [subjects, setSubjects] = useState([]);
@@ -38,6 +39,8 @@ const SubjectsView = () => {
         year: '',
         semester: ''
     });
+    const [searchTerm, setSearchTerm] = useState('');
+    const debouncedSearchTerm = useDebouncedValue(searchTerm, 200);
 
     useEffect(() => {
         fetchSubjects();
@@ -159,20 +162,26 @@ const SubjectsView = () => {
     };
 
     
-    const filteredSubjects = subjects.filter(subject => {
+    const filteredSubjects = useMemo(() => subjects.filter(subject => {
+        const q = debouncedSearchTerm.trim().toLowerCase();
+        if (q) {
+            const code = (subject.subject_code || '').toLowerCase();
+            const name = (subject.subject_name || subject.title || '').toLowerCase();
+            if (!code.includes(q) && !name.includes(q)) return false;
+        }
         if (filters.course && subject.course !== filters.course) return false;
         if (filters.major && subject.major !== filters.major) return false;
         if (filters.year && parseInt(subject.year_level) !== parseInt(filters.year)) return false;
         if (filters.semester && subject.semester !== filters.semester) return false;
         return true;
-    });
+    }), [subjects, debouncedSearchTerm, filters.course, filters.major, filters.year, filters.semester]);
 
     const getMajorsForCourse = (courseValue) => {
         if (!courseValue || courseValue === 'All Courses') return [];
         return COURSE_MAJOR_CONFIG[courseValue] || [];
     };
 
-    const getAllMajors = () => {
+    const allMajors = useMemo(() => {
         const all = [];
         Object.values(COURSE_MAJOR_CONFIG).forEach(majors => {
             majors.forEach(m => {
@@ -180,10 +189,16 @@ const SubjectsView = () => {
             });
         });
         return all;
-    };
+    }, []);
 
-    const currentFormMajors = getMajorsForCourse(formData.course);
-    const filterMajors = filters.course ? getMajorsForCourse(filters.course) : getAllMajors();
+    const currentFormMajors = useMemo(
+        () => getMajorsForCourse(formData.course),
+        [formData.course]
+    );
+    const filterMajors = useMemo(
+        () => (filters.course ? getMajorsForCourse(filters.course) : allMajors),
+        [filters.course, allMajors]
+    );
 
     return (
         <StyledContainer>
@@ -215,7 +230,14 @@ const SubjectsView = () => {
                 
                 <div className="p-3 border-bottom border-light">
                         <div className="row g-2">
-                        <div className="col-12 col-md-3">
+                        <div className="col-12 col-md-4">
+                            <Input
+                                placeholder="Search code or title..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
+                        </div>
+                        <div className="col-12 col-md-2">
                             <Select
                                 name="course"
                                 value={filters.course}
@@ -228,7 +250,7 @@ const SubjectsView = () => {
                                 ))}
                             </Select>
                         </div>
-                        <div className="col-12 col-md-3">
+                        <div className="col-12 col-md-2">
                             <Select
                                 name="major"
                                 value={filters.major}
@@ -241,7 +263,7 @@ const SubjectsView = () => {
                                 ))}
                             </Select>
                         </div>
-                        <div className="col-12 col-md-3">
+                        <div className="col-12 col-md-2">
                                 <Select
                                 name="year"
                                 value={filters.year}
@@ -254,7 +276,7 @@ const SubjectsView = () => {
                                 ))}
                             </Select>
                         </div>
-                        <div className="col-12 col-md-3">
+                        <div className="col-12 col-md-2">
                             <Select
                                 name="semester"
                                 value={filters.semester}

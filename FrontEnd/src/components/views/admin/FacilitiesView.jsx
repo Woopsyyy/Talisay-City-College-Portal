@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { 
@@ -52,11 +52,11 @@ const FacilitiesView = () => {
     setToast({ show: true, message, type });
   };
 
-  const fetchData = async () => {
+  const fetchData = async (forceRefresh = false) => {
     try {
       setLoading(true);
       const [bData, sData, aData] = await Promise.all([
-        AdminAPI.getBuildings().catch(() => []),
+        AdminAPI.getBuildings(forceRefresh ? { refresh: 1 } : undefined).catch(() => []),
         AdminAPI.getSections().catch(() => []),
         AdminAPI.getSectionAssignments().catch(() => [])
       ]);
@@ -80,18 +80,27 @@ const FacilitiesView = () => {
   const handleBuildingSubmit = async (e) => {
     e.preventDefault();
     try {
+      const floors = parseInt(buildingForm.floors, 10);
+      const roomsPerFloor = parseInt(buildingForm.rooms_per_floor, 10);
+      if (isNaN(floors) || floors < 1 || isNaN(roomsPerFloor) || roomsPerFloor < 1) {
+        showToast("Please enter valid floor and room counts.", "error");
+        return;
+      }
       setLoading(true);
       await AdminAPI.createBuilding({
         building_name: buildingForm.name,
-        num_floors: parseInt(buildingForm.floors),
-        rooms_per_floor: parseInt(buildingForm.rooms_per_floor)
+        num_floors: floors,
+        rooms_per_floor: roomsPerFloor
       });
-      await fetchData();
+      await fetchData(true);
       setBuildingForm({ name: '', floors: 4, rooms_per_floor: 4 });
       setIsAddBuildingModalOpen(false); 
       showToast("Building added successfully");
     } catch (err) {
       showToast(`Error creating building: ${err.message}`, "error");
+      if (String(err.message || '').toLowerCase().includes('already')) {
+        await fetchData(true);
+      }
     } finally {
         setLoading(false);
     }
@@ -401,20 +410,28 @@ const AssignmentRow = ({ section, existing, buildings, onUpdate, onDelete }) => 
     }
   }, [existing]);
 
-  const selectedBuildingData = buildings.find(b => b.name === building);
+  const selectedBuildingData = useMemo(
+      () => buildings.find(b => b.name === building),
+      [buildings, building]
+  );
   
-  const floorOptions = selectedBuildingData 
-      ? Array.from({length: selectedBuildingData.floors || 4}, (_, i) => i + 1)
-      : [];
+  const floorOptions = useMemo(
+      () => selectedBuildingData 
+          ? Array.from({length: selectedBuildingData.floors || 4}, (_, i) => i + 1)
+          : [],
+      [selectedBuildingData]
+  );
 
-  const roomOptions = (selectedBuildingData && floor) 
-      ? Array.from({length: selectedBuildingData.rooms_per_floor || 4}, (_, i) => {
-          
-          const floorNum = parseInt(floor);
-          const roomNum = (floorNum * 100) + (i + 1);
-          return roomNum.toString();
-      })
-      : [];
+  const roomOptions = useMemo(
+      () => (selectedBuildingData && floor) 
+          ? Array.from({length: selectedBuildingData.rooms_per_floor || 4}, (_, i) => {
+              const floorNum = parseInt(floor);
+              const roomNum = (floorNum * 100) + (i + 1);
+              return roomNum.toString();
+          })
+          : [],
+      [selectedBuildingData, floor]
+  );
 
   
   const handleBuildingChange = (e) => {

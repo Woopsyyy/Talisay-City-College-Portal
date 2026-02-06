@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
-import { AuthAPI, getAvatarUrl } from "../services/api";
+import { useAuth } from "../context/AuthContext";
 import {
   FileText,
   Megaphone,
@@ -28,39 +28,35 @@ import ThemeToggle from "../components/common/ThemeToggle";
 
 const Home = () => {
   const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState(null);
-  const [currentSection, setCurrentSection] = useState("records");
-  const [avatarUrl, setAvatarUrl] = useState("/images/sample.jpg");
-  const [loading, setLoading] = useState(true);
+  const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
+  const location = useLocation();
+  const pathParts = location.pathname.split('/');
+  const currentSection = pathParts[pathParts.length - 1] === 'home' ? 'records' : pathParts[pathParts.length - 1];
+
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const data = await AuthAPI.checkSession();
-        if (data.authenticated) {
-          setCurrentUser(data.user);
-          if (data.user.avatar_url) {
-            setAvatarUrl(data.user.avatar_url);
-          } else if (data.user.image_path) {
-            const url = await getAvatarUrl(data.user.id, data.user.image_path);
-            setAvatarUrl(url);
-          }
-        } else {
-          navigate("/");
-        }
-      } catch (_) {
-        navigate("/");
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAuth();
-  }, [navigate]);
+    if (authLoading) return;
+    if (!currentUser) {
+      navigate("/");
+      return;
+    }
+    const roles = Array.isArray(currentUser.roles) && currentUser.roles.length
+      ? currentUser.roles
+      : [currentUser.role || 'student'];
+    if (roles.includes('admin')) {
+      navigate('/admin/dashboard');
+    } else if (roles.includes('nt')) {
+      navigate('/nt/dashboard');
+    } else if (roles.includes('teacher')) {
+      navigate('/teachers');
+    }
+  }, [authLoading, currentUser, navigate]);
 
   const handleLogout = async (e) => {
     e.preventDefault();
     try {
-      await AuthAPI.logout();
+      await logout();
       navigate("/");
     } catch (_) {
       navigate("/");
@@ -104,25 +100,22 @@ const Home = () => {
   };
 
   const renderContent = () => {
-    switch (currentSection) {
-      case "records":
-        return <RecordsView />;
-      case "announcements":
-        return <AnnouncementsView />;
-      case "grades":
-        return <GradesView />;
-      case "transparency":
-        return <TransparencyView />;
-      case "evaluation":
-        return <EvaluationView />;
-      case "settings":
-        return <SettingsView currentUser={currentUser} />;
-      default:
-        return null;
-    }
+    return (
+      <Routes>
+        <Route path="records" element={<RecordsView />} />
+        <Route path="announcements" element={<AnnouncementsView />} />
+        <Route path="grades" element={<GradesView currentUser={currentUser} />} />
+        <Route path="transparency" element={<TransparencyView />} />
+        <Route path="evaluation" element={<EvaluationView />} />
+        <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+        <Route path="/" element={<Navigate to="records" replace />} />
+        <Route path="*" element={<Navigate to="records" replace />} />
+      </Routes>
+    );
   };
 
-  if (loading) {
+  // Only show full loader if auth is loading AND we have no cached user
+  if (authLoading && !currentUser) {
     return (
       <div
         style={{
@@ -137,6 +130,9 @@ const Home = () => {
       </div>
     );
   }
+
+  // If not authenticated and not loading, we'll be redirected by the useEffect
+  if (!currentUser) return null;
 
   return (
     <DashboardContainer>
@@ -163,7 +159,7 @@ const Home = () => {
             <NavItem
               key={item.id}
               $active={currentSection === item.id}
-              onClick={() => setCurrentSection(item.id)}
+              onClick={() => navigate(`/home/${item.id}`)}
             >
               <item.icon size={20} />
               <span>{item.label}</span>
