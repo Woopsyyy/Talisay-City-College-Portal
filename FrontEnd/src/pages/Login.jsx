@@ -6,7 +6,7 @@ import usePageStyle from "../hooks/usePageStyle";
 
 const Login = () => {
   usePageStyle("/css/login.css");
-  const { login, user, authLoading } = useAuth();
+  const { login, user, loading: authLoading } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");

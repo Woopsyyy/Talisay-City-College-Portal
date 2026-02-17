@@ -1,21 +1,24 @@
-import React, { useState, useEffect } from "react";
+import React, { lazy, Suspense, useEffect } from "react";
 import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
 import { useAuth } from "../context/AuthContext";
 import {
   LayoutDashboard,
-  Users,
   UserCog,
   Settings,
   LogOut,
+  MessageSquare,
 } from "lucide-react";
-import DashboardOverview from "../components/views/admin/DashboardOverview";
-import ManageStudentsView from "../components/views/admin/ManageStudentsView";
-import ManageUsersView from "../components/views/admin/ManageUsersView";
-import SettingsView from "../components/views/admin/SettingsView";
-import Loader from "../components/Loader";
+import CampfireLoader from "../components/loaders/CampfireLoader";
+import PageSkeleton from "../components/loaders/PageSkeleton";
 import ClockCard from "../components/common/ClockCard";
 import ThemeToggle from "../components/common/ThemeToggle";
+import UnifiedRoleSwitcher from "../components/common/UnifiedRoleSwitcher";
+
+const DashboardOverview = lazy(() => import("../components/views/admin/DashboardOverview"));
+const ManageUsersView = lazy(() => import("../components/views/admin/ManageUsersView"));
+const SettingsView = lazy(() => import("../components/views/admin/SettingsView"));
+const FeedbackInboxView = lazy(() => import("../components/views/admin/FeedbackInboxView"));
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -48,9 +51,9 @@ const AdminDashboard = () => {
 
   const navItems = [
     { id: "overview", icon: LayoutDashboard, label: "Overview" },
-    { id: "manage_students", icon: Users, label: "Manage Students" },
-    { id: "manage_user", icon: UserCog, label: "Manage Users" },
+    { id: "feedback", icon: MessageSquare, label: "Feedback" },
     { id: "settings", icon: Settings, label: "Settings" },
+    { id: "manage_user", icon: UserCog, label: "Manage Users" },
   ];
 
   const heroSpotlights = {
@@ -58,17 +61,21 @@ const AdminDashboard = () => {
       title: "Dashboard Overview",
       copy: "Get a quick snapshot of the system's status, including total users, buildings, and active subjects.",
     },
-    announcements: {
-      title: "Announcements",
-      copy: "Broadcast important updates and news to the entire campus community instantly.",
+    sanctions: {
+      title: "Sanction Management",
+      copy: "Monitor and manage student disciplinary actions.",
     },
-    manage_students: {
-      title: "Manage Students",
-      copy: "Handle student enrollments, section assignments, and monitor financial statuses.",
+    payments: {
+      title: "Financial Tracking",
+      copy: "Monitor student payment statuses and financial balances.",
     },
     manage_user: {
       title: "User Roles",
       copy: "Manage user permissions, assign roles, and control access across the platform.",
+    },
+    feedback: {
+      title: "Feedback Inbox",
+      copy: "Review and respond to anonymous feedback from students.",
     },
     settings: {
       title: "System Settings",
@@ -78,14 +85,16 @@ const AdminDashboard = () => {
 
   const renderContent = () => {
     return (
-      <Routes>
-        <Route path="overview" element={<DashboardOverview />} />
-        <Route path="manage_students" element={<ManageStudentsView />} />
-        <Route path="manage_user" element={<ManageUsersView />} />
-        <Route path="settings" element={<SettingsView />} />
-        <Route path="/" element={<Navigate to="overview" replace />} />
-        <Route path="*" element={<Navigate to="overview" replace />} />
-      </Routes>
+      <Suspense fallback={<PageSkeleton />}>
+        <Routes>
+          <Route path="overview" element={<DashboardOverview />} />
+          <Route path="manage_user" element={<ManageUsersView />} />
+          <Route path="feedback" element={<FeedbackInboxView />} />
+          <Route path="settings" element={<SettingsView />} />
+          <Route path="/" element={<Navigate to="overview" replace />} />
+          <Route path="*" element={<Navigate to="overview" replace />} />
+        </Routes>
+      </Suspense>
     );
   };
 
@@ -100,7 +109,7 @@ const AdminDashboard = () => {
           background: "var(--bg-primary)",
         }}
       >
-        <Loader />
+        <CampfireLoader />
       </div>
     );
   }
@@ -126,14 +135,13 @@ const AdminDashboard = () => {
             {currentUser?.school_id && (
               <SchoolId>{currentUser.school_id}</SchoolId>
             )}
-            <UserRole>
-              {currentUser?.role
-                ? currentUser.role.charAt(0).toUpperCase() +
-                  currentUser.role.slice(1)
-                : "Administrator"}
-            </UserRole>
+            <UserRole>Administrator</UserRole>
           </UserInfo>
         </SidebarHeader>
+
+        <div style={{ padding: '0 0.75rem' }}>
+          <UnifiedRoleSwitcher label="Admin Controls" />
+        </div>
 
         <Nav>
           {navItems.map((item) => (
@@ -149,15 +157,6 @@ const AdminDashboard = () => {
         </Nav>
 
         <SidebarFooter>
-          <SwitchViewLink
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              navigate("/home");
-            }}
-          >
-            <Users size={16} /> User View
-          </SwitchViewLink>
           <LogoutButton onClick={handleLogout}>
             <LogOut size={20} /> Logout
           </LogoutButton>
@@ -207,7 +206,7 @@ const DashboardContainer = styled.div`
 `;
 
 const Sidebar = styled.aside`
-  width: 280px;
+  width: 240px;
   background-color: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -222,7 +221,7 @@ const Sidebar = styled.aside`
 `;
 
 const SidebarHeader = styled.div`
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -231,12 +230,12 @@ const SidebarHeader = styled.div`
 `;
 
 const Avatar = styled.img`
-  width: 80px;
-  height: 80px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   object-fit: cover;
-  margin-bottom: 1rem;
-  border: 3px solid var(--accent-primary);
+  margin-bottom: 0.75rem;
+  border: 2px solid var(--accent-primary);
   box-shadow: var(--shadow-md);
 `;
 
@@ -247,34 +246,34 @@ const UserInfo = styled.div`
 `;
 
 const UserName = styled.h3`
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0;
 `;
 
 const SchoolId = styled.span`
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   font-family: monospace;
 `;
 
 const UserRole = styled.span`
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 600;
   color: var(--accent-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-top: 4px;
+  margin-top: 2px;
 `;
 
 const Nav = styled.nav`
   flex: 1;
-  padding: 1.5rem 1rem;
+  padding: 1rem 0.75rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 
   &::-webkit-scrollbar {
     width: 4px;
@@ -288,9 +287,9 @@ const Nav = styled.nav`
 const NavItem = styled.button`
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 12px 16px;
+  padding: 10px 12px;
   background: ${(props) =>
     props.$active ? "var(--bg-tertiary)" : "transparent"};
   color: ${(props) =>
@@ -298,7 +297,7 @@ const NavItem = styled.button`
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: ${(props) => (props.$active ? "600" : "500")};
   text-align: left;
   transition: all 0.2s ease;
@@ -308,44 +307,23 @@ const NavItem = styled.button`
   &:hover {
     background: var(--bg-tertiary);
     color: var(--accent-highlight);
-    transform: translateX(4px);
+    transform: translateX(2px);
   }
 `;
 
 const SidebarFooter = styled.div`
-  padding: 1.5rem;
+  padding: 1rem 0.75rem;
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-`;
-
-const SwitchViewLink = styled.a`
-  display: flex;
-  align-items: center;
-  justify-content: center;
   gap: 8px;
-  padding: 10px;
-  background: var(--btn-secondary-bg);
-  color: var(--btn-secondary-text);
-  text-decoration: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  border: 1px solid var(--border-color);
-  transition: all 0.2s;
-
-  &:hover {
-    background: var(--bg-tertiary);
-    color: var(--accent-primary);
-  }
 `;
 
 const LogoutButton = styled.button`
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   background: transparent;
   border: none;
   color: var(--text-secondary);
@@ -361,10 +339,11 @@ const LogoutButton = styled.button`
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 280px;
-  padding: 2rem 3rem;
-  max-width: 100%;
-  overflow-x: hidden;
+  margin-left: 240px;
+  padding: 2rem;
+  background-color: var(--bg-primary);
+  min-height: 100vh;
+  transition: all 0.3s ease;
 `;
 
 const HeroSection = styled.section`

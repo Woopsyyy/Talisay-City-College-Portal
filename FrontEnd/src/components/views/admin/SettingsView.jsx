@@ -1,124 +1,96 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import styled from 'styled-components';
-import { AdminAPI } from '../../../services/api';
 import { Settings, Trash2, AlertTriangle, CheckCircle, Info, Image as ImageIcon, Database, Download, Clock, Upload } from 'lucide-react';
 import Toast from '../../common/Toast';
-import DeleteModal from '../../common/DeleteModal';
+import { AdminAPI } from '../../../services/api';
 
 const SettingsView = () => {
+    const DASHBOARD_MANAGED_MESSAGE = "This action should be configured in the Supabase dashboard.";
     const [pictureResult, setPictureResult] = useState(null);
     const [loadingPictures, setLoadingPictures] = useState(false);
+    const [loadingBackups, setLoadingBackups] = useState(false);
+    const [creatingBackup, setCreatingBackup] = useState(false);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-    
+
     const [backups, setBackups] = useState([]);
-    const [loadingBackup, setLoadingBackup] = useState(false);
     const [backupResult, setBackupResult] = useState(null);
-    const [importLoading, setImportLoading] = useState(false);
     const [importFile, setImportFile] = useState(null);
     const [scheduleEnabled, setScheduleEnabled] = useState(false);
     const [scheduleFrequency, setScheduleFrequency] = useState('daily');
     const [scheduleTime, setScheduleTime] = useState('02:00');
-    
-    const [confirmationModal, setConfirmationModal] = useState({
-        isOpen: false,
-        type: null, 
-        title: '',
-        message: ''
-    });
 
     const formatSize = (bytes) => {
-        if (bytes === 0) return "0 B";
+        const numericBytes = Number(bytes);
+        if (!Number.isFinite(numericBytes) || numericBytes <= 0) return "0 B";
         const k = 1024;
         const sizes = ["B", "KB", "MB", "GB"];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
+        const i = Math.floor(Math.log(numericBytes) / Math.log(k));
+        return Math.round((numericBytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
     };
 
     const loadBackups = async () => {
+        setLoadingBackups(true);
         try {
-            const data = await AdminAPI.getBackups();
-            setBackups(Array.isArray(data) ? data : (data.backups || []));
-        } catch (err) {
-            console.error("Error loading backups:", err);
+            const response = await AdminAPI.getBackups();
+            setBackups(Array.isArray(response) ? response : []);
+        } catch (error) {
             setBackups([]);
+            setToast({
+                show: true,
+                message: error?.message || "Failed to load backup files.",
+                type: "error",
+            });
+        } finally {
+            setLoadingBackups(false);
         }
     };
 
-    React.useEffect(() => {
+    useEffect(() => {
         loadBackups();
     }, []);
 
     const handleManualBackup = async () => {
-        setLoadingBackup(true);
+        setCreatingBackup(true);
         setBackupResult(null);
+
         try {
-            const res = await AdminAPI.createBackup();
-            const result = res.data || res;
-            setBackupResult(result);
-            setToast({ show: true, message: 'Database backup created successfully!', type: 'success' });
+            const response = await AdminAPI.createBackup();
+            setBackupResult(response);
+            setToast({
+                show: true,
+                message: "Backup created and uploaded to Supabase Storage.",
+                type: "success",
+            });
             await loadBackups();
-        } catch (err) {
-            console.error("Backup error:", err);
-            setBackupResult({ error: err.message || "An error occurred." });
-            setToast({ show: true, message: "Error creating backup.", type: 'error' });
+        } catch (error) {
+            const message = error?.message || "Backup creation failed.";
+            setBackupResult({ error: message });
+            setToast({ show: true, message, type: "error" });
         } finally {
-            setLoadingBackup(false);
+            setCreatingBackup(false);
         }
     };
 
     const handleImportDatabase = async (e) => {
         e.preventDefault();
-        if (!importFile) {
-            setToast({ show: true, message: "Please select a database file (.sql)", type: "error" });
-            return;
-        }
-
-        setConfirmationModal({
-            isOpen: true,
-            type: 'import',
-            title: 'Import Database',
-            message: 'WARNING: This will overwrite your current database with the uploaded file. This action cannot be undone. Are you sure?'
+        const suffix = importFile?.name ? ` Selected file: ${importFile.name}` : "";
+        setToast({
+            show: true,
+            message: `${DASHBOARD_MANAGED_MESSAGE}${suffix}`,
+            type: "info",
         });
     };
 
-    const executeImport = async () => {
-        setImportLoading(true);
-        const formData = new FormData();
-        formData.append('database', importFile);
-
-        try {
-            // Using a separate endpoint for import
-            const apiBase = window.location.hostname === 'localhost' ? '/api' : `http://${window.location.hostname}:8001/api`;
-            const response = await fetch(`${apiBase}/admin/backup/import`, {
-                method: 'POST',
-                body: formData,
-                headers: {
-                    'Accept': 'application/json',
-                    // Note: Browser will set Content-Type with boundary automatically for FormData
-                }
-            });
-
-            const result = await response.json();
-            if (result.success) {
-                setToast({ show: true, message: "Database imported successfully!", type: "success" });
-                setImportFile(null);
-                const fileInput = document.getElementById('db-import-file');
-                if (fileInput) fileInput.value = '';
-            } else {
-                throw new Error(result.error || "Import failed");
-            }
-        } catch (err) {
-            console.error("Import error:", err);
-            setToast({ show: true, message: "Error importing database: " + err.message, type: "error" });
-        } finally {
-            setImportLoading(false);
-        }
-    };
-
     const handleDownloadBackup = (url, filename) => {
-        if (!url) return;
-        
-        // Use the absolute URL from the backend if available
+        if (!url) {
+            setToast({
+                show: true,
+                message: "Backup file URL is unavailable.",
+                type: "error",
+            });
+            return;
+        }
+
         const downloadUrl = url;
         
         const link = document.createElement('a');
@@ -130,53 +102,36 @@ const SettingsView = () => {
     };
 
     const handleScheduleChange = () => {
-        if (!scheduleEnabled) {
-            setToast({ 
-                show: true, 
-                message: `Scheduled backup enabled: ${scheduleFrequency} at ${scheduleTime}`, 
-                type: 'success' 
-            });
-        }
-        setScheduleEnabled(!scheduleEnabled);
-    };
-
-    const handleCleanupPictures = () => {
-        setConfirmationModal({
-            isOpen: true,
-            type: 'pictures',
-            title: 'Clean Up Pictures',
-            message: 'Are you sure you want to clean up unused pictures? This action cannot be undone.'
+        setScheduleEnabled((prev) => !prev);
+        setToast({
+            show: true,
+            message: DASHBOARD_MANAGED_MESSAGE,
+            type: 'info'
         });
     };
 
-    const closeConfirmationModal = () => {
-        setConfirmationModal({ isOpen: false, type: null, title: '', message: '' });
-    };
+    const handleCleanupPictures = async () => {
+        setLoadingPictures(true);
+        setPictureResult(null);
 
-            const confirmAction = async () => {
-        const { type } = confirmationModal;
-        closeConfirmationModal();
+        try {
+            const response = await AdminAPI.cleanupPictures();
+            setPictureResult(response);
 
-        if (type === 'pictures') {
-             setLoadingPictures(true);
-             setPictureResult(null);
-             try {
-                 const result = await AdminAPI.cleanupPictures();
-                 setPictureResult(result);
-                 if (result.deleted > 0) {
-                     setToast({ show: true, message: `Cleanup complete. Deleted ${result.deleted} file(s).`, type: 'success' });
-                 } else {
-                     setToast({ show: true, message: "No unused pictures found.", type: 'info' });
-                 }
-             } catch (err) {
-                 console.error("Cleanup pictures error:", err);
-                 setPictureResult({ error: err.message || "An error occurred." });
-                 setToast({ show: true, message: "Error cleaning up pictures.", type: 'error' });
-             } finally {
-                 setLoadingPictures(false);
-             }
-        } else if (type === 'import') {
-             await executeImport();
+            const removed = Number(response?.deleted || 0);
+            setToast({
+                show: true,
+                message: removed > 0
+                    ? `Removed ${removed} unused profile image${removed === 1 ? "" : "s"}.`
+                    : "No unused profile images found.",
+                type: removed > 0 ? "success" : "info",
+            });
+        } catch (error) {
+            const message = error?.message || "Failed to clean up profile images.";
+            setPictureResult({ error: message });
+            setToast({ show: true, message, type: "error" });
+        } finally {
+            setLoadingPictures(false);
         }
     };
 
@@ -218,15 +173,15 @@ const SettingsView = () => {
                                 
                                 <InfoBox className="blue">
                                     <Info size={16} />
-                                    Creates a complete SQL dump of the database in <code>storage/app/backups</code>.
+                                    Create a JSON snapshot from Supabase tables and store it in Supabase Storage.
                                 </InfoBox>
 
                                 <ActionButton 
                                     onClick={handleManualBackup} 
                                     className="primary"
-                                    disabled={loadingBackup}
+                                    disabled={creatingBackup || loadingBackups}
                                 >
-                                    {loadingBackup ? 'Creating Backup...' : 'Create Backup Now'}
+                                    {creatingBackup ? "Creating Backup..." : "Create Backup Now"}
                                 </ActionButton>
 
                                 {backupResult && (
@@ -250,7 +205,7 @@ const SettingsView = () => {
                                                 <div className="info">
                                                     <strong>{backup.filename}</strong>
                                                     <small>{backup.created_at || new Date(backup.created * 1000).toLocaleString()}</small>
-                                                    <div className="size">{backup.size}</div>
+                                                    <div className="size">{formatSize(backup.size)}</div>
                                                 </div>
                                                 <DownloadAction onClick={() => handleDownloadBackup(backup.download_url, backup.filename)}>
                                                     <Download size={16} />
@@ -258,6 +213,12 @@ const SettingsView = () => {
                                             </BackupItem>
                                         ))}
                                     </BackupList>
+                                )}
+
+                                {loadingBackups && (
+                                    <ResultBox>
+                                        <div className="info"><Info size={14} /> Loading backup history...</div>
+                                    </ResultBox>
                                 )}
                             </ActionCard>
                         </div>
@@ -276,16 +237,16 @@ const SettingsView = () => {
 
                                 <InfoBox className="orange">
                                     <AlertTriangle size={16} />
-                                    <strong>Caution:</strong> Importing will overwrite your current database.
+                                    <strong>Caution:</strong> Database imports should be executed from Supabase SQL tools.
                                 </InfoBox>
 
                                 <FormGroup style={{ marginBottom: '1rem' }}>
-                                    <label>SQL File (.sql)</label>
+                                    <label>Backup File (.sql / .json)</label>
                                     <div className="file-input-wrapper">
                                         <input 
                                             id="db-import-file"
                                             type="file" 
-                                            accept=".sql"
+                                            accept=".sql,.json"
                                             onChange={(e) => setImportFile(e.target.files[0])}
                                         />
                                     </div>
@@ -294,9 +255,8 @@ const SettingsView = () => {
                                 <ActionButton 
                                     onClick={handleImportDatabase} 
                                     className="warning"
-                                    disabled={importLoading || !importFile}
                                 >
-                                    {importLoading ? 'Importing...' : 'Import Database'}
+                                    Use Supabase Dashboard
                                 </ActionButton>
                             </ActionCard>
                         </div>
@@ -392,7 +352,7 @@ const SettingsView = () => {
                                 
                                 <InfoBox className="blue">
                                     <Info size={16} />
-                                    Permanently deletes unused files from <code>uploads/profiles</code>.
+                                    Clean up unused profile files from the Supabase Storage bucket.
                                 </InfoBox>
 
                                 <ActionButton 
@@ -400,7 +360,7 @@ const SettingsView = () => {
                                     className="primary"
                                     disabled={loadingPictures}
                                 >
-                                    {loadingPictures ? 'Cleaning up...' : 'Start Cleanup'}
+                                    {loadingPictures ? "Cleaning Up..." : "Clean Up Images"}
                                 </ActionButton>
 
                                 {pictureResult && (
@@ -430,13 +390,6 @@ const SettingsView = () => {
                     </div>
                 </CardBody>
             </MainCard>
-            <DeleteModal
-                isOpen={confirmationModal.isOpen}
-                onClose={closeConfirmationModal}
-                onConfirm={confirmAction}
-                title={confirmationModal.title}
-                message={confirmationModal.message}
-            />
         </StyledContainer>
     );
 };

@@ -16,8 +16,9 @@ const VerifyOtp = () => {
             <h3 className="mb-3">Verify Code</h3>
 
             <div className="alert alert-info mb-3">
-                Email/OTP verification was previously handled by Supabase and is no longer in use.
-                Your account is managed directly in the college system. Please login or contact the administrator if you have issues.
+                OTP verification is not required in the current app flow.
+                Please continue to login, or contact the administrator if you
+                need account assistance.
             </div>
 
             <div className="text-center mt-3">

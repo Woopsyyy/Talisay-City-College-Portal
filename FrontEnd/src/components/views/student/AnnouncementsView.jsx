@@ -12,6 +12,7 @@ import {
     Filter,
     X
 } from 'lucide-react';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const AnnouncementsView = () => {
     const [announcements, setAnnouncements] = useState([]);
@@ -122,8 +123,7 @@ const AnnouncementsView = () => {
     if (loading) {
         return (
             <LoadingContainer>
-                <Spinner />
-                <p>Loading announcements...</p>
+                <PageSkeleton variant="cards" count={4} />
             </LoadingContainer>
         );
     }
@@ -648,19 +648,6 @@ const LoadingContainer = styled.div`
     p {
         margin-top: 1rem;
         font-size: 1rem;
-    }
-`;
-
-const Spinner = styled.div`
-    width: 48px;
-    height: 48px;
-    border: 4px solid var(--border-color);
-    border-top-color: var(--accent-primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-
-    @keyframes spin {
-        to { transform: rotate(360deg); }
     }
 `;
 

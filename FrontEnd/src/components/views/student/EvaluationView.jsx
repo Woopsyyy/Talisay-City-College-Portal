@@ -6,6 +6,7 @@ import {
     ClipboardCheck, AlertTriangle, AlertCircle, Info, 
     User, CheckCircle, Clock, Star, ThumbsUp, ArrowLeft, Send
 } from 'lucide-react';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const EvaluationView = () => {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -141,11 +142,7 @@ const EvaluationView = () => {
         }
     };
 
-    if (loading) return (
-        <div className="d-flex justify-content-center align-items-center p-5">
-            <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
-        </div>
-    );
+    if (loading) return <PageSkeleton variant="form" />;
 
     if (!evaluationsEnabled) {
         return (

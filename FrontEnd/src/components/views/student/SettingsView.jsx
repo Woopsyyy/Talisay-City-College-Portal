@@ -95,14 +95,10 @@ const SettingsView = ({ currentUser }) => {
     };
 
     const handleGoogleLink = () => {
-        const width = 600, height = 700;
-        const left = (window.innerWidth - width) / 2;
-        const top = (window.innerHeight - height) / 2;
-        window.open(
-            '/api/auth/google',
-            'google_oauth',
-            `width=${width},height=${height},top=${top},left=${left}`
-        );
+        setMessage({
+            type: 'danger',
+            text: 'Google account linking is disabled in Supabase-only mode.'
+        });
     };
 
     return (

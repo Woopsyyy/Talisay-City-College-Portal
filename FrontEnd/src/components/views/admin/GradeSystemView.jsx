@@ -5,6 +5,7 @@ import { formatOrdinal } from '../../../utils/formatting';
 import { BookOpen, Filter, Calendar, Layers, Trash2, Search, User, Award, AlertCircle } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const GradeSystemView = () => {
   const [loading, setLoading] = useState(true);
@@ -35,7 +36,7 @@ const GradeSystemView = () => {
       setLoading(true);
       const [gradesData, studentsData, assignmentsData] = await Promise.all([
         AdminAPI.getGrades().catch(() => []),
-        AdminAPI.getUsers().then(users => users.filter(u => u.role === 'student')).catch(() => []),
+        AdminAPI.getUsers({ role: 'student' }).catch(() => []),
         AdminAPI.getUserAssignments().catch(() => [])
       ]);
 
@@ -267,10 +268,7 @@ const GradeSystemView = () => {
 
       {}
       {loading ? (
-           <div className="text-center py-5 text-secondary">
-               <div className="spinner-border text-primary mb-3" role="status"></div>
-               <div>Loading records...</div>
-           </div>
+           <PageSkeleton variant="cards" count={4} />
       ) : Object.keys(groupedGrades).length === 0 ? (
           <MainCard>
               <CardBody className="text-center py-5">

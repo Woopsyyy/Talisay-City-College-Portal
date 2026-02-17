@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
 import { StudentAPI, AdminAPI } from '../../services/api';
 import { 
     Building2, Layers, Calendar, Users, Wallet, 
-    CheckCircle, AlertTriangle, AlertCircle, Clock 
+    CheckCircle, AlertTriangle, AlertCircle, Clock, MessageSquare
 } from 'lucide-react';
+import PageSkeleton from '../loaders/PageSkeleton';
 
 const RecordsView = () => {
+  const navigate = useNavigate();
   const [data, setData] = useState({
     building: "Unassigned",
     floor: "",
@@ -140,21 +143,21 @@ const RecordsView = () => {
     return number + (suffixes[number % 10] || "th");
   };
 
-  if (loading) return (
-    <div className="d-flex justify-content-center align-items-center p-5">
-        <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
-        </div>
-    </div>
-  );
+  if (loading) return <PageSkeleton variant="cards" />;
   
   if (error) return <Container><div className="alert alert-danger">Error loading records: {error}</div></Container>;
 
   return (
     <Container>
         <Header>
-            <h2>My Records</h2>
-            <p>View your academic and financial information</p>
+            <div>
+              <h2>My Records</h2>
+              <p>View your academic and financial information</p>
+            </div>
+            <FeedbackButton onClick={() => navigate('/home/feedback')}>
+              <MessageSquare size={16} />
+              Send Feedback
+            </FeedbackButton>
         </Header>
         
         <Grid>
@@ -282,8 +285,38 @@ const Container = styled.div`
 
 const Header = styled.div`
   margin-bottom: 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
   h2 { font-size: 1.75rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.5rem; }
   p { color: var(--text-secondary); font-size: 1.1rem; }
+
+  @media (max-width: 768px) {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+`;
+
+const FeedbackButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    transform: translateY(-1px);
+  }
 `;
 
 const Grid = styled.div`

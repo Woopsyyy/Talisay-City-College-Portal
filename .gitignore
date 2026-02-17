@@ -1,7 +1,7 @@
 /node_modules
 /FrontEnd/node_modules
-/BackEnd/vendor
-/BackEnd/backups
+/FrontEnd/.env
 .DS_Store
 Thumbs.db
 .agent
+.env

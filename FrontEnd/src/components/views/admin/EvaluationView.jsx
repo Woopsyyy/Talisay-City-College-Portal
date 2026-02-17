@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { AdminAPI, getAvatarUrl } from '../../../services/api';
 import { ClipboardCheck, ToggleLeft, AlertTriangle, User, FileText, X, Save, Plus, Trash2 } from 'lucide-react';
 import Toast from '../../common/Toast';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const EvaluationView = () => {
     const [enabled, setEnabled] = useState(true);
@@ -123,6 +124,8 @@ const EvaluationView = () => {
         setEditingTemplate(JSON.parse(JSON.stringify(defaultTemplate)));
         setShowModal(true);
     };
+
+    if (loading) return <PageSkeleton variant="dashboard" />;
 
     const handleSaveTemplate = async () => {
         try {

@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell
 } from 'recharts';
 import { Users, Building2, BookOpen, RefreshCw, Layers, Megaphone, Calendar, ClipboardList } from 'lucide-react';
-import Loader from '../../Loader';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const DashboardOverview = () => {
   const [stats, setStats] = useState({
@@ -138,7 +138,7 @@ const DashboardOverview = () => {
   };
 
   if (loading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem' }}><Loader /></div>;
+    return <PageSkeleton variant="dashboard" />;
   }
 
   return (

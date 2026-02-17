@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const hmrHost = process.env.VITE_HMR_HOST || 'localhost'
+const hmrPort = Number(process.env.VITE_HMR_PORT || 24678)
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -9,21 +12,12 @@ export default defineConfig({
     port: 3000,
     watch: {
       usePolling: true, // Required for Windows Docker to detect changes
+      interval: 300,
     },
     hmr: {
-      clientPort: 24678,
-    },
-    proxy: {
-      '/api': {
-        target: 'http://laravel-backend',
-        changeOrigin: true,
-        rewrite: (path) => path,
-      },
-      '/uploads': {
-        target: 'http://laravel-backend',
-        changeOrigin: true,
-        rewrite: (path) => path,
-      },
+      host: hmrHost,
+      port: hmrPort,
+      clientPort: hmrPort,
     },
   },
 })

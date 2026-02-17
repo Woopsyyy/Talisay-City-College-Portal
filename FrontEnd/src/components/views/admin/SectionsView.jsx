@@ -5,6 +5,7 @@ import { YEAR_LEVEL_OPTIONS, COURSE_MAJOR_CONFIG } from '../../../utils/constant
 import { Layers, PlusCircle, Edit2, Trash2, Save, X, LayoutGrid, AlertCircle, Calendar, XCircle, Building2, BookOpen } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const SectionsView = () => {
     const [sections, setSections] = useState([]);
@@ -179,7 +180,7 @@ const SectionsView = () => {
             )}
 
             {loading ? (
-                <div className="text-center py-5 text-secondary">Loading sections...</div>
+                <PageSkeleton variant="cards" count={4} />
             ) : sections.length === 0 ? (
                 <MainCard>
                     <CardBody className="text-center py-5">

@@ -1,0 +1,1 @@
+import{r}from"./index-G8dAaOpg.js";const c=e=>{r.useEffect(()=>{if(document.querySelector(`link[href="${e}"]`))return;const t=document.createElement("link");return t.rel="stylesheet",t.href=e,document.head.appendChild(t),()=>{const n=document.querySelector(`link[href="${e}"]`);n&&document.head.removeChild(n)}},[e])};export{c as u};

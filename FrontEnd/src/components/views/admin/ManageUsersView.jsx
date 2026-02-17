@@ -1,16 +1,24 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import styled, { keyframes, css } from 'styled-components';
+import styled, { keyframes } from 'styled-components';
 import { AdminAPI, getAvatarUrl } from '../../../services/api';
 import { 
     Users, Search, UserCog, Trash2, 
     GraduationCap, BookOpen, ShieldCheck, Briefcase, 
-    Check, X, Library, Award, HeartHandshake, Banknote
+    Check, X, Award, HeartHandshake, Banknote
 } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import useDebouncedValue from '../../../hooks/useDebouncedValue';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 // --- Utils ---
+const ROLE_PAGE_SIZE = 5;
+const ROLE_ICON_SIZE = 28;
+const ROLE_ICON_GAP = 6;
+const ROLE_PAGE_WIDTH_PX = ROLE_PAGE_SIZE * ROLE_ICON_SIZE + (ROLE_PAGE_SIZE - 1) * ROLE_ICON_GAP;
+const ROLE_PAGE_WIDTH = `${ROLE_PAGE_WIDTH_PX}px`;
+const ROLE_MARQUEE_INTERVAL_MS = 2500;
+
 const normalizeRoles = (rolesInput, allowed, currentRoles = []) => {
     const roles = Array.isArray(rolesInput) ? rolesInput : (rolesInput ? [rolesInput] : []);
     const normalized = roles
@@ -43,7 +51,6 @@ const getRoleColor = (role) => {
 
 const getSubRoleIcon = (subRole) => {
     switch (subRole) {
-        case 'faculty': return <Library size={14} />;
         case 'dean': return <Award size={14} />;
         case 'osas': return <HeartHandshake size={14} />;
         case 'treasury': return <Banknote size={14} />;
@@ -53,7 +60,6 @@ const getSubRoleIcon = (subRole) => {
 
 const getSubRoleColor = (subRole) => {
     switch (subRole) {
-        case 'faculty': return '#6366f1'; // Indigo
         case 'dean': return '#eab308';    // Yellow
         case 'osas': return '#ec4899';    // Pink
         case 'treasury': return '#10b981'; // Emerald
@@ -63,7 +69,7 @@ const getSubRoleColor = (subRole) => {
 
 const ManageUsersView = () => {
     const ALLOWED_ROLES = ['student', 'teacher', 'admin', 'nt'];
-    const SUB_ROLES = ['faculty', 'dean', 'osas', 'treasury'];
+    const SUB_ROLES = ['dean', 'osas', 'treasury'];
     
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -72,10 +78,11 @@ const ManageUsersView = () => {
     const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
     const [avatarUrls, setAvatarUrls] = useState({});
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+    const roleScrollRefs = useRef({});
+    const roleScrollTimers = useRef({});
     
     // Role Editor State
     const [activeRoleUserId, setActiveRoleUserId] = useState(null);
-    const roleEditorRef = useRef(null);
 
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [userToDelete, setUserToDelete] = useState(null);
@@ -84,15 +91,9 @@ const ManageUsersView = () => {
         fetchUsers();
     }, []);
 
-    useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (roleEditorRef.current && !roleEditorRef.current.contains(event.target)) {
-                setActiveRoleUserId(null);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, []);
+    const activeUser = activeRoleUserId
+        ? users.find((u) => u.id === activeRoleUserId)
+        : null;
 
     const filteredUsers = useMemo(() => {
         if (!debouncedSearchQuery) return users;
@@ -147,16 +148,44 @@ const ManageUsersView = () => {
         return () => { isMounted = false; };
     }, [filteredUsers, avatarUrls]);
 
+    useEffect(() => {
+        const visibleIds = new Set(visibleUsers.map(u => String(u.id)));
+        Object.keys(roleScrollTimers.current).forEach((id) => {
+            if (!visibleIds.has(id)) {
+                clearInterval(roleScrollTimers.current[id]);
+                delete roleScrollTimers.current[id];
+            }
+        });
+
+        visibleUsers.forEach((user) => {
+            const items = getRoleItems(user);
+            const pages = Math.ceil(items.length / ROLE_PAGE_SIZE);
+            if (pages <= 1) {
+                stopRoleMarquee(user.id);
+                return;
+            }
+            startRoleMarquee(user.id);
+        });
+
+        return () => {
+            Object.keys(roleScrollTimers.current).forEach((id) => {
+                clearInterval(roleScrollTimers.current[id]);
+                delete roleScrollTimers.current[id];
+            });
+        };
+    }, [visibleUsers]);
+
     const fetchUsers = async () => {
         try {
             setLoading(true);
             const data = await AdminAPI.getUsers();
-            console.log('Fetched users data:', data); // Debug log
+            console.log('Fetched users data:', data); 
             
             const list = Array.isArray(data) ? data : [];
             setUsers(list.map(u => ({
                 ...u,
                 roles: normalizeRoles(Array.isArray(u.roles) && u.roles.length ? u.roles : (u.role ? [u.role] : []), ALLOWED_ROLES),
+                sub_roles: Array.isArray(u.sub_roles) ? u.sub_roles : (u.sub_role ? [u.sub_role] : [])
             })));
         } catch (err) {
             console.error("Error fetching users:", err);
@@ -178,6 +207,61 @@ const ManageUsersView = () => {
         }
     };
 
+    const getRoleItems = (user) => {
+        const roles = Array.isArray(user.roles) ? user.roles : [];
+        const subRoles = Array.isArray(user.sub_roles) ? user.sub_roles : [];
+        return [
+            ...roles.map((role) => ({ type: 'role', value: role })),
+            ...subRoles.map((subRole) => ({ type: 'sub', value: subRole })),
+        ];
+    };
+
+    const chunkItems = (items, size) => {
+        const chunks = [];
+        for (let i = 0; i < items.length; i += size) {
+            chunks.push(items.slice(i, i + size));
+        }
+        return chunks;
+    };
+
+    const stopRoleMarquee = (userId) => {
+        const key = String(userId);
+        if (roleScrollTimers.current[key]) {
+            clearInterval(roleScrollTimers.current[key]);
+            delete roleScrollTimers.current[key];
+        }
+    };
+
+    const startRoleMarquee = (userId) => {
+        const key = String(userId);
+        if (roleScrollTimers.current[key]) return;
+        const scroller = roleScrollRefs.current[key];
+        if (!scroller) return;
+        const pageWidth = ROLE_PAGE_WIDTH_PX;
+        if (!pageWidth) return;
+
+        roleScrollTimers.current[key] = setInterval(() => {
+            if (scroller.matches(':hover')) return;
+            const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+            if (maxScroll <= 0) return;
+            const next = scroller.scrollLeft + pageWidth;
+            scroller.scrollTo({
+                left: next > maxScroll + 4 ? 0 : next,
+                behavior: 'smooth',
+            });
+        }, ROLE_MARQUEE_INTERVAL_MS);
+    };
+
+    const handleRoleWheel = (userId, event) => {
+        const scroller = roleScrollRefs.current[String(userId)];
+        if (!scroller) return;
+        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        if (delta !== 0) {
+            scroller.scrollLeft += delta;
+            event.preventDefault();
+        }
+    };
+
     const openDeleteModal = (user) => {
         setUserToDelete(user);
         setIsDeleteModalOpen(true);
@@ -188,13 +272,14 @@ const ManageUsersView = () => {
         setUserToDelete(null);
     };
 
-    const handleSubRoleChange = async (userId, newSubRole) => {
+    const handleSubRoleChange = async (userId, newSubRoles) => {
         try {
-            setUsers(prev => prev.map(u => u.id === userId ? { ...u, sub_role: newSubRole || null } : u));
-            await AdminAPI.updateUserSubRole(userId, newSubRole || null);
-            setToast({ show: true, message: "Sub role updated successfully", type: 'success' });
+            const primarySubRole = newSubRoles.length > 0 ? newSubRoles[0] : null;
+            setUsers(prev => prev.map(u => u.id === userId ? { ...u, sub_role: primarySubRole, sub_roles: newSubRoles } : u));
+            await AdminAPI.updateUserSubRole(userId, primarySubRole, newSubRoles);
+            setToast({ show: true, message: "Functional roles updated successfully", type: 'success' });
         } catch (err) {
-            setToast({ show: true, message: `Error updating sub role: ${err.message}`, type: 'error' });
+            setToast({ show: true, message: `Error updating functional roles: ${err.message}`, type: 'error' });
             fetchUsers();
         }
     };
@@ -269,11 +354,19 @@ const ManageUsersView = () => {
                             </thead>
                             <tbody>
                                 {loading ? (
-                                    <tr><td colSpan="4" className="text-center py-5 text-muted">Loading users...</td></tr>
+                                    <tr>
+                                        <td colSpan="4">
+                                            <PageSkeleton variant="table" compact />
+                                        </td>
+                                    </tr>
                                 ) : visibleUsers.length === 0 ? (
                                     <tr><td colSpan="4" className="text-center py-5 text-muted">No users found matching your filters.</td></tr>
                                 ) : (
-                                    visibleUsers.map(user => (
+                                    visibleUsers.map(user => {
+                                        const roleItems = getRoleItems(user);
+                                        const rolePages = chunkItems(roleItems, ROLE_PAGE_SIZE);
+
+                                        return (
                                         <tr key={user.id}>
                                             <td>
                                                 <UserProfile>
@@ -303,97 +396,47 @@ const ManageUsersView = () => {
                                                         }}
                                                         $active={activeRoleUserId === user.id}
                                                     >
-                                                        {Array.isArray(user.roles) && user.roles.length > 0 ? (
-                                                            user.roles.map(role => (
-                                                                <RoleBadge key={role} $role={role}>
-                                                                    {getRoleIcon(role)}
-                                                                    <span>{role === 'nt' ? 'Non-Teaching' : role.charAt(0).toUpperCase() + role.slice(1)}</span>
-                                                                </RoleBadge>
-                                                            ))
+                                                        {roleItems.length === 0 ? (
+                                                            <span className="text-muted text-xs">No roles</span>
                                                         ) : (
-                                                            <span className="text-muted text-xs">No roles assigned</span>
+                                                            <RoleScroller
+                                                                ref={(el) => {
+                                                                    if (el) roleScrollRefs.current[String(user.id)] = el;
+                                                                }}
+                                                                onMouseEnter={() => stopRoleMarquee(user.id)}
+                                                                onMouseLeave={() => startRoleMarquee(user.id)}
+                                                                onWheel={(e) => handleRoleWheel(user.id, e)}
+                                                            >
+                                                                {rolePages.map((page, pageIndex) => (
+                                                                    <RolePage key={`${user.id}-page-${pageIndex}`} data-role-page>
+                                                                        {page.map((item) => (
+                                                                            item.type === 'role' ? (
+                                                                                <RoleBadge
+                                                                                    key={`role-${user.id}-${item.value}`}
+                                                                                    $role={item.value}
+                                                                                    title={item.value === 'nt' ? 'Non-Teaching' : item.value.charAt(0).toUpperCase() + item.value.slice(1)}
+                                                                                >
+                                                                                    {getRoleIcon(item.value)}
+                                                                                </RoleBadge>
+                                                                            ) : (
+                                                                                <SubRoleBadge
+                                                                                    key={`sub-${user.id}-${item.value}`}
+                                                                                    $subRole={item.value}
+                                                                                    title={item.value.toUpperCase()}
+                                                                                >
+                                                                                    {getSubRoleIcon(item.value)}
+                                                                                </SubRoleBadge>
+                                                                            )
+                                                                        ))}
+                                                                    </RolePage>
+                                                                ))}
+                                                            </RoleScroller>
                                                         )}
                                                         <EditIconWrapper $active={activeRoleUserId === user.id}>
                                                             <UserCog size={14} />
                                                         </EditIconWrapper>
                                                     </RoleDisplay>
 
-                                                    {activeRoleUserId === user.id && (
-                                                        <RoleEditorContainer 
-                                                            ref={roleEditorRef}
-                                                            onClick={(e) => e.stopPropagation()}
-                                                        >
-                                                            <EditorHeader>
-                                                                <span>Assign Roles</span>
-                                                                <CloseButton onClick={() => setActiveRoleUserId(null)}>
-                                                                    <X size={16} />
-                                                                </CloseButton>
-                                                            </EditorHeader>
-                                                            
-                                                            <EditorBody>
-                                                                <SectionLabel>Main Access Role</SectionLabel>
-                                                                <RoleOptionsGrid>
-                                                                    {ALLOWED_ROLES.map((role) => {
-                                                                        const isSelected = user.roles && user.roles.includes(role);
-                                                                        return (
-                                                                            <RoleOptionCard 
-                                                                                key={role} 
-                                                                                $selected={isSelected}
-                                                                                $role={role}
-                                                                                onClick={() => {
-                                                                                    const currentRoles = user.roles || [];
-                                                                                    const newRoles = isSelected
-                                                                                        ? currentRoles.filter(r => r !== role)
-                                                                                        : [...currentRoles, role];
-                                                                                    handleRolesChange(user.id, newRoles);
-                                                                                }}
-                                                                            >
-                                                                                <div className="icon-box">
-                                                                                    {getRoleIcon(role)}
-                                                                                </div>
-                                                                                <div className="label">
-                                                                                    {role === 'nt' ? 'Non-Teaching' : role.charAt(0).toUpperCase() + role.slice(1)}
-                                                                                </div>
-                                                                                {isSelected && <CheckCircle size={14} />}
-                                                                            </RoleOptionCard>
-                                                                        );
-                                                                    })}
-                                                                </RoleOptionsGrid>
-
-                                                                <Divider />
-
-                                                                <SubRoleSection>
-                                                                    <SectionTitle>
-                                                                        <Briefcase size={12} /> Functional Sub-Roles
-                                                                    </SectionTitle>
-                                                                    <SubRoleGrid>
-                                                                        {SUB_ROLES.map((subRole) => {
-                                                                            const isSelected = user.sub_role === subRole;
-                                                                            return (
-                                                                                <SubRoleCard
-                                                                                    key={subRole}
-                                                                                    $selected={isSelected}
-                                                                                    $subRole={subRole}
-                                                                                    onClick={() => {
-                                                                                        const newValue = isSelected ? '' : subRole;
-                                                                                        handleSubRoleChange(user.id, newValue);
-                                                                                    }}
-                                                                                >
-                                                                                    <div className="icon-box">
-                                                                                        {getSubRoleIcon(subRole)}
-                                                                                    </div>
-                                                                                    <div className="label">
-                                                                                        {subRole.toUpperCase()}
-                                                                                    </div>
-                                                                                    {isSelected && <CheckCircle size={12} />}
-                                                                                </SubRoleCard>
-                                                                            );
-                                                                        })}
-                                                                    </SubRoleGrid>
-                                                                </SubRoleSection>
-                                                            </EditorBody>
-                                                        </RoleEditorContainer>
-                                                    )}
                                                 </div>
                                             </td>
                                             <td>
@@ -407,13 +450,90 @@ const ManageUsersView = () => {
                                                 </ActionWrapper>
                                             </td>
                                         </tr>
-                                    ))
+                                        );
+                                    })
                                 )}
                             </tbody>
                         </Table>
                      </div>
                 </CardBody>
             </MainCard>
+
+            {activeUser && (
+                <ModalOverlay onClick={() => setActiveRoleUserId(null)}>
+                    <RoleEditorContainer 
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <EditorHeader>
+                            <span>Assign Roles</span>
+                            <CloseButton onClick={() => setActiveRoleUserId(null)}>
+                                <X size={16} />
+                            </CloseButton>
+                        </EditorHeader>
+                        
+                        <EditorBody>
+                            <SectionLabel>Main Access Role</SectionLabel>
+                            <RoleOptionsGrid>
+                                {ALLOWED_ROLES.map((role) => {
+                                    const isSelected = activeUser.roles && activeUser.roles.includes(role);
+                                    return (
+                                        <RoleOptionCard 
+                                            key={role} 
+                                            $selected={isSelected}
+                                            $role={role}
+                                            onClick={() => {
+                                                const currentRoles = activeUser.roles || [];
+                                                const newRoles = isSelected
+                                                    ? currentRoles.filter(r => r !== role)
+                                                    : [...currentRoles, role];
+                                                handleRolesChange(activeUser.id, newRoles);
+                                            }}
+                                        >
+                                            <div className="icon-box">
+                                                {getRoleIcon(role)}
+                                            </div>
+                                            <div className="label">
+                                                {role === 'nt' ? 'Non-Teaching' : role.charAt(0).toUpperCase() + role.slice(1)}
+                                            </div>
+                                            {isSelected && <CheckCircle size={14} />}
+                                        </RoleOptionCard>
+                                    );
+                                })}
+                            </RoleOptionsGrid>
+
+                            <Divider />
+
+                            <SubRoleSection>
+                                <SectionTitle>
+                                    <Briefcase size={12} /> Functional Sub-Roles
+                                </SectionTitle>
+                                <SubRoleGrid>
+                                    {SUB_ROLES.map((subRole) => {
+                                        const isSelected = activeUser.sub_roles && activeUser.sub_roles.includes(subRole);
+                                        return (
+                                            <SubRoleButton
+                                                key={subRole}
+                                                $selected={isSelected}
+                                                $subRole={subRole}
+                                                onClick={() => {
+                                                    const current = activeUser.sub_roles || [];
+                                                    const next = isSelected 
+                                                        ? current.filter(s => s !== subRole)
+                                                        : [...current, subRole];
+                                                    handleSubRoleChange(activeUser.id, next);
+                                                }}
+                                                title={subRole.toUpperCase()}
+                                            >
+                                                {getSubRoleIcon(subRole)}
+                                            </SubRoleButton>
+                                        );
+                                    })}
+                                </SubRoleGrid>
+                            </SubRoleSection>
+                        </EditorBody>
+                    </RoleEditorContainer>
+                </ModalOverlay>
+            )}
 
             <DeleteModal 
                 isOpen={isDeleteModalOpen}
@@ -594,9 +714,8 @@ const ActionWrapper = styled.div`
 
 const RoleDisplay = styled.div`
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 6px 8px;
     border-radius: 8px;
     border: 1px solid transparent;
@@ -616,17 +735,75 @@ const RoleDisplay = styled.div`
     }
 `;
 
+const RoleScroller = styled.div`
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    max-width: ${ROLE_PAGE_WIDTH};
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+    overscroll-behavior-x: contain;
+
+    &::-webkit-scrollbar {
+        height: 6px;
+    }
+
+    &::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 999px;
+    }
+
+    &:hover::-webkit-scrollbar-thumb {
+        background: var(--border-color);
+    }
+`;
+
+const RolePage = styled.div`
+    display: flex;
+    align-items: center;
+    gap: ${ROLE_ICON_GAP}px;
+    scroll-snap-align: start;
+    flex: 0 0 auto;
+    min-width: ${ROLE_PAGE_WIDTH};
+`;
+
 const RoleBadge = styled.span`
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-weight: 600;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
     background: ${props => `${getRoleColor(props.$role)}15`};
     color: ${props => getRoleColor(props.$role)};
     border: 1px solid ${props => `${getRoleColor(props.$role)}30`};
+    transition: all 0.2s;
+    
+    &:hover {
+        background: ${props => `${getRoleColor(props.$role)}25`};
+        transform: scale(1.1);
+    }
+    
+    svg { opacity: 0.9; }
+`;
+
+const SubRoleBadge = styled.span`
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: ${props => `${getSubRoleColor(props.$subRole)}15`};
+    color: ${props => getSubRoleColor(props.$subRole)};
+    border: 1px solid ${props => `${getSubRoleColor(props.$subRole)}30`};
     
     svg { opacity: 0.9; }
 `;
@@ -646,18 +823,29 @@ const EditIconWrapper = styled.div`
     margin-left: 4px;
 `;
 
+const ModalOverlay = styled.div`
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 2000;
+`;
+
 const RoleEditorContainer = styled.div`
-    position: absolute;
-    top: calc(100% + 10px);
-    left: 0;
-    width: 320px;
+    width: 360px;
+    max-width: 95vw;
+    max-height: 85vh;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 12px;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-    z-index: 50;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
     animation: ${slideDown} 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
 `;
 
 const EditorHeader = styled.div`
@@ -684,6 +872,7 @@ const CloseButton = styled.button`
 
 const EditorBody = styled.div`
     padding: 16px;
+    overflow-y: auto;
 `;
 
 const SectionLabel = styled.div`
@@ -769,48 +958,42 @@ const SectionTitle = styled.div`
 `;
 
 const SubRoleGrid = styled.div`
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-`;
-
-const SubRoleCard = styled.div`
-    position: relative;
     display: flex;
-    flex-direction: row; /* Horizontal layout for sub roles to save space if needed, or stick to column */
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: flex-start;
+`;
+
+const SubRoleButton = styled.div`
+    display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px;
-    border-radius: 8px;
-    border: 1px solid ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--border-color)'};
-    background: ${props => props.$selected ? `${getSubRoleColor(props.$subRole)}10` : 'var(--bg-primary)'};
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    border: 2px solid ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--border-color)'};
+    background: ${props => props.$selected ? `${getSubRoleColor(props.$subRole)}20` : 'var(--bg-primary)'};
+    color: ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--text-secondary)'};
     cursor: pointer;
-    transition: all 0.2s ease;
-    
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
     &:hover {
-        border-color: ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--text-secondary)'};
-        background: ${props => props.$selected ? `${getSubRoleColor(props.$subRole)}10` : 'var(--bg-tertiary)'};
+        border-color: ${props => getSubRoleColor(props.$subRole)};
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px ${props => `${getSubRoleColor(props.$subRole)}20`};
     }
 
-    .icon-box {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 28px;
-        height: 28px;
-        border-radius: 6px;
-        background: ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--bg-tertiary)'};
-        color: ${props => props.$selected ? 'white' : 'var(--text-secondary)'};
-        transition: all 0.2s;
+    svg {
+        width: 20px;
+        height: 20px;
+        transition: transform 0.2s;
     }
 
-    .label {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--text-primary)'};
-        flex: 1;
+    &:active {
+        transform: scale(0.95);
     }
 `;
+
 
 const DeleteButton = styled.button`
     display: flex;

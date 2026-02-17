@@ -19,9 +19,9 @@ const ResetPasswordForm = () => {
       <h3 className="mb-3">New Password</h3>
 
       <div className="alert alert-info mb-3">
-        Online password reset is currently disabled because Supabase has been
-        removed. Please contact the administrator to update your password, or
-        use the in-app profile settings once logged in pew.
+        Password resets are handled through the system administrator or the
+        in-app profile settings after login. This page is kept only for route
+        compatibility.
       </div>
     </div>
   );

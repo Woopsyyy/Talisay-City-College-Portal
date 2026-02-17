@@ -7,6 +7,7 @@ import { BookOpen, PlusCircle, Trash2, Edit2, Search, Filter, Book, Hash, Gradua
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import useDebouncedValue from '../../../hooks/useDebouncedValue';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const SubjectsView = () => {
     const [subjects, setSubjects] = useState([]);
@@ -306,7 +307,7 @@ const SubjectsView = () => {
                             </thead>
                             <tbody>
                                 {loading ? (
-                                    <tr><td colSpan="5" className="text-center py-5 text-secondary">Loading subjects...</td></tr>
+                                    <tr><td colSpan="5"><PageSkeleton variant="table" compact columns={5} /></td></tr>
                                 ) : filteredSubjects.length === 0 ? (
                                     <tr><td colSpan="5" className="text-center py-5 text-secondary">No subjects found matching your filters.</td></tr>
                                 ) : (

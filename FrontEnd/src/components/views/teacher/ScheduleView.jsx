@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { TeacherAPI } from '../../../services/api';
-import Loader from '../../Loader';
 import { Calendar, Clock, MapPin, BookOpen, User } from 'lucide-react';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const ScheduleView = () => {
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const formatTime = (timeString) => {
     if (!timeString) return "TBA";
@@ -26,8 +27,10 @@ const ScheduleView = () => {
       try {
         const data = await TeacherAPI.getSchedule();
         setSchedules(Array.isArray(data) ? data : []);
+        setError(null);
       } catch (err) {
-        setSchedules([]); 
+        setSchedules([]);
+        setError(err?.message || 'Failed to load schedule.');
       } finally {
         setLoading(false);
       }
@@ -35,20 +38,57 @@ const ScheduleView = () => {
     fetchSchedule();
   }, []);
 
-  if (loading) return <Loader />;
-
   const dayOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const schedulesByDay = useMemo(() => {
       const grouped = {};
+      const normalizeDay = (value) => {
+        if (!value) return 'Unknown';
+        const raw = String(value).trim();
+        const lower = raw.toLowerCase();
+        const map = {
+          mon: 'Monday',
+          monday: 'Monday',
+          tue: 'Tuesday',
+          tues: 'Tuesday',
+          tuesday: 'Tuesday',
+          wed: 'Wednesday',
+          weds: 'Wednesday',
+          wednesday: 'Wednesday',
+          thu: 'Thursday',
+          thur: 'Thursday',
+          thurs: 'Thursday',
+          thursday: 'Thursday',
+          fri: 'Friday',
+          friday: 'Friday',
+          sat: 'Saturday',
+          saturday: 'Saturday',
+          sun: 'Sunday',
+          sunday: 'Sunday',
+          '1': 'Monday',
+          '2': 'Tuesday',
+          '3': 'Wednesday',
+          '4': 'Thursday',
+          '5': 'Friday',
+          '6': 'Saturday',
+          '7': 'Sunday',
+        };
+        if (map[lower]) return map[lower];
+        return raw.charAt(0).toUpperCase() + raw.slice(1);
+      };
+
       schedules.forEach(schedule => {
-          const day = schedule.day || "Unknown";
+          const day = normalizeDay(schedule.day || schedule.day_of_week || schedule.dayOfWeek);
           if (!grouped[day]) grouped[day] = [];
           grouped[day].push(schedule);
       });
       return grouped;
   }, [schedules]);
 
-  const sortedDays = useMemo(() => dayOrder.filter(day => schedulesByDay[day]), [dayOrder, schedulesByDay]);
+  const sortedDays = useMemo(() => {
+    const known = dayOrder.filter(day => schedulesByDay[day]);
+    const extras = Object.keys(schedulesByDay).filter((day) => !dayOrder.includes(day)).sort();
+    return [...known, ...extras];
+  }, [dayOrder, schedulesByDay]);
 
   return (
     <Container>
@@ -60,48 +100,62 @@ const ScheduleView = () => {
         <Calendar size={32} color="var(--accent-primary)" />
       </Header>
 
-      {sortedDays.length === 0 ? (
+      <Surface>
+        {loading ? (
+          <LoadingWrap>
+            <PageSkeleton variant="cards" count={4} />
+            <LoadingText>Loading schedule…</LoadingText>
+          </LoadingWrap>
+        ) : error ? (
           <EmptyState>
-              <Calendar size={48} />
-              <p>No scheduled classes found.</p>
+            <Calendar size={48} />
+            <p>{error}</p>
+            <Hint>Try refreshing or contact an admin to assign your schedule.</Hint>
           </EmptyState>
-      ) : (
+        ) : sortedDays.length === 0 ? (
+          <EmptyState>
+            <Calendar size={48} />
+            <p>No scheduled classes found.</p>
+            <Hint>If this looks wrong, ask the admin to assign your subjects.</Hint>
+          </EmptyState>
+        ) : (
           <Timeline>
-              {sortedDays.map(day => (
-                  <DayGroup key={day}>
-                      <DayLabel>{day}</DayLabel>
-                      <ClassGrid>
-                          {schedulesByDay[day].map((sched, idx) => (
-                              <ClassCard key={idx}>
-                                  <TimeBadge>
-                                      <Clock size={16} />
-                                      {formatTime(sched.time_start)} - {formatTime(sched.time_end)}
-                                  </TimeBadge>
-                                  <CardContent>
-                                      <SubjectName>{sched.subject_name || sched.subject}</SubjectName>
-                                      <InfoSection>
-                                          <DetailRow>
-                                              <User size={14} />
-                                              <span>{sched.year} - {sched.section}</span>
-                                          </DetailRow>
-                                          <DetailRow>
-                                              <MapPin size={14} />
-                                              <span>building: {sched.building || "TBA"}</span>
-                                          </DetailRow>
-                                          <DetailRow>
-                                              <MapPin size={14} />
-                                              <span>floor: {sched.room || "TBA"}</span>
-                                          </DetailRow>
-                                      </InfoSection>
-                                  </CardContent>
-                                  <CardDecoration />
-                              </ClassCard>
-                          ))}
-                      </ClassGrid>
-                  </DayGroup>
-              ))}
+            {sortedDays.map(day => (
+              <DayGroup key={day}>
+                <DayLabel>{day}</DayLabel>
+                <ClassGrid>
+                  {schedulesByDay[day].map((sched, idx) => (
+                    <ClassCard key={`${day}-${idx}`}>
+                      <TimeBadge>
+                        <Clock size={16} />
+                        {formatTime(sched.time_start)} - {formatTime(sched.time_end)}
+                      </TimeBadge>
+                      <CardContent>
+                        <SubjectName>{sched.subject_name || sched.subject || sched.subject_code || 'Subject'}</SubjectName>
+                        <InfoSection>
+                          <DetailRow>
+                            <User size={14} />
+                            <span>{sched.year || 'Year'} - {sched.section || sched.section_name || 'Section'}</span>
+                          </DetailRow>
+                          <DetailRow>
+                            <MapPin size={14} />
+                            <span>building: {sched.building || "TBA"}</span>
+                          </DetailRow>
+                          <DetailRow>
+                            <MapPin size={14} />
+                            <span>floor: {sched.floor || "TBA"}</span>
+                          </DetailRow>
+                        </InfoSection>
+                      </CardContent>
+                      <CardDecoration />
+                    </ClassCard>
+                  ))}
+                </ClassGrid>
+              </DayGroup>
+            ))}
           </Timeline>
-      )}
+        )}
+      </Surface>
     </Container>
   );
 };
@@ -130,6 +184,33 @@ const Subtitle = styled.p`
 const EmptyState = styled.div`
   padding: 4rem; text-align: center; color: var(--text-secondary); background: var(--bg-secondary); border-radius: 16px; display: flex; flex-direction: column; align-items: center; gap: 1rem;
   svg { opacity: 0.5; }
+`;
+
+const Hint = styled.span`
+  font-size: 0.9rem;
+  color: var(--text-tertiary);
+`;
+
+const Surface = styled.div`
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+`;
+
+const LoadingWrap = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 2.5rem 1rem;
+`;
+
+const LoadingText = styled.span`
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.95rem;
 `;
 
 const Timeline = styled.div`

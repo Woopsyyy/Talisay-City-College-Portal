@@ -1,37 +1,72 @@
-import React, { useEffect } from "react";
+import React, { lazy, Suspense, useEffect } from "react";
 import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
 import { useAuth } from "../context/AuthContext";
 import {
-  LayoutDashboard,
   Building2,
   Layers,
   BookOpen,
   ClipboardList,
   LogOut,
-  Users,
+  ShieldAlert,
+  CreditCard,
 } from "lucide-react";
-import DashboardOverview from "../components/views/admin/DashboardOverview";
-import FacilitiesView from "../components/views/admin/FacilitiesView";
-import SectionsView from "../components/views/admin/SectionsView";
-import SubjectsView from "../components/views/admin/SubjectsView";
-import StudyLoadView from "../components/views/admin/StudyLoadView";
-import Loader from "../components/Loader";
+import CampfireLoader from "../components/loaders/CampfireLoader";
 import ClockCard from "../components/common/ClockCard";
 import ThemeToggle from "../components/common/ThemeToggle";
+import UnifiedRoleSwitcher from "../components/common/UnifiedRoleSwitcher";
+import PageSkeleton from "../components/loaders/PageSkeleton";
+
+const FacilitiesView = lazy(() => import("../components/views/admin/FacilitiesView"));
+const SectionsView = lazy(() => import("../components/views/admin/SectionsView"));
+const SubjectsView = lazy(() => import("../components/views/admin/SubjectsView"));
+const StudyLoadView = lazy(() => import("../components/views/admin/StudyLoadView"));
+const StaffSanctionsView = lazy(() => import("../components/views/staff/SanctionsView"));
+const StaffPaymentsView = lazy(() => import("../components/views/staff/PaymentsView"));
 
 const NonTeachingDashboard = () => {
   const navigate = useNavigate();
   const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
   const location = useLocation();
   const pathParts = location.pathname.split('/');
-  const currentSection = pathParts[pathParts.length - 1] === 'dashboard' ? 'overview' : pathParts[pathParts.length - 1];
+  const lastPart = pathParts[pathParts.length - 1];
+
+  const { activeRole } = useAuth();
+  const gatherSubRoles = (user) => {
+    if (!user) return [];
+    const raw = [
+      user.sub_role,
+      ...(Array.isArray(user.sub_roles) ? user.sub_roles : []),
+      user.sub_roles,
+    ];
+    const processed = raw.flatMap((item) => {
+      if (!item) return [];
+      if (typeof item === 'string') {
+        try {
+          const parsed = JSON.parse(item);
+          return Array.isArray(parsed) ? parsed : [item];
+        } catch (_) {
+          return [item];
+        }
+      }
+      return [item];
+    });
+    return [...new Set(processed.map((role) => String(role || '').toLowerCase().trim()))].filter(Boolean);
+  };
+
+  const normalizedSubRoles = gatherSubRoles(currentUser);
+  const isFacultyMode = activeRole === 'faculty';
 
   useEffect(() => {
     const roles = Array.isArray(currentUser?.roles) && currentUser.roles.length
       ? currentUser.roles
       : currentUser?.role ? [currentUser.role] : [];
-    if (!authLoading && (!currentUser || !roles.includes("nt"))) {
+    
+    // Allow entry if they are admin, or have nt role, or have any staff sub-roles
+    const subRoles = Array.isArray(currentUser?.sub_roles) ? currentUser.sub_roles : [currentUser?.sub_role].filter(Boolean);
+    const hasStaffAccess = roles.includes('admin') || roles.includes('nt') || subRoles.some(r => ['nt', 'osas', 'treasury'].includes(r));
+
+    if (!authLoading && (!currentUser || !hasStaffAccess)) {
       if (roles.includes('admin')) navigate('/admin/dashboard');
       else if (roles.includes('teacher')) navigate('/teachers');
       else if (roles.includes('student')) navigate('/home');
@@ -49,19 +84,32 @@ const NonTeachingDashboard = () => {
     }
   };
 
-  const navItems = [
-    { id: "overview", icon: LayoutDashboard, label: "Overview" },
+  const ntNavItems = [
     { id: "study_load", icon: ClipboardList, label: "Study Load" },
     { id: "subjects", icon: BookOpen, label: "Subjects" },
     { id: "sections", icon: Layers, label: "Sections" },
     { id: "buildings", icon: Building2, label: "Buildings" },
   ];
 
+  const facultyNavItems = [
+    ...(normalizedSubRoles.includes('osas') ? [{ id: "sanctions", icon: ShieldAlert, label: "Sanctions" }] : []),
+    ...(normalizedSubRoles.includes('treasury') ? [{ id: "payments", icon: CreditCard, label: "Payments" }] : []),
+  ];
+
+  const navItems = isFacultyMode && facultyNavItems.length > 0 ? facultyNavItems : ntNavItems;
+  const defaultSection = navItems.length > 0 ? navItems[0].id : "study_load";
+  const allowedSections = navItems.map((item) => item.id);
+  const currentSection =
+    lastPart === "dashboard" || !allowedSections.includes(lastPart)
+      ? defaultSection
+      : lastPart;
+
+  const facultyLabel = normalizedSubRoles
+    .filter((role) => role === 'osas' || role === 'treasury')
+    .map((role) => role.toUpperCase())
+    .join(', ');
+
   const heroSpotlights = {
-    overview: {
-      title: "Dashboard Overview",
-      copy: "Track academic operations for subjects, sections, and study loads.",
-    },
     study_load: {
       title: "Study Load",
       copy: "Assign subject loads to sections based on course and year level requirements.",
@@ -78,34 +126,40 @@ const NonTeachingDashboard = () => {
       title: "Buildings & Facilities",
       copy: "Manage campus infrastructure, track room usage, and organize section allocations.",
     },
+    sanctions: {
+        title: "Sanction Management",
+        copy: "Record and monitor student disciplinary actions.",
+    },
+    payments: {
+        title: "Payment Tracking",
+        copy: "Manage and verify student payment balances.",
+    }
   };
 
   const renderContent = () => {
     return (
-      <Routes>
-        <Route path="overview" element={<DashboardOverview />} />
-        <Route path="study_load" element={<StudyLoadView />} />
-        <Route path="subjects" element={<SubjectsView />} />
-        <Route path="sections" element={<SectionsView />} />
-        <Route path="buildings" element={<FacilitiesView />} />
-        <Route path="/" element={<Navigate to="overview" replace />} />
-        <Route path="*" element={<Navigate to="overview" replace />} />
-      </Routes>
+      <Suspense fallback={<PageSkeleton />}>
+        <Routes>
+          <Route path="study_load" element={<StudyLoadView />} />
+          <Route path="subjects" element={<SubjectsView />} />
+          <Route path="sections" element={<SectionsView />} />
+          <Route path="buildings" element={<FacilitiesView />} />
+          <Route path="sanctions" element={<StaffSanctionsView />} />
+          <Route path="payments" element={<StaffPaymentsView />} />
+          <Route index element={<Navigate to={defaultSection} replace />} />
+          <Route
+            path="*"
+            element={<Navigate to={`/nt/dashboard/${defaultSection}`} replace />}
+          />
+        </Routes>
+      </Suspense>
     );
   };
 
   if (authLoading && !currentUser) {
     return (
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "100vh",
-          background: "var(--bg-primary)",
-        }}
-      >
-        <Loader />
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "var(--bg-primary)" }}>
+        <CampfireLoader />
       </div>
     );
   }
@@ -113,7 +167,11 @@ const NonTeachingDashboard = () => {
   const currentRoles = Array.isArray(currentUser?.roles) && currentUser.roles.length
     ? currentUser.roles
     : currentUser?.role ? [currentUser.role] : [];
-  if (!currentUser || !currentRoles.includes("nt")) return null;
+  
+  const currentSubRoles = Array.isArray(currentUser?.sub_roles) ? currentUser.sub_roles : [currentUser?.sub_role].filter(Boolean);
+  const hasStaffAccess = currentRoles.includes('admin') || currentRoles.includes('nt') || currentSubRoles.some(r => ['nt', 'osas', 'treasury'].includes(r.toLowerCase()));
+
+  if (!currentUser || (!hasStaffAccess)) return null;
 
   return (
     <DashboardContainer>
@@ -121,19 +179,19 @@ const NonTeachingDashboard = () => {
         <SidebarHeader>
           <Avatar
             src={avatarUrl}
-            onError={(e) => {
-              e.target.src = "/images/sample.jpg";
-            }}
+            onError={(e) => { e.target.src = "/images/sample.jpg"; }}
             alt="Non-Teaching"
           />
           <UserInfo>
             <UserName>{currentUser?.full_name}</UserName>
-            {currentUser?.school_id && (
-              <SchoolId>{currentUser.school_id}</SchoolId>
-            )}
-            <UserRole>Non-Teaching</UserRole>
+            {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
+            <UserRole>{isFacultyMode ? (facultyLabel || "FACULTY") : "STAFF"}</UserRole>
           </UserInfo>
         </SidebarHeader>
+
+        <div style={{ padding: '0 0.75rem' }}>
+          <UnifiedRoleSwitcher label="Staff Access" />
+        </div>
 
         <Nav>
           {navItems.map((item) => (
@@ -149,15 +207,6 @@ const NonTeachingDashboard = () => {
         </Nav>
 
         <SidebarFooter>
-          <SwitchViewLink
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              navigate("/home");
-            }}
-          >
-            <Users size={16} /> User View
-          </SwitchViewLink>
           <LogoutButton onClick={handleLogout}>
             <LogOut size={20} /> Logout
           </LogoutButton>
@@ -167,12 +216,12 @@ const NonTeachingDashboard = () => {
       <MainContent>
         <HeroSection>
           <HeroContent>
-            <HeroEyebrow>Non-Teaching Portal</HeroEyebrow>
+          <HeroEyebrow>{isFacultyMode ? "Faculty Access" : "Non-Teaching Portal"}</HeroEyebrow>
             <HeroTitle>
               Welcome back, {currentUser?.full_name}.
             </HeroTitle>
             <HeroDescription>
-              {heroSpotlights[currentSection]?.copy}
+              {heroSpotlights[currentSection]?.copy || "Manage campus operations."}
             </HeroDescription>
             <div style={{ marginTop: '1rem', display: 'flex', gap: '10px', alignItems: 'center' }}>
                  <ThemeToggle />
@@ -206,7 +255,7 @@ const DashboardContainer = styled.div`
 `;
 
 const Sidebar = styled.aside`
-  width: 280px;
+  width: 240px;
   background-color: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -216,12 +265,10 @@ const Sidebar = styled.aside`
   left: 0;
   top: 0;
   z-index: 50;
-  transition: all 0.3s ease;
   box-shadow: var(--shadow-sm);
 `;
-
 const SidebarHeader = styled.div`
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -230,12 +277,12 @@ const SidebarHeader = styled.div`
 `;
 
 const Avatar = styled.img`
-  width: 80px;
-  height: 80px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   object-fit: cover;
-  margin-bottom: 1rem;
-  border: 3px solid var(--accent-primary);
+  margin-bottom: 0.75rem;
+  border: 2px solid var(--accent-primary);
   box-shadow: var(--shadow-md);
 `;
 
@@ -246,124 +293,113 @@ const UserInfo = styled.div`
 `;
 
 const UserName = styled.h3`
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0;
 `;
 
 const SchoolId = styled.span`
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   font-family: monospace;
 `;
 
 const UserRole = styled.span`
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 600;
   color: var(--accent-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-top: 4px;
+  margin-top: 2px;
 `;
 
 const Nav = styled.nav`
   flex: 1;
-  padding: 1.5rem 1rem;
+  padding: 1rem 0.75rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 4px;
-  }
+  gap: 2px;
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
 `;
 
 const NavItem = styled.button`
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 12px 16px;
-  background: ${(props) =>
-    props.$active ? "var(--bg-tertiary)" : "transparent"};
-  color: ${(props) =>
-    props.$active ? "var(--accent-primary)" : "var(--text-secondary)"};
+  padding: 10px 12px;
+  background: ${(props) => props.$active ? "var(--bg-tertiary)" : "transparent"};
+  color: ${(props) => props.$active ? "var(--accent-primary)" : "var(--text-secondary)"};
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: ${(props) => (props.$active ? "600" : "500")};
   text-align: left;
   transition: all 0.2s ease;
-  border-left: 3px solid
-    ${(props) => (props.$active ? "var(--accent-primary)" : "transparent")};
+  border-left: 3px solid ${(props) => (props.$active ? "var(--accent-primary)" : "transparent")};
 
   &:hover {
     background: var(--bg-tertiary);
     color: var(--accent-highlight);
-    transform: translateX(4px);
+    transform: translateX(2px);
   }
 `;
 
 const SidebarFooter = styled.div`
-  padding: 1.5rem;
+  padding: 1rem 0.75rem;
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 `;
 
-const SwitchViewLink = styled.a`
+const SubRoleButton = styled.button`
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px;
-  background: var(--btn-secondary-bg);
-  color: var(--btn-secondary-text);
-  text-decoration: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
   transition: all 0.2s;
-
-  &:hover {
-    background: var(--bg-tertiary);
-    color: var(--accent-primary);
-  }
+  font-size: 0.85rem;
+  &:hover { border-color: var(--accent-primary); transform: translateY(-1px); }
 `;
 
 const LogoutButton = styled.button`
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
+  gap: 6px;
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-weight: 600;
   cursor: pointer;
-  font-size: 0.9rem;
-  padding: 8px;
-  transition: color 0.2s;
-
-  &:hover {
-    color: #ef4444;
-  }
+  transition: all 0.2s;
+  font-size: 0.85rem;
+  &:hover { border-color: var(--accent-primary); transform: translateY(-1px); }
+  &:hover { color: #ef4444; }
 `;
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 280px;
-  padding: 2rem 3rem;
-  max-width: 100%;
-  overflow-x: hidden;
+  margin-left: 240px;
+  padding: 2rem;
+  background-color: var(--bg-primary);
+  min-height: 100vh;
+  transition: all 0.3s ease;
 `;
 
 const HeroSection = styled.section`

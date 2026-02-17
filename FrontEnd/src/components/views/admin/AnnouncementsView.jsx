@@ -4,6 +4,7 @@ import { Plus, X, Megaphone, Calendar, Users, Edit2, Trash2, Send, Filter, Alert
 import { AdminAPI } from '../../../services/api';
 import DeleteModal from '../../common/DeleteModal';
 import Toast from '../../common/Toast';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const courseMajorConfig = {
   IT: ["Computer Technology", "Electronics"],
@@ -173,7 +174,7 @@ const AnnouncementsView = () => {
       )}
 
       {loading && announcements.length === 0 ? (
-        <div className="text-center py-5">Loading...</div>
+        <PageSkeleton variant="cards" count={4} />
       ) : (
         <MainCard> {}
             <ListSection>

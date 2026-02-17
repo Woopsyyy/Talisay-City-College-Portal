@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const FacilitiesView = () => {
   const [loading, setLoading] = useState(true);
@@ -44,10 +45,6 @@ const FacilitiesView = () => {
     room: ''
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
   };
@@ -76,6 +73,12 @@ const FacilitiesView = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  if (loading) return <PageSkeleton variant="table" columns={7} />;
 
   const handleBuildingSubmit = async (e) => {
     e.preventDefault();

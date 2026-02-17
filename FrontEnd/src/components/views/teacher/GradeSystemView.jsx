@@ -2,9 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { TeacherAPI } from '../../../services/api';
 import { Users, ChevronLeft, Search, Save, Award, BookOpen, Clock, Calendar } from 'lucide-react';
-import Loader from '../../Loader';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
-const GradeSystemView = () => {
+const GradeSystemView = ({ isReadOnly = false }) => {
     const [sections, setSections] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedSection, setSelectedSection] = useState(null);
@@ -119,7 +119,7 @@ const GradeSystemView = () => {
         return g.finals_grade || 'N/A';
     };
 
-    if (loading) return <Loader />;
+    if (loading) return <PageSkeleton variant="cards" />;
 
     
     if (!selectedSection) {
@@ -127,8 +127,8 @@ const GradeSystemView = () => {
             <Container>
                 <Header>
                     <div>
-                        <Title>Grade Management</Title>
-                        <Subtitle>Select a section to manage student grades</Subtitle>
+                        <Title>{isReadOnly ? "Grade Monitoring" : "Grade Management"}</Title>
+                        <Subtitle>{isReadOnly ? "View student performance across sections" : "Select a section to manage student grades"}</Subtitle>
                     </div>
                     <BookOpen size={32} color="var(--accent-primary)" />
                 </Header>
@@ -179,7 +179,7 @@ const GradeSystemView = () => {
                </BackButton>
                <DetailTitle>
                    <h2>{selectedSection.name}</h2>
-                   <p>{selectedSection.subjects[0]?.name} • Master List</p>
+                   <p>{selectedSection.subjects[0]?.name} • {isReadOnly ? "Monitoring" : "Master List"}</p>
                </DetailTitle>
             </DetailHeader>
 
@@ -192,7 +192,7 @@ const GradeSystemView = () => {
                         {sortedStudents.map((student) => {
                                 const g = grades[student.id];
                                 return (
-                                    <StudentCard key={student.id} onClick={() => handleEditClick(student)}>
+                                    <StudentCard key={student.id} onClick={() => !isReadOnly && handleEditClick(student)} style={{ cursor: isReadOnly ? 'default' : 'pointer' }}>
                                         <AvatarPlaceholder>
                                             {student.image_path ? (
                                                 <img src={student.image_path} alt={student.full_name} onError={e => e.target.style.display='none'} />

@@ -8,6 +8,7 @@ import {
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import useDebouncedValue from '../../../hooks/useDebouncedValue';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const TeacherManagementView = () => {
   const [loading, setLoading] = useState(true);
@@ -75,6 +76,8 @@ const TeacherManagementView = () => {
     fetchData();
   }, []);
 
+  if (loading) return <PageSkeleton variant="table" />;
+
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
   };
@@ -92,7 +95,7 @@ const TeacherManagementView = () => {
       ] = await Promise.all([
         AdminAPI.getTeacherAssignments(),
         AdminAPI.getSubjects(),
-        AdminAPI.getUsers(),
+        AdminAPI.getUsers({ role: 'teacher' }),
         AdminAPI.getSchedules(),
         AdminAPI.getBuildings(),
         AdminAPI.getSections()

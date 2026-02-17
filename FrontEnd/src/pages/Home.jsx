@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { useNavigate, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import styled from "styled-components";
 import { useAuth } from "../context/AuthContext";
@@ -11,29 +11,40 @@ import {
   Settings,
   LogOut,
   User,
-  LayoutDashboard
+  LayoutDashboard,
+  MessageSquare,
+  ShieldAlert,
+  CreditCard,
+  UserCheck
 } from "lucide-react";
 
-
-import RecordsView from "../components/views/RecordsView";
-import AnnouncementsView from "../components/views/student/AnnouncementsView";
-import GradesView from "../components/views/student/GradesView";
-import TransparencyView from "../components/views/student/TransparencyView";
-import EvaluationView from "../components/views/student/EvaluationView";
-import SettingsView from "../components/views/student/SettingsView";
-
-import Loader from "../components/Loader";
+import CampfireLoader from "../components/loaders/CampfireLoader";
+import PageSkeleton from "../components/loaders/PageSkeleton";
 import ClockCard from "../components/common/ClockCard";
 import ThemeToggle from "../components/common/ThemeToggle";
+import UnifiedRoleSwitcher from "../components/common/UnifiedRoleSwitcher";
+
+const RecordsView = lazy(() => import("../components/views/RecordsView"));
+const AnnouncementsView = lazy(() => import("../components/views/student/AnnouncementsView"));
+const GradesView = lazy(() => import("../components/views/student/GradesView"));
+const TransparencyView = lazy(() => import("../components/views/student/TransparencyView"));
+const EvaluationView = lazy(() => import("../components/views/student/EvaluationView"));
+const SettingsView = lazy(() => import("../components/views/student/SettingsView"));
+const FeedbackView = lazy(() => import("../components/views/student/FeedbackView"));
+const ManageStudentsView = lazy(() => import("../components/views/admin/ManageStudentsView"));
 
 const Home = () => {
   const navigate = useNavigate();
   const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
   const location = useLocation();
   const pathParts = location.pathname.split('/');
-  const currentSection = pathParts[pathParts.length - 1] === 'home' ? 'records' : pathParts[pathParts.length - 1];
+  const lastPart = pathParts[pathParts.length - 1];
+  const currentSection = lastPart === 'home' ? 'records' : lastPart;
 
-  const [loading, setLoading] = useState(false);
+  const { activeRole, activeSubRole, switchSubRole } = useAuth();
+  const effectiveSubRole = (activeSubRole || 'student').toLowerCase();
+  const effectiveSubRoleLabel =
+    effectiveSubRole === 'student' ? 'Student' : effectiveSubRole.toUpperCase();
 
   useEffect(() => {
     if (authLoading) return;
@@ -44,14 +55,10 @@ const Home = () => {
     const roles = Array.isArray(currentUser.roles) && currentUser.roles.length
       ? currentUser.roles
       : [currentUser.role || 'student'];
-    if (roles.includes('admin')) {
-      navigate('/admin/dashboard');
-    } else if (roles.includes('nt')) {
-      navigate('/nt/dashboard');
-    } else if (roles.includes('teacher')) {
-      navigate('/teachers');
+    if (roles.includes('admin') && activeSubRole === 'student') {
+        // Allow admin to stay on home if they want, but usually redirect
     }
-  }, [authLoading, currentUser, navigate]);
+  }, [authLoading, currentUser, navigate, activeSubRole]);
 
   const handleLogout = async (e) => {
     e.preventDefault();
@@ -63,14 +70,30 @@ const Home = () => {
     }
   };
 
-  const navItems = [
+  const studentNavItems = [
     { id: "records", icon: FileText, label: "My Records" },
     { id: "announcements", icon: Megaphone, label: "Announcements" },
     { id: "grades", icon: Award, label: "Grades" },
     { id: "transparency", icon: Shield, label: "Transparency" },
     { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
+    { id: "feedback", icon: MessageSquare, label: "Feedback" },
     { id: "settings", icon: Settings, label: "Settings" },
   ];
+
+  const osasNavItems = [
+    { id: "manage_students", icon: ShieldAlert, label: "Sanctions" },
+  ];
+
+  const treasuryNavItems = [
+    { id: "manage_students", icon: CreditCard, label: "Payments" },
+  ];
+
+  const getNavItems = () => {
+    return [...studentNavItems];
+  };
+
+
+  const navItems = getNavItems();
 
   const heroSpotlights = {
     records: {
@@ -93,6 +116,18 @@ const Home = () => {
       title: "Faculty Evaluation",
       copy: "Provide feedback on your instructors and courses.",
     },
+    feedback: {
+      title: "Feedback System",
+      copy: "Submit anonymous suggestions or concerns to the college administration.",
+    },
+    sanctions: {
+        title: "Sanction Management",
+        copy: "Record and monitor student disciplinary actions.",
+    },
+    payments: {
+        title: "Payment Tracking",
+        copy: "Manage and verify student payment balances.",
+    },
     settings: {
       title: "Account Settings",
       copy: "Manage your profile, update password, and personalization.",
@@ -101,38 +136,43 @@ const Home = () => {
 
   const renderContent = () => {
     return (
-      <Routes>
-        <Route path="records" element={<RecordsView />} />
-        <Route path="announcements" element={<AnnouncementsView />} />
-        <Route path="grades" element={<GradesView currentUser={currentUser} />} />
-        <Route path="transparency" element={<TransparencyView />} />
-        <Route path="evaluation" element={<EvaluationView />} />
-        <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
-        <Route path="/" element={<Navigate to="records" replace />} />
-        <Route path="*" element={<Navigate to="records" replace />} />
-      </Routes>
+      <Suspense fallback={<PageSkeleton />}>
+        <Routes>
+          <Route path="records" element={<RecordsView />} />
+          <Route path="announcements" element={<AnnouncementsView />} />
+          <Route path="grades" element={<GradesView currentUser={currentUser} />} />
+          <Route path="transparency" element={<TransparencyView />} />
+          <Route path="evaluation" element={<EvaluationView />} />
+          <Route path="feedback" element={<FeedbackView />} />
+          <Route path="manage_students" element={<ManageStudentsView mode="nt" />} />
+          <Route path="sanctions" element={<ManageStudentsView mode="osas" />} />
+          <Route path="payments" element={<ManageStudentsView mode="treasury" />} />
+          <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+          <Route path="/" element={<Navigate to="records" replace />} />
+          <Route path="*" element={<Navigate to="records" replace />} />
+        </Routes>
+      </Suspense>
     );
   };
 
-  // Only show full loader if auth is loading AND we have no cached user
   if (authLoading && !currentUser) {
     return (
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "100vh",
-          background: "var(--bg-primary)",
-        }}
-      >
-        <Loader />
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "var(--bg-primary)" }}>
+        <CampfireLoader />
       </div>
     );
   }
 
-  // If not authenticated and not loading, we'll be redirected by the useEffect
-  if (!currentUser) return null;
+  if (!currentUser) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: "var(--bg-primary)" }}>
+        <CampfireLoader />
+      </div>
+    );
+  }
+
+  const hasOsas = currentUser?.sub_role?.toLowerCase() === 'osas';
+  const hasTreasury = currentUser?.sub_role?.toLowerCase() === 'treasury';
 
   return (
     <DashboardContainer>
@@ -140,19 +180,19 @@ const Home = () => {
         <SidebarHeader>
           <Avatar
             src={avatarUrl}
-            onError={(e) => {
-              e.target.src = "/images/sample.jpg";
-            }}
+            onError={(e) => { e.target.src = "/images/sample.jpg"; }}
             alt="User"
           />
           <UserInfo>
             <UserName>{currentUser?.full_name || "Student"}</UserName>
-            {currentUser?.school_id && (
-              <SchoolId>{currentUser.school_id}</SchoolId>
-            )}
-            <UserRole>Student</UserRole>
+            {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
+            <UserRole>{effectiveSubRoleLabel}</UserRole>
           </UserInfo>
         </SidebarHeader>
+
+        <div style={{ padding: '0 0.75rem' }}>
+          <UnifiedRoleSwitcher label="Student Profile" />
+        </div>
 
         <Nav>
           {navItems.map((item) => (
@@ -168,35 +208,39 @@ const Home = () => {
         </Nav>
 
         <SidebarFooter>
-          {currentUser?.role === 'admin' && (
-            <AdminButton onClick={() => navigate('/admin/dashboard')}>
-              <LayoutDashboard size={20} /> Back to Admin
-            </AdminButton>
-          )}
           <LogoutButton onClick={handleLogout}>
             <LogOut size={20} /> Logout
           </LogoutButton>
         </SidebarFooter>
+
       </Sidebar>
 
       <MainContent>
         <HeroSection>
           <HeroContent>
-            <HeroEyebrow>Student Portal</HeroEyebrow>
+            <HeroEyebrow>
+              {effectiveSubRole === 'student'
+                ? 'Student Portal'
+                : `${effectiveSubRole.toUpperCase()} Portal`}
+            </HeroEyebrow>
             <HeroTitle>
               Hello, {currentUser?.full_name?.split(" ")[0] || "Student"}.
             </HeroTitle>
             <HeroDescription>
-              {heroSpotlights[currentSection]?.copy}
+              {heroSpotlights[currentSection]?.copy || "Welcome to your portal."}
             </HeroDescription>
             <div style={{ marginTop: '1rem', display: 'flex', gap: '10px', alignItems: 'center' }}>
+                 <HeaderActionButton onClick={() => navigate('/home/feedback')}>
+                   <MessageSquare size={16} />
+                   Send Feedback
+                 </HeaderActionButton>
                  <ThemeToggle />
                  <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Toggle Theme</span>
             </div>
           </HeroContent>
           <HeroSpotlight>
             <SpotlightCard>
-              <SpotlightLabel>Current Section</SpotlightLabel>
+              <SpotlightLabel>Current View</SpotlightLabel>
               <SpotlightTitle>
                 {heroSpotlights[currentSection]?.title}
               </SpotlightTitle>
@@ -222,7 +266,7 @@ const DashboardContainer = styled.div`
 `;
 
 const Sidebar = styled.aside`
-  width: 280px;
+  width: 240px;
   background-color: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -232,12 +276,10 @@ const Sidebar = styled.aside`
   left: 0;
   top: 0;
   z-index: 50;
-  transition: all 0.3s ease;
   box-shadow: var(--shadow-sm);
 `;
-
 const SidebarHeader = styled.div`
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -246,12 +288,12 @@ const SidebarHeader = styled.div`
 `;
 
 const Avatar = styled.img`
-  width: 80px;
-  height: 80px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   object-fit: cover;
-  margin-bottom: 1rem;
-  border: 3px solid var(--accent-primary);
+  margin-bottom: 0.75rem;
+  border: 2px solid var(--accent-primary);
   box-shadow: var(--shadow-md);
 `;
 
@@ -262,106 +304,93 @@ const UserInfo = styled.div`
 `;
 
 const UserName = styled.h3`
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0;
 `;
 
 const SchoolId = styled.span`
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   font-family: monospace;
 `;
 
 const UserRole = styled.span`
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: 600;
   color: var(--accent-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-top: 4px;
+  margin-top: 2px;
 `;
 
 const Nav = styled.nav`
   flex: 1;
-  padding: 1.5rem 1rem;
+  padding: 1rem 0.75rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 4px;
-  }
+  gap: 2px;
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
 `;
 
 const NavItem = styled.button`
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  padding: 12px 16px;
-  background: ${(props) =>
-    props.$active ? "var(--bg-tertiary)" : "transparent"};
-  color: ${(props) =>
-    props.$active ? "var(--accent-primary)" : "var(--text-secondary)"};
+  padding: 10px 12px;
+  background: ${(props) => props.$active ? "var(--bg-tertiary)" : "transparent"};
+  color: ${(props) => props.$active ? "var(--accent-primary)" : "var(--text-secondary)"};
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: ${(props) => (props.$active ? "600" : "500")};
   text-align: left;
   transition: all 0.2s ease;
-  border-left: 3px solid
-    ${(props) => (props.$active ? "var(--accent-primary)" : "transparent")};
+  border-left: 3px solid ${(props) => (props.$active ? "var(--accent-primary)" : "transparent")};
 
   &:hover {
     background: var(--bg-tertiary);
     color: var(--accent-highlight);
-    transform: translateX(4px);
+    transform: translateX(2px);
   }
 `;
 
 const SidebarFooter = styled.div`
-  padding: 1.5rem;
+  padding: 1rem 0.75rem;
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 `;
 
-const AdminButton = styled.button`
+const SubRoleButton = styled.button`
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  background: var(--accent-primary);
-  border: none;
-  color: white;
-  padding: 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.2s;
+  gap: 10px;
   width: 100%;
-
-  &:hover {
-    transform: translateY(-2px);
-    background: var(--accent-highlight);
-    box-shadow: var(--shadow-sm);
-  }
+  padding: 12px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 0.85rem;
+  &:hover { border-color: var(--accent-primary); transform: translateY(-1px); }
 `;
+
 
 const LogoutButton = styled.button`
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   background: transparent;
   border: none;
   color: var(--text-secondary);
@@ -369,16 +398,13 @@ const LogoutButton = styled.button`
   font-size: 0.9rem;
   padding: 8px;
   transition: color 0.2s;
-
-  &:hover {
-    color: #ef4444;
-  }
+  &:hover { color: #ef4444; }
 `;
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 280px;
-  padding: 2rem 3rem;
+  margin-left: 240px;
+  padding: 2rem;
   max-width: 100%;
   overflow-x: hidden;
 `;
@@ -426,6 +452,27 @@ const HeroDescription = styled.p`
   font-size: 1.1rem;
   line-height: 1.6;
   margin: 0;
+`;
+
+const HeaderActionButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    transform: translateY(-1px);
+  }
 `;
 
 const HeroSpotlight = styled.div`

@@ -1,0 +1,1 @@
+const e={IT:["Computer Technology","Electronics"],BSED:["English","Physical Education","Math","Filipino","Social Science"],HM:["General"],BEED:["General"],TOURISM:["General"]},n=["First Semester","Second Semester"],E=[1,2,3,4];export{e as C,n as S,E as Y};

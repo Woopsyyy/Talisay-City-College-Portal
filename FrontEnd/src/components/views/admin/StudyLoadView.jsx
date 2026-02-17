@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import Toast from '../../common/Toast';
 import { BookOpen, GraduationCap, Download, Layers, Calendar, ArrowLeft, Hash, Users, Clock, AlertCircle, PlusCircle, Trash2, Search, Save } from 'lucide-react';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const StudyLoadView = () => {
     const [sections, setSections] = useState([]);
@@ -25,8 +26,8 @@ const StudyLoadView = () => {
         day: 'Monday', 
         time_start: '00:00',
         time_end: '00:00',
-        building: 'Main',
-        room: 'TBA'
+        building: '',
+        room: ''
     };
 
     useEffect(() => {
@@ -419,7 +420,7 @@ const StudyLoadView = () => {
             </FilterBar>
 
             {loading ? (
-                <LoadingState>Loading sections...</LoadingState>
+                <PageSkeleton variant="cards" count={4} />
             ) : filteredSections.length === 0 ? (
                 <EmptyState>
                     <AlertCircle size={48} />
@@ -521,7 +522,6 @@ const ClickHint = styled.div`
     ${SectionCard}:hover & { opacity: 1; }
 `;
 
-const LoadingState = styled.div` padding: 3rem; text-align: center; color: var(--text-secondary); `;
 const EmptyState = styled.div` padding: 3rem; display: flex; flex-direction: column; align-items: center; gap: 1rem; color: var(--text-secondary); svg { opacity: 0.5; } `;
 
 const DetailContainer = styled.div`

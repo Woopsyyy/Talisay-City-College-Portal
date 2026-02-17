@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { StudentAPI } from '../../../services/api';
 import { BookOpen, Calendar, Award, GraduationCap, User, X, Eye, Download } from 'lucide-react';
+import PageSkeleton from '../../loaders/PageSkeleton';
 
 const GradesView = ({ currentUser }) => {
     const [gradesByYear, setGradesByYear] = useState({});
@@ -166,11 +167,7 @@ const GradesView = ({ currentUser }) => {
         </div>
     );
 
-    if (loading) return (
-        <div className="d-flex justify-content-center align-items-center p-5">
-            <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
-        </div>
-    );
+    if (loading) return <PageSkeleton variant="table" columns={3} />;
     
     if (error) return <Container><div className="alert alert-danger">Error loading grades: {error}</div></Container>;
 
