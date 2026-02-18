@@ -9,7 +9,7 @@ import DeleteModal from '../../common/DeleteModal';
 import SkeletonLoader from '../../loaders/SkeletonLoader';
 
 
-const ManageStudentsView = ({ mode = null }) => {
+const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) => {
     const { user: authUser } = useAuth();
     const userRoles = Array.isArray(authUser?.roles) ? authUser.roles : [authUser?.role || 'student'];
     const isActualAdmin = userRoles.includes('admin');
@@ -50,7 +50,6 @@ const ManageStudentsView = ({ mode = null }) => {
         section: '',
         department: '',
         major: '',
-        semester: '1st Semester',
         lacking_payment: 'no', 
         amount_lacking: '',
         has_sanction: 'no',    
@@ -195,7 +194,6 @@ const ManageStudentsView = ({ mode = null }) => {
             section: assignment.section || '',
             department: assignment.department || '',
             major: assignment.major || '',
-            semester: assignment.semester || '1st Semester',
             lacking_payment: assignment.payment === 'owing' ? 'yes' : 'no',
             amount_lacking: assignment.amount_lacking || '',
             has_sanction: assignment.sanctions || assignment.sanctions === 1 ? 'yes' : 'no',
@@ -226,7 +224,6 @@ const ManageStudentsView = ({ mode = null }) => {
             section: '',
             department: '',
             major: '',
-            semester: '1st Semester',
             lacking_payment: 'no',
             amount_lacking: '',
             has_sanction: 'no',
@@ -253,7 +250,6 @@ const ManageStudentsView = ({ mode = null }) => {
                 section: assignForm.section,
                 department: assignForm.department,
                 major: assignForm.major,
-                semester: assignForm.semester,
                 payment: assignForm.lacking_payment === 'yes' ? 'owing' : 'paid',
                 amount_lacking: assignForm.lacking_payment === 'yes' ? assignForm.amount_lacking : null,
                 sanctions: assignForm.has_sanction === 'yes',
@@ -436,10 +432,15 @@ const ManageStudentsView = ({ mode = null }) => {
                     <p>
                         {isOsas ? "Monitor and manage student disciplinary sanctions." : 
                          isTreasury ? "Manage student payment statuses and financial balances." : 
-                         isDeanOrNt ? "Assign student sections, semesters, and academic status." :
+                         isDeanOrNt ? "Assign student sections and academic status." :
                          "Manage student assignments, financial status, and sanctions."}
                     </p>
                 </div>
+                {isDeanOrNt && typeof onOpenIrregularStudyLoad === 'function' && (
+                    <Button type="button" onClick={onOpenIrregularStudyLoad}>
+                        <BookOpen size={18} /> Irregular Study Load
+                    </Button>
+                )}
             </HeaderSection>
             
             {toast.show && (
@@ -745,14 +746,7 @@ const ManageStudentsView = ({ mode = null }) => {
                                                     ))}
                                                 </Select>
                                             </div>
-                                            <div className="col-md-6">
-                                                <FormLabel>Semester</FormLabel>
-                                                <Select name="semester" value={assignForm.semester} onChange={handleAssignInputChange}>
-                                                    <option value="1st Semester">1st Semester</option>
-                                                    <option value="2nd Semester">2nd Semester</option>
-                                                </Select>
-                                            </div>
-                                            <div className="col-md-6">
+                                            <div className="col-12">
                                                 <FormLabel>Student Status</FormLabel>
                                                 <Select name="student_status" value={assignForm.student_status} onChange={handleAssignInputChange}>
                                                     <option value="Regular">Regular</option>

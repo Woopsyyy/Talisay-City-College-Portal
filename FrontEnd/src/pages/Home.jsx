@@ -130,7 +130,7 @@ const Home = () => {
     },
     settings: {
       title: "Account Settings",
-      copy: "Manage your profile, update password, and personalization.",
+      copy: "Manage your profile information and personalization options.",
     },
   };
 

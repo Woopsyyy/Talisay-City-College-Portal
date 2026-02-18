@@ -8,6 +8,9 @@ import {
   Settings,
   LogOut,
   MessageSquare,
+  KeyRound,
+  Activity,
+  Inbox,
 } from "lucide-react";
 import CampfireLoader from "../components/loaders/CampfireLoader";
 import PageSkeleton from "../components/loaders/PageSkeleton";
@@ -19,6 +22,9 @@ const DashboardOverview = lazy(() => import("../components/views/admin/Dashboard
 const ManageUsersView = lazy(() => import("../components/views/admin/ManageUsersView"));
 const SettingsView = lazy(() => import("../components/views/admin/SettingsView"));
 const FeedbackInboxView = lazy(() => import("../components/views/admin/FeedbackInboxView"));
+const AccountAccessView = lazy(() => import("../components/views/admin/AccountAccessView"));
+const PendingApprovalsView = lazy(() => import("../components/views/admin/PendingApprovalsView"));
+const StatusLogsView = lazy(() => import("../components/views/admin/StatusLogsView"));
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -54,6 +60,9 @@ const AdminDashboard = () => {
     { id: "feedback", icon: MessageSquare, label: "Feedback" },
     { id: "settings", icon: Settings, label: "Settings" },
     { id: "manage_user", icon: UserCog, label: "Manage Users" },
+    { id: "account_access", icon: KeyRound, label: "Account Access" },
+    { id: "pending_approval", icon: Inbox, label: "Pending Approval" },
+    { id: "status_logs", icon: Activity, label: "Status Logs" },
   ];
 
   const heroSpotlights = {
@@ -77,6 +86,18 @@ const AdminDashboard = () => {
       title: "Feedback Inbox",
       copy: "Review and respond to anonymous feedback from students.",
     },
+    account_access: {
+      title: "Account Access",
+      copy: "Click a user to edit admin-managed account details and optionally assign a new password.",
+    },
+    pending_approval: {
+      title: "Pending Approval",
+      copy: "Review all pending account requests in one dedicated queue with approve/reject controls.",
+    },
+    status_logs: {
+      title: "Status Logs",
+      copy: "Review login events, account changes, and administrative actions with powerful filters.",
+    },
     settings: {
       title: "System Settings",
       copy: "Perform maintenance tasks, clean up database records, and manage system configurations.",
@@ -90,6 +111,9 @@ const AdminDashboard = () => {
           <Route path="overview" element={<DashboardOverview />} />
           <Route path="manage_user" element={<ManageUsersView />} />
           <Route path="feedback" element={<FeedbackInboxView />} />
+          <Route path="account_access" element={<AccountAccessView />} />
+          <Route path="pending_approval" element={<PendingApprovalsView />} />
+          <Route path="status_logs" element={<StatusLogsView />} />
           <Route path="settings" element={<SettingsView />} />
           <Route path="/" element={<Navigate to="overview" replace />} />
           <Route path="*" element={<Navigate to="overview" replace />} />

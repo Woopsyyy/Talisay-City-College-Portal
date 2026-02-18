@@ -7,9 +7,11 @@ import {
   Layers,
   BookOpen,
   ClipboardList,
+  CalendarCheck,
   LogOut,
   ShieldAlert,
   CreditCard,
+  UserCheck,
 } from "lucide-react";
 import CampfireLoader from "../components/loaders/CampfireLoader";
 import ClockCard from "../components/common/ClockCard";
@@ -21,6 +23,8 @@ const FacilitiesView = lazy(() => import("../components/views/admin/FacilitiesVi
 const SectionsView = lazy(() => import("../components/views/admin/SectionsView"));
 const SubjectsView = lazy(() => import("../components/views/admin/SubjectsView"));
 const StudyLoadView = lazy(() => import("../components/views/admin/StudyLoadView"));
+const TeacherManagementView = lazy(() => import("../components/views/admin/TeacherManagementView"));
+const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
 const StaffSanctionsView = lazy(() => import("../components/views/staff/SanctionsView"));
 const StaffPaymentsView = lazy(() => import("../components/views/staff/PaymentsView"));
 
@@ -86,6 +90,8 @@ const NonTeachingDashboard = () => {
 
   const ntNavItems = [
     { id: "study_load", icon: ClipboardList, label: "Study Load" },
+    { id: "irregular_study_load", icon: UserCheck, label: "Irregular Study Load" },
+    { id: "teacher_scheduling", icon: CalendarCheck, label: "Teacher Scheduling" },
     { id: "subjects", icon: BookOpen, label: "Subjects" },
     { id: "sections", icon: Layers, label: "Sections" },
     { id: "buildings", icon: Building2, label: "Buildings" },
@@ -114,6 +120,14 @@ const NonTeachingDashboard = () => {
       title: "Study Load",
       copy: "Assign subject loads to sections based on course and year level requirements.",
     },
+    irregular_study_load: {
+      title: "Irregular Study Load",
+      copy: "Arrange custom subject study loads for irregular students.",
+    },
+    teacher_scheduling: {
+      title: "Teacher Scheduling",
+      copy: "Assign teachers to subjects, sections, buildings, rooms, and schedule times.",
+    },
     subjects: {
       title: "Subject Catalog",
       copy: "Maintain the comprehensive list of academic subjects, units, and curriculum details.",
@@ -141,6 +155,8 @@ const NonTeachingDashboard = () => {
       <Suspense fallback={<PageSkeleton />}>
         <Routes>
           <Route path="study_load" element={<StudyLoadView />} />
+          <Route path="irregular_study_load" element={<IrregularStudyLoadView />} />
+          <Route path="teacher_scheduling" element={<TeacherManagementView />} />
           <Route path="subjects" element={<SubjectsView />} />
           <Route path="sections" element={<SectionsView />} />
           <Route path="buildings" element={<FacilitiesView />} />

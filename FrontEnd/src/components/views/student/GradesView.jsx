@@ -12,6 +12,7 @@ const GradesView = ({ currentUser }) => {
     const [assignment, setAssignment] = useState(null);
     const [printingSem, setPrintingSem] = useState(null);
     const [selectedSubject, setSelectedSubject] = useState(null); 
+    const [activeSemester, setActiveSemester] = useState('1st Semester');
 
     useEffect(() => {
         fetchData();
@@ -178,6 +179,26 @@ const GradesView = ({ currentUser }) => {
                 <p>Track your grades and enrollment status</p>
             </Header>
 
+            <SemesterSwitchWrap>
+                <SemesterSwitchLabel>Show Subjects For</SemesterSwitchLabel>
+                <SemesterSwitchButtons>
+                    <SemesterSwitchButton
+                        type="button"
+                        $active={activeSemester === '1st Semester'}
+                        onClick={() => setActiveSemester('1st Semester')}
+                    >
+                        1st Semester
+                    </SemesterSwitchButton>
+                    <SemesterSwitchButton
+                        type="button"
+                        $active={activeSemester === '2nd Semester'}
+                        onClick={() => setActiveSemester('2nd Semester')}
+                    >
+                        2nd Semester
+                    </SemesterSwitchButton>
+                </SemesterSwitchButtons>
+            </SemesterSwitchWrap>
+
             {orderedYearKeys.length === 0 ? (
                 <EmptyGroup>
                     <Award size={48} />
@@ -186,14 +207,20 @@ const GradesView = ({ currentUser }) => {
             ) : (
                 orderedYearKeys.map(yearKey => {
                     const yearData = gradesByYear[yearKey];
+                    const semesterSubjects = (yearData?.subjects || []).filter(
+                        (grade) => normalizeSemester(grade?.semester) === activeSemester
+                    );
+
+                    if (semesterSubjects.length === 0) return null;
+
                     return (
                         <YearGroup key={yearKey}>
                             <YearTitle>
-                                <Calendar size={20} /> {yearData.label}
+                                <Calendar size={20} /> {yearData.label} - {activeSemester}
                             </YearTitle>
                             
                             <SubjectGrid>
-                                {yearData.subjects.map((grade, idx) => (
+                                {semesterSubjects.map((grade, idx) => (
                                     <SubjectCard key={idx} onClick={() => setSelectedSubject(grade)}>
                                         <CardIcon>
                                             <BookOpen size={24} />
@@ -211,6 +238,19 @@ const GradesView = ({ currentUser }) => {
                         </YearGroup>
                     );
                 })
+            )}
+
+            {orderedYearKeys.length > 0 && orderedYearKeys.every((yearKey) => {
+                const yearData = gradesByYear[yearKey];
+                const semesterSubjects = (yearData?.subjects || []).filter(
+                    (grade) => normalizeSemester(grade?.semester) === activeSemester
+                );
+                return semesterSubjects.length === 0;
+            }) && (
+                <EmptyGroup>
+                    <Award size={48} />
+                    <p>No grades found for {activeSemester}.</p>
+                </EmptyGroup>
             )}
 
             {/* Study Load - Redesigned Business Style */}
@@ -378,6 +418,50 @@ const Header = styled.div`
   margin-bottom: 2.5rem;
   h2 { font-size: 2rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.5rem; }
   p { color: var(--text-secondary); font-size: 1.1rem; }
+`;
+
+const SemesterSwitchWrap = styled.div`
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+`;
+
+const SemesterSwitchLabel = styled.span`
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+`;
+
+const SemesterSwitchButtons = styled.div`
+    display: inline-flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+`;
+
+const SemesterSwitchButton = styled.button`
+    border: 1px solid ${props => props.$active ? 'var(--accent-primary)' : 'var(--border-color)'};
+    background: ${props => props.$active ? 'var(--accent-primary)' : 'var(--bg-primary)'};
+    color: ${props => props.$active ? '#ffffff' : 'var(--text-primary)'};
+    font-size: 0.9rem;
+    font-weight: 700;
+    padding: 0.55rem 0.9rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+
+    &:hover {
+        border-color: var(--accent-primary);
+        transform: translateY(-1px);
+    }
 `;
 
 const YearGroup = styled.div`

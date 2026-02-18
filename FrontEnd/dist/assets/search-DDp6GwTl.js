@@ -1,1 +1,0 @@
-import{c}from"./index-G8dAaOpg.js";const e=[["path",{d:"M20 6 9 17l-5-5",key:"1gmf2c"}]],t=c("check",e);const o=[["path",{d:"m21 21-4.34-4.34",key:"14j7rj"}],["circle",{cx:"11",cy:"11",r:"8",key:"4ej97u"}]],a=c("search",o);export{t as C,a as S};

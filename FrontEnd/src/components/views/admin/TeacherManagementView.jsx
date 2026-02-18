@@ -76,8 +76,6 @@ const TeacherManagementView = () => {
     fetchData();
   }, []);
 
-  if (loading) return <PageSkeleton variant="table" />;
-
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
   };
@@ -370,6 +368,8 @@ const TeacherManagementView = () => {
       hour12: true,
     });
   };
+
+  if (loading) return <PageSkeleton variant="table" />;
 
   return (
     <>

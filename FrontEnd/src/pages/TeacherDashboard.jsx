@@ -11,7 +11,7 @@ import {
   LogOut,
   GraduationCap,
   MessageSquare,
-  Crown,
+  BookOpen,
   LayoutDashboard,
   Users,
   ShieldAlert,
@@ -32,6 +32,7 @@ const EvaluationView = lazy(() => import("../components/views/teacher/Evaluation
 const SettingsView = lazy(() => import("../components/views/teacher/SettingsView"));
 const FeedbackInboxView = lazy(() => import("../components/views/admin/FeedbackInboxView"));
 const ManageStudentsView = lazy(() => import("../components/views/admin/ManageStudentsView"));
+const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
 const FacultySanctionsView = lazy(() => import("../components/views/faculty/SanctionsView"));
 const FacultyPaymentsView = lazy(() => import("../components/views/faculty/PaymentsView"));
 
@@ -110,11 +111,11 @@ const TeacherDashboard = () => {
   ];
 
   const deanNavItems = [
-    { id: "announcements", icon: Megaphone, label: "Manage Announcements" },
-    { id: "transparency", icon: LayoutDashboard, label: "Manage Projects" },
-    { id: "grade_system", icon: GraduationCap, label: "Grade Monitoring" },
-    { id: "evaluation", icon: ClipboardList, label: "Evaluation Mgmt" },
+    { id: "announcements", icon: Megaphone, label: "Announcements" },
+    { id: "transparency", icon: LayoutDashboard, label: "Projects" },
+    { id: "evaluation", icon: ClipboardList, label: "Evaluation" },
     { id: "manage_students", icon: Users, label: "Manage Students" },
+    { id: "irregular_study_load", icon: BookOpen, label: "Irregular Study Load" },
     { id: "feedback", icon: MessageSquare, label: "Feedback Replies" },
   ];
 
@@ -158,7 +159,11 @@ const TeacherDashboard = () => {
     },
     manage_students: {
         title: "Section Assignments",
-        copy: "Assign students to sections and update their regular/irregular status.",
+        copy: "Assign students to sections and update their academic status.",
+    },
+    irregular_study_load: {
+        title: "Irregular Study Load",
+        copy: "Arrange custom subject study loads for irregular students.",
     },
     sanctions: {
         title: "Sanction Management",
@@ -187,7 +192,16 @@ const TeacherDashboard = () => {
           <Route path="transparency" element={<TransparencyView isAdmin={isDeanMode} />} />
           <Route path="grade_system" element={<GradeSystemView isReadOnly={isDeanMode} />} />
           <Route path="evaluation" element={<EvaluationView isAdmin={isDeanMode} />} />
-          <Route path="manage_students" element={<ManageStudentsView mode="dean" />} />
+          <Route
+            path="manage_students"
+            element={
+              <ManageStudentsView
+                mode="dean"
+                onOpenIrregularStudyLoad={() => navigate("/teachers/irregular_study_load")}
+              />
+            }
+          />
+          <Route path="irregular_study_load" element={<IrregularStudyLoadView />} />
           <Route path="sanctions" element={<FacultySanctionsView />} />
           <Route path="payments" element={<FacultyPaymentsView />} />
           <Route path="feedback" element={<FeedbackInboxView />} />

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
+import { useNavigate } from 'react-router-dom';
 import { TeacherAPI } from '../../../services/api';
 import { Calendar, Clock, MapPin, BookOpen, User } from 'lucide-react';
 import PageSkeleton from '../../loaders/PageSkeleton';
 
 const ScheduleView = () => {
+  const navigate = useNavigate();
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -147,6 +149,20 @@ const ScheduleView = () => {
                           </DetailRow>
                         </InfoSection>
                       </CardContent>
+                      {sched.section && sched.subject && (
+                        <CardFooter>
+                          <GradeButton
+                            type="button"
+                            onClick={() => {
+                              const section = encodeURIComponent(String(sched.section || '').trim());
+                              const subject = encodeURIComponent(String(sched.subject || '').trim());
+                              navigate(`/teachers/grade_system?section=${section}&subject=${subject}`);
+                            }}
+                          >
+                            Grade This Section
+                          </GradeButton>
+                        </CardFooter>
+                      )}
                       <CardDecoration />
                     </ClassCard>
                   ))}
@@ -240,6 +256,27 @@ const TimeBadge = styled.div`
 
 const CardContent = styled.div`
     padding: 1.25rem;
+`;
+
+const CardFooter = styled.div`
+    padding: 0 1.25rem 1rem;
+`;
+
+const GradeButton = styled.button`
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+
+    &:hover {
+        border-color: var(--accent-primary);
+        color: var(--accent-primary);
+    }
 `;
 
 const SubjectName = styled.h4`

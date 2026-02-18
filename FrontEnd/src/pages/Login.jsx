@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { AuthAPI } from "../services/api";
 import usePageStyle from "../hooks/usePageStyle";
@@ -11,7 +11,6 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [signupSuccess, setSignupSuccess] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -26,13 +25,6 @@ const Login = () => {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", "light");
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("signup") === "success") {
-      setSignupSuccess(true);
-    }
-    if (params.get("error") === "1") {
-      setError("Invalid username or password");
-    }
   }, []);
 
   const handleLogin = async (e) => {
@@ -73,12 +65,6 @@ const Login = () => {
               {error}
             </div>
           )}
-          {signupSuccess && (
-            <div className="alert alert-success mb-3">
-              Account created successfully! Please login.
-            </div>
-          )}
-
           <div className="form-group mb-3">
             <label htmlFor="username" className="form-label">
               Username
@@ -119,28 +105,6 @@ const Login = () => {
           >
             {loading ? "Logging in..." : "Login"}
           </button>
-          <div className="d-flex justify-content-between align-items-center mt-3">
-            <Link
-              to="/forgot-password"
-              style={{
-                fontSize: "14px",
-                color: "var(--color-cliff)",
-                textDecoration: "none",
-              }}
-            >
-              Forgot Password?
-            </Link>
-            <Link
-              to="/signup"
-              style={{
-                fontSize: "14px",
-                color: "var(--color-cliff)",
-                textDecoration: "none",
-              }}
-            >
-              Create Account
-            </Link>
-          </div>
         </form>
       </div>
     </>

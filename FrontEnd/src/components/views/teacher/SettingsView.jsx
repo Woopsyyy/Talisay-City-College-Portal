@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { AuthAPI, getAvatarUrl } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { User, Lock, Mail, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle } from 'lucide-react';
+import { User, Mail, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle } from 'lucide-react';
 
 const SettingsView = ({ currentUser }) => {
     const [loading, setLoading] = useState(false);
@@ -14,9 +14,8 @@ const SettingsView = ({ currentUser }) => {
     const [formData, setFormData] = useState({
         username: '',
         full_name: '',
-        gender: '',
-        password: '',
-        confirmPassword: ''
+        email: '',
+        gender: ''
     });
 
     useEffect(() => {
@@ -25,6 +24,7 @@ const SettingsView = ({ currentUser }) => {
                 ...prev,
                 username: currentUser.username || '',
                 full_name: currentUser.full_name || '',
+                email: currentUser.email || '',
                 gender: (currentUser.gender || '').toLowerCase()
             }));
 
@@ -54,24 +54,13 @@ const SettingsView = ({ currentUser }) => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         setMessage(null);
-        
-        if (formData.password || formData.confirmPassword) {
-            if (formData.password !== formData.confirmPassword) {
-                setMessage({ type: 'danger', text: 'Passwords do not match' });
-                return;
-            }
-            if (formData.password.length < 8) {
-                setMessage({ type: 'danger', text: 'Password must be at least 8 characters' });
-                return;
-            }
-        }
 
         setLoading(true);
         const submitData = new FormData();
         submitData.append('username', formData.username);
         submitData.append('full_name', formData.full_name);
+        submitData.append('email', formData.email);
         if (formData.gender) submitData.append('gender', formData.gender);
-        if (formData.password) submitData.append('password', formData.password);
         
         const fileInput = document.getElementById('profileImageInput');
         if (fileInput && fileInput.files[0]) {
@@ -92,13 +81,6 @@ const SettingsView = ({ currentUser }) => {
         } finally {
             setLoading(false);
         }
-    };
-
-    const handleGoogleLink = () => {
-        setMessage({
-            type: 'danger',
-            text: 'Google account linking is disabled in Supabase-only mode.'
-        });
     };
 
     return (
@@ -141,7 +123,7 @@ const SettingsView = ({ currentUser }) => {
                         <Card>
                             <CardHeader>
                                 <User size={20} />
-                                <h3 className="card-title">Personal Information</h3>
+                                <h3>Personal Information</h3>
                             </CardHeader>
                             <CardBody>
                                 <FormGroup>
@@ -180,6 +162,19 @@ const SettingsView = ({ currentUser }) => {
                                         <option value="lgbtq+">LGBTQ+</option>
                                     </Select>
                                 </FormGroup>
+                                <FormGroup>
+                                    <Label>Recovery Email</Label>
+                                    <InputWrapper>
+                                        <Mail size={18} />
+                                        <Input 
+                                            type="email"
+                                            placeholder="Enter recovery email"
+                                            value={formData.email}
+                                            onChange={e => setFormData({...formData, email: e.target.value})}
+                                            required
+                                        />
+                                    </InputWrapper>
+                                </FormGroup>
                             </CardBody>
                         </Card>
 
@@ -190,37 +185,12 @@ const SettingsView = ({ currentUser }) => {
                             </CardHeader>
                             <CardBody>
                                 <FormGroup>
-                                    <Label>Google Account</Label>
-                                    <GoogleBtn type="button" onClick={handleGoogleLink} $linked={currentUser?.google_linked}>
-                                        <Mail size={18} />
-                                        {currentUser?.google_linked ? "Connected to Google" : "Connect Google Account"}
-                                        {currentUser?.google_linked && <CheckCircle size={16} />}
-                                    </GoogleBtn>
-                                </FormGroup>
-                                <Divider />
-                                <FormGroup>
-                                    <Label>New Password</Label>
-                                    <InputWrapper>
-                                        <Lock size={18} />
-                                        <Input 
-                                            type="password" 
-                                            placeholder="Leave blank to keep current" 
-                                            value={formData.password}
-                                            onChange={e => setFormData({...formData, password: e.target.value})}
-                                        />
-                                    </InputWrapper>
-                                </FormGroup>
-                                <FormGroup>
-                                    <Label>Confirm Password</Label>
-                                    <InputWrapper>
-                                        <Lock size={18} />
-                                        <Input 
-                                            type="password" 
-                                            placeholder="Confirm new password"
-                                            value={formData.confirmPassword}
-                                            onChange={e => setFormData({...formData, confirmPassword: e.target.value})}
-                                        />
-                                    </InputWrapper>
+                                    <Label>Recovery Email Status</Label>
+                                    <EmailStatus>
+                                        <Mail size={16} />
+                                        {formData.email ? `Connected: ${formData.email}` : "No connected email"}
+                                    </EmailStatus>
+                                    <p className="hint">Password creation and reset are managed by administrators.</p>
                                 </FormGroup>
                             </CardBody>
                         </Card>
@@ -338,17 +308,17 @@ const Select = styled.select`
   &:focus { outline: none; border-color: var(--accent-primary); }
 `;
 
-const Divider = styled.div`
-  height: 1px; background: var(--border-color); margin: 0.5rem 0;
-`;
-
-const GoogleBtn = styled.button`
-  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 10px;
-  background: ${props => props.$linked ? 'var(--bg-tertiary)' : 'white'};
-  color: ${props => props.$linked ? 'var(--text-primary)' : '#333'};
-  border: 1px solid var(--border-color); border-radius: 8px; font-weight: 600; cursor: pointer;
-  transition: all 0.2s;
-  &:hover { background: var(--bg-tertiary); }
+const EmailStatus = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 600;
 `;
 
 const Actions = styled.div`

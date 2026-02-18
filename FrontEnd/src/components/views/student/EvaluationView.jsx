@@ -460,7 +460,15 @@ const EvaluationView = () => {
                                             view: 'evaluation', 
                                             teacher_id: teacher.id, 
                                             teacher_name: teacher.name,
-                                            subject: (teacher.subjects || []).map(s => typeof s === 'object' ? s.title : s).join(", ")
+                                            subject: (teacher.subjects || [])
+                                                .map((s) => {
+                                                    if (typeof s !== 'object') return String(s || '');
+                                                    const code = String(s.code || '').trim();
+                                                    const title = String(s.title || '').trim();
+                                                    return code && title ? `${code} - ${title}` : (code || title);
+                                                })
+                                                .filter(Boolean)
+                                                .join(", ")
                                         })}
                                         $secondary={teacher.evaluated}
                                         style={{ width: '100%', justifyContent: 'center', marginTop: 'auto' }}

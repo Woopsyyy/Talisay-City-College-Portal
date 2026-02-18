@@ -8,6 +8,8 @@ const BACKUP_PREFIX = String(import.meta.env.VITE_SUPABASE_BACKUP_PREFIX || "bac
   .replace(/^\/+/, "")
   .replace(/\/+$/, "");
 const DEFAULT_AVATAR = "/images/sample.jpg";
+const USER_SAFE_SELECT =
+  "id,username,email,full_name,role,roles,sub_role,sub_roles,school_id,image_path,created_at,updated_at";
 
 let activeRequests = 0;
 const loadingSubscribers = new Set();
@@ -57,6 +59,27 @@ const formatSupabaseError = (error, fallback = "Database request failed") => {
   return formatted;
 };
 
+const isMissingFunctionError = (error, fnName = "") => {
+  const message = String(error?.message || "").toLowerCase();
+  const name = String(fnName || "").toLowerCase();
+  return (
+    error?.code === "42883" ||
+    message.includes("could not find the function") ||
+    message.includes("function") && name && message.includes(name)
+  );
+};
+
+const isMissingColumnError = (error, columnName = "") => {
+  const message = String(error?.message || "").toLowerCase();
+  const target = String(columnName || "").toLowerCase();
+  if (!target) return false;
+  return (
+    (message.includes("column") && message.includes(target) && message.includes("does not exist")) ||
+    (message.includes("could not find the") && message.includes(target) && message.includes("column"))
+  );
+};
+
+
 const withApi = async (fn, { silent = false } = {}) => {
   if (!silent) {
     activeRequests += 1;
@@ -96,6 +119,82 @@ const clearStoredUser = () => {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem("tcc_avatar");
   } catch (_) {}
+};
+
+const normalizeLogRole = (value) => {
+  const role = String(value || "")
+    .trim()
+    .toLowerCase();
+  return role === "go" ? "nt" : role;
+};
+
+const normalizeLogText = (value) => {
+  const text = String(value ?? "").trim();
+  return text || null;
+};
+
+const normalizeLogUserId = (value) => {
+  const id = Number(value);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return Math.trunc(id);
+};
+
+const normalizeLogMetadata = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return {};
+  }
+};
+
+const logStatusEvent = async (payload = {}) => {
+  const action = String(payload?.action || "")
+    .trim()
+    .toLowerCase();
+  if (!action) return false;
+
+  const category = String(payload?.category || "general")
+    .trim()
+    .toLowerCase() || "general";
+
+  const actorFallback = readStoredUser();
+  const actorUserId = normalizeLogUserId(payload?.actor_user_id ?? actorFallback?.id);
+  const actorUsername = normalizeLogText(payload?.actor_username ?? actorFallback?.username);
+  const actorRole = normalizeLogRole(payload?.actor_role ?? actorFallback?.role);
+
+  const targetUserId = normalizeLogUserId(payload?.target_user_id);
+  const targetUsername = normalizeLogText(payload?.target_username);
+  const targetRole = normalizeLogRole(payload?.target_role);
+
+  const message =
+    normalizeLogText(payload?.message) ||
+    `${action.replace(/_/g, " ")} event`;
+  const metadata = normalizeLogMetadata(payload?.metadata);
+
+  try {
+    const { error } = await supabase.rpc("app_log_status_event", {
+      p_action: action,
+      p_category: category,
+      p_message: message,
+      p_actor_user_id: actorUserId,
+      p_actor_username: actorUsername,
+      p_actor_role: actorRole || null,
+      p_target_user_id: targetUserId,
+      p_target_username: targetUsername,
+      p_target_role: targetRole || null,
+      p_metadata: metadata,
+    });
+
+    if (!error) return true;
+    if (isMissingFunctionError(error, "app_log_status_event")) return false;
+
+    console.warn("Status log write failed:", error?.message || error);
+    return false;
+  } catch (error) {
+    console.warn("Status log write failed:", error?.message || error);
+    return false;
+  }
 };
 
 const requireStoredUser = () => {
@@ -206,6 +305,11 @@ const isMissingRelation = (error) => {
   return error?.code === "42P01" || message.includes("does not exist");
 };
 
+const isPermissionDeniedError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  return error?.code === "42501" || message.includes("permission denied");
+};
+
 const normalizeBcryptHash = (hash) => {
   if (!hash) return "";
   if (hash.startsWith("$2y$")) return `$2a$${hash.slice(4)}`;
@@ -214,14 +318,95 @@ const normalizeBcryptHash = (hash) => {
 
 const sanitizeLike = (value) =>
   String(value || "")
-    .replace(/[%_,]/g, " ")
+    .replace(/[%_,()']/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const normalizeLocalEmailPart = (username, fallback = "user") => {
+  const base = String(username || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, ".")
+    .replace(/\.+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+  return base || fallback;
+};
+
+const buildSystemEmail = (username) => {
+  const safe = normalizeLocalEmailPart(username, `user${Date.now()}`);
+  return `${safe}.${Date.now()}@local.tcc`;
+};
+
+const buildStableSystemEmail = (username) => {
+  const safe = normalizeLocalEmailPart(username, "user");
+  return `${safe}@local.tcc`;
+};
+
+const buildAutoSchoolId = (role) => {
+  const normalizedRole = normalizeRole(role || "student");
+  const prefixByRole = {
+    student: "STU",
+    teacher: "TCH",
+    nt: "NT",
+    admin: "ADM",
+  };
+  const prefix = prefixByRole[normalizedRole] || "USR";
+  const year = new Date().getFullYear();
+  const suffix = Math.floor(100000 + Math.random() * 900000);
+  return `${prefix}${year}${suffix}`;
+};
 
 const parseNumber = (value, fallback = null) => {
   if (value == null || value === "") return fallback;
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
+};
+
+const toSmallintFlag = (value, fallback = 0) => {
+  const normalizedFallback = Number(fallback) === 1 ? 1 : 0;
+  if (value == null) return normalizedFallback;
+  if (typeof value === "number") return value > 0 ? 1 : 0;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(raw)) return 1;
+  if (["0", "false", "no", "n", "off", ""].includes(raw)) return 0;
+  return normalizedFallback;
+};
+
+const normalizeStudentStatusValue = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "irregular") return "Irregular";
+  return "Regular";
+};
+
+const parseGradePoint = (value, label = "Grade") => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const validPattern = /^(?:[1-4](?:\.[0-9])?|5(?:\.0)?)$/;
+  if (!validPattern.test(raw)) {
+    throw new Error(`${label} must be between 1.0 and 5.0 and use one decimal place.`);
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
+    throw new Error(`${label} must be between 1.0 and 5.0.`);
+  }
+
+  return Number(parsed.toFixed(1));
+};
+
+const parseOptionalFutureDate = (value, fieldLabel = "date") => {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Please enter a valid ${fieldLabel}.`);
+  }
+  if (date <= new Date()) {
+    throw new Error(`${fieldLabel} must be in the future.`);
+  }
+  return date.toISOString();
 };
 
 const toBoolean = (value, fallback = true) => {
@@ -231,6 +416,49 @@ const toBoolean = (value, fallback = true) => {
   if (["1", "true", "yes", "enabled"].includes(raw)) return true;
   if (["0", "false", "no", "disabled"].includes(raw)) return false;
   return fallback;
+};
+
+const normalizeAssignmentStatus = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const isInactiveAssignmentStatus = (value) => {
+  const status = normalizeAssignmentStatus(value);
+  if (!status) return false;
+  return ["inactive", "dropped", "archived", "deleted", "removed", "cancelled"].includes(status);
+};
+
+const assignmentStatusPriority = (value) => {
+  const status = normalizeAssignmentStatus(value);
+  if (!status) return 1;
+  if (["active", "current", "enrolled"].includes(status)) return 0;
+  if (isInactiveAssignmentStatus(status)) return 50;
+  return 5;
+};
+
+const buildContainsPattern = (value) => {
+  const safe = sanitizeLike(value);
+  return safe ? `%${safe}%` : null;
+};
+
+const ensureAuthUidBoundForStoredUser = async () => {
+  const stored = readStoredUser();
+  const userId = parseNumber(stored?.id, null);
+  if (!userId) return;
+
+  try {
+    const { error } = await supabase.rpc("app_bind_auth_uid_for_user", { p_user_id: userId });
+    if (
+      error &&
+      !isMissingFunctionError(error, "app_bind_auth_uid_for_user") &&
+      !isPermissionDeniedError(error)
+    ) {
+      console.warn("Auth UID bind failed:", error?.message || error);
+    }
+  } catch (error) {
+    console.warn("Auth UID bind failed:", error?.message || error);
+  }
 };
 
 const mapSubject = (row) => ({
@@ -262,6 +490,46 @@ const mapProject = (row) => ({
   title: row.title || row.name || "",
   started: row.start_date || null,
   start_date: row.start_date || null,
+});
+
+const mapStatusLog = (row) => ({
+  id: row?.id ?? null,
+  created_at: row?.created_at || null,
+  actor_user_id: row?.actor_user_id ?? null,
+  actor_username: row?.actor_username || "",
+  actor_role: normalizeLogRole(row?.actor_role || ""),
+  action: String(row?.action || "")
+    .trim()
+    .toLowerCase(),
+  category: String(row?.category || "general")
+    .trim()
+    .toLowerCase(),
+  target_user_id: row?.target_user_id ?? null,
+  target_username: row?.target_username || "",
+  target_role: normalizeLogRole(row?.target_role || ""),
+  message: row?.message || "",
+  metadata:
+    row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+      ? row.metadata
+      : {},
+});
+
+const mapAccountRequest = (row) => ({
+  id: row?.id ?? null,
+  request_type: String(row?.request_type || "").trim().toLowerCase(),
+  status: String(row?.status || "pending")
+    .trim()
+    .toLowerCase(),
+  requester_user_id: row?.requester_user_id ?? null,
+  requester_username: row?.requester_username || "",
+  requester_full_name: row?.requester_full_name || "",
+  requester_role: normalizeLogRole(row?.requester_role || ""),
+  note: row?.note || "",
+  created_at: row?.created_at || null,
+  updated_at: row?.updated_at || null,
+  resolved_at: row?.resolved_at || null,
+  resolved_by_user_id: row?.resolved_by_user_id ?? null,
+  resolved_by_username: row?.resolved_by_username || "",
 });
 
 const normalizeImageStoragePath = (value) => {
@@ -368,7 +636,7 @@ const listStorageFilesRecursive = async (bucket, rootPrefix = "") => {
 const fetchUsersByIds = async (ids) => {
   const unique = Array.from(new Set((ids || []).filter(Boolean)));
   if (!unique.length) return new Map();
-  const { data, error } = await supabase.from("users").select("*").in("id", unique);
+  const { data, error } = await supabase.from("users").select(USER_SAFE_SELECT).in("id", unique);
   if (error) throw formatSupabaseError(error);
   const map = new Map();
   (data || []).forEach((row) => map.set(row.id, normalizeUser(row)));
@@ -442,7 +710,7 @@ const findSubjectByCode = async (subjectCode) => {
   const { data, error } = await supabase
     .from("subjects")
     .select("*")
-    .eq("subject_code", code)
+    .ilike("subject_code", code)
     .limit(1)
     .maybeSingle();
   if (error) throw formatSupabaseError(error);
@@ -481,7 +749,7 @@ const safeUserUpdate = async (userId, payload) => {
       .from("users")
       .update(mutable)
       .eq("id", userId)
-      .select("*")
+      .select(USER_SAFE_SELECT)
       .single();
 
     if (!error) return data;
@@ -535,147 +803,137 @@ export const AuthAPI = {
 
       const identifier = String(username).trim();
 
-      const { data, error } = await supabase
-        .from("users")
-        .select("*")
-        .eq("username", identifier)
-        .limit(1);
+      // Preferred path for RLS-enabled projects: SECURITY DEFINER RPC in Supabase.
+      const { data: rpcData, error: rpcError } = await supabase.rpc("app_login", {
+        p_identifier: identifier,
+        p_password: String(password),
+      });
 
-      if (error) throw formatSupabaseError(error);
-      let userRow = data?.[0] || null;
+      if (!rpcError) {
+        const rpcRow = Array.isArray(rpcData) ? (rpcData[0] || null) : (rpcData || null);
+        if (!rpcRow) throw new Error("Invalid username or password.");
 
-      if (!userRow && identifier.includes("@")) {
-        const { data: byEmail, error: emailError } = await supabase
-          .from("users")
-          .select("*")
-          .eq("email", identifier)
-          .limit(1);
-        if (emailError) throw formatSupabaseError(emailError);
-        userRow = byEmail?.[0] || null;
-      }
+        const loginEmail =
+          String(rpcRow.email || "").trim().toLowerCase() ||
+          buildStableSystemEmail(rpcRow.username || identifier);
 
-      if (!userRow) {
-        const { count, error: countError } = await supabase
-          .from("users")
-          .select("*", { count: "exact", head: true });
-        if (!countError && (count || 0) === 0) {
-          throw new Error(
-            "No users are visible in Supabase. Import user data (postgres_data.sql) or check RLS/policies on public.users.",
+        const passwordText = String(password);
+        const tryConfirmAuthEmail = async () => {
+          const { data: confirmData, error: confirmError } = await supabase.rpc(
+            "app_confirm_auth_email",
+            {
+              p_identifier: identifier,
+              p_password: passwordText,
+            },
+          );
+          if (confirmError) {
+            if (isMissingFunctionError(confirmError, "app_confirm_auth_email")) {
+              return false;
+            }
+            throw formatSupabaseError(confirmError);
+          }
+          return Boolean(confirmData);
+        };
+        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+        const trySignIn = async () =>
+          supabase.auth.signInWithPassword({
+            email: loginEmail,
+            password: passwordText,
+          });
+
+        let { error: signInError } = await trySignIn();
+        if (signInError) {
+          let authMsg = String(signInError.message || "").toLowerCase();
+
+          if (authMsg.includes("email not confirmed")) {
+            const confirmed = await tryConfirmAuthEmail();
+            if (confirmed) {
+              ({ error: signInError } = await trySignIn());
+              authMsg = String(signInError?.message || "").toLowerCase();
+            }
+          }
+
+          const likelyMissingAuthUser =
+            authMsg.includes("invalid login credentials") ||
+            authMsg.includes("user not found");
+
+          if (likelyMissingAuthUser) {
+            throw new Error(
+              "Secure auth profile is missing for this account. Ask an admin to reset the password once in Admin > Account Access.",
+            );
+          }
+        }
+
+        if (signInError) {
+          const finalSignInMessage = String(signInError.message || "").toLowerCase();
+          if (finalSignInMessage.includes("email not confirmed")) {
+            throw new Error(
+              "Login blocked because secure auth email is still unconfirmed. Ask an admin to reset the password in Account Access to re-sync this auth profile.",
+            );
+          }
+          throw formatSupabaseError(
+            signInError,
+            "Secure session sign-in failed.",
           );
         }
-        throw new Error("Invalid username or password.");
-      }
 
-      const valid = await bcrypt.compare(password, normalizeBcryptHash(userRow.password));
-      if (!valid) throw new Error("Invalid username or password.");
+        const { data: authUserData } = await supabase.auth.getUser();
+        const authUid = authUserData?.user?.id || null;
 
-      const user = normalizeUser(userRow);
-      writeStoredUser(user);
-      return { success: true, user };
-    }),
-
-  signup: async (userData) =>
-    withApi(async () => {
-      const isForm = userData instanceof FormData;
-      const fullName = isForm
-        ? userData.get("full_name") || userData.get("name")
-        : userData?.full_name || userData?.name;
-      const username = isForm ? userData.get("username") : userData?.username;
-      const email = isForm ? userData.get("email") : userData?.email;
-      const password = isForm ? userData.get("password") : userData?.password;
-      const role = isForm ? userData.get("role") : userData?.role;
-      const imageFile = isForm
-        ? userData.get("profile_picture") || userData.get("profile_image")
-        : null;
-
-      if (!fullName || !username || !email || !password) {
-        throw new Error("Please provide full name, username, email, and password.");
-      }
-
-      const { data: usernameCheck, error: usernameError } = await supabase
-        .from("users")
-        .select("id")
-        .eq("username", String(username).trim())
-        .limit(1);
-      if (usernameError) throw formatSupabaseError(usernameError);
-      if ((usernameCheck || []).length > 0) throw new Error("Username already exists.");
-
-      const { data: emailCheck, error: emailError } = await supabase
-        .from("users")
-        .select("id")
-        .eq("email", String(email).trim())
-        .limit(1);
-      if (emailError) throw formatSupabaseError(emailError);
-      if ((emailCheck || []).length > 0) throw new Error("Email already exists.");
-
-      const hashedPassword = await bcrypt.hash(String(password), 12);
-      const schoolId =
-        (isForm ? userData.get("school_id") : userData?.school_id) ||
-        `${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-      const insertPayload = {
-        username: String(username).trim(),
-        password: hashedPassword,
-        email: String(email).trim(),
-        full_name: String(fullName).trim(),
-        role: String(role || "student").toLowerCase(),
-        school_id: String(schoolId),
-        image_path: DEFAULT_AVATAR,
-      };
-
-      const { data: inserted, error: insertError } = await supabase
-        .from("users")
-        .insert(insertPayload)
-        .select("*")
-        .single();
-      if (insertError) throw formatSupabaseError(insertError);
-
-      let finalRow = inserted;
-      if (imageFile instanceof File && imageFile.size > 0) {
-        const storagePath = buildAvatarStoragePath(inserted.id, imageFile.name);
-        const { error: uploadError } = await supabase.storage
-          .from(AVATAR_BUCKET)
-          .upload(storagePath, imageFile, { upsert: true });
-        if (!uploadError) {
-          finalRow = await safeUserUpdate(inserted.id, { image_path: storagePath });
+        if (authUid) {
+          const { error: bindError } = await supabase.rpc("app_bind_auth_uid_for_user", {
+            p_user_id: rpcRow.id,
+          });
+          if (bindError && !isMissingFunctionError(bindError, "app_bind_auth_uid_for_user")) {
+            throw formatSupabaseError(bindError);
+          }
         }
+
+        const { data: profileRow, error: profileError } = await supabase
+          .from("users")
+          .select(USER_SAFE_SELECT)
+          .eq("id", rpcRow.id)
+          .limit(1)
+          .maybeSingle();
+        if (profileError) throw formatSupabaseError(profileError);
+
+        const user = normalizeUser(profileRow || rpcRow);
+        writeStoredUser(user);
+
+        await logStatusEvent({
+          action: "login",
+          category: "auth",
+          actor_user_id: user?.id,
+          actor_username: user?.username,
+          actor_role: user?.role,
+          target_user_id: user?.id,
+          target_username: user?.username,
+          target_role: user?.role,
+          message: `${user?.full_name || user?.username || "User"} logged in.`,
+          metadata: { method: "password" },
+        });
+
+        return { success: true, user };
       }
 
-      return { success: true, user: normalizeUser(finalRow) };
+      if (isMissingFunctionError(rpcError, "app_login")) {
+        throw new Error(
+          "Secure login function app_login is missing. Run the SQL in supabase.txt to enable RLS-safe authentication.",
+        );
+      }
+      throw formatSupabaseError(rpcError);
     }),
 
-  resetPassword: async (username) =>
+  signup: async (_userData) =>
     withApi(async () => {
-      const { data, error } = await supabase
-        .from("users")
-        .select("id")
-        .eq("username", String(username || "").trim())
-        .limit(1)
-        .maybeSingle();
-
-      if (error) throw formatSupabaseError(error);
-      if (!data) throw new Error("User not found.");
-
-      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-      let generated = "";
-      for (let i = 0; i < 10; i += 1) {
-        generated += chars[Math.floor(Math.random() * chars.length)];
-      }
-
-      const hashed = await bcrypt.hash(generated, 12);
-      const { error: updateError } = await supabase
-        .from("users")
-        .update({ password: hashed, updated_at: new Date().toISOString() })
-        .eq("id", data.id);
-      if (updateError) throw formatSupabaseError(updateError);
-
-      return { success: true, new_password: generated };
+      throw new Error("Self-service account creation is disabled. Contact an administrator.");
     }),
 
   updateProfile: async (profileData) => {
     try {
       return await withApi(async () => {
         const currentUser = requireStoredUser();
+        const canEditPersonalInfo = normalizeRole(currentUser?.role) !== "student";
         const isForm = profileData instanceof FormData;
         const username = isForm ? profileData.get("username") : profileData?.username;
         const fullName = isForm ? profileData.get("full_name") : profileData?.full_name;
@@ -686,9 +944,9 @@ export const AuthAPI = {
           : null;
 
         const updates = { updated_at: new Date().toISOString() };
-        if (username) updates.username = String(username).trim();
-        if (fullName) updates.full_name = String(fullName).trim();
-        if (gender) updates.gender = String(gender).trim();
+        if (canEditPersonalInfo && username) updates.username = String(username).trim();
+        if (canEditPersonalInfo && fullName) updates.full_name = String(fullName).trim();
+        if (canEditPersonalInfo && gender) updates.gender = String(gender).trim();
 
         if (updates.username && updates.username !== currentUser.username) {
           const { data: existingUsername, error: existingError } = await supabase
@@ -704,7 +962,12 @@ export const AuthAPI = {
         }
 
         if (password) {
-          updates.password = await bcrypt.hash(String(password), 12);
+          const rawPassword = String(password);
+          const { error: authPasswordError } = await supabase.auth.updateUser({ password: rawPassword });
+          if (authPasswordError) {
+            throw formatSupabaseError(authPasswordError, "Failed to update auth password.");
+          }
+          updates.password = await bcrypt.hash(rawPassword, 12);
         }
 
         if (imageFile instanceof File && imageFile.size > 0) {
@@ -721,6 +984,20 @@ export const AuthAPI = {
         writeStoredUser(normalized);
         const avatar = await getAvatarUrl(normalized.id, normalized.image_path);
 
+        const changedFields = Object.keys(updates).filter((key) => key !== "updated_at");
+        await logStatusEvent({
+          action: "account_update",
+          category: "account",
+          actor_user_id: normalized?.id,
+          actor_username: normalized?.username,
+          actor_role: normalized?.role,
+          target_user_id: normalized?.id,
+          target_username: normalized?.username,
+          target_role: normalized?.role,
+          message: `${normalized?.full_name || normalized?.username || "User"} updated account details.`,
+          metadata: { changed_fields: changedFields },
+        });
+
         return { success: true, user: normalized, avatar_url: avatar };
       });
     } catch (error) {
@@ -730,17 +1007,49 @@ export const AuthAPI = {
 
   checkSession: async () =>
     withApi(async () => {
-      const stored = readStoredUser();
-      if (!stored?.id) return { authenticated: false, user: null };
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw formatSupabaseError(sessionError);
 
-      const { data, error } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", stored.id)
-        .limit(1)
-        .maybeSingle();
+      const sessionUser = sessionData?.session?.user;
+      if (!sessionUser) {
+        clearStoredUser();
+        emitUnauthorized();
+        return { authenticated: false, user: null };
+      }
 
-      if (error || !data) {
+      const { data: bindData, error: bindError } = await supabase.rpc("app_bind_auth_uid");
+      if (bindError && !isMissingFunctionError(bindError, "app_bind_auth_uid")) {
+        throw formatSupabaseError(bindError);
+      }
+
+      const boundUserId = Array.isArray(bindData) ? bindData[0]?.id : bindData?.id;
+
+      const { data: rpcData, error: rpcError } = await supabase.rpc("app_get_current_user");
+      let data = null;
+      if (!rpcError) {
+        data = Array.isArray(rpcData) ? (rpcData[0] || null) : (rpcData || null);
+      } else if (!isMissingFunctionError(rpcError, "app_get_current_user")) {
+        throw formatSupabaseError(rpcError);
+      }
+
+      if (!data) {
+        let query = supabase.from("users").select(USER_SAFE_SELECT).limit(1);
+        if (boundUserId) {
+          query = query.eq("id", boundUserId);
+        } else {
+          query = query.eq("auth_uid", sessionUser.id);
+        }
+
+        const { data: fallbackData, error } = await query.maybeSingle();
+        if (error) {
+          clearStoredUser();
+          emitUnauthorized();
+          return { authenticated: false, user: null };
+        }
+        data = fallbackData || null;
+      }
+
+      if (!data) {
         clearStoredUser();
         emitUnauthorized();
         return { authenticated: false, user: null };
@@ -753,6 +1062,7 @@ export const AuthAPI = {
 
   logout: async () =>
     withApi(async () => {
+      await supabase.auth.signOut();
       clearStoredUser();
       emitUnauthorized();
       return { success: true };
@@ -764,12 +1074,45 @@ export const AuthAPI = {
 export const PublicAPI = {
   getStats: async () =>
     withApi(async () => {
+      const { data: rpcData, error: rpcError } = await supabase.rpc("app_public_stats");
+      if (!rpcError) {
+        const row = Array.isArray(rpcData) ? (rpcData[0] || null) : (rpcData || null);
+        if (row) {
+          return {
+            users: Number(row.users) || 0,
+            buildings: Number(row.buildings) || 0,
+            subjects: Number(row.subjects) || 0,
+            sections: Number(row.sections) || 0,
+          };
+        }
+      } else if (
+        !isMissingFunctionError(rpcError, "app_public_stats") &&
+        !isPermissionDeniedError(rpcError)
+      ) {
+        throw formatSupabaseError(rpcError);
+      }
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw formatSupabaseError(sessionError);
+      if (!sessionData?.session) {
+        return { users: 0, buildings: 0, subjects: 0, sections: 0 };
+      }
+
       const [usersCount, buildingsCount, subjectsCount, sectionsCount] = await Promise.all([
-        supabase.from("users").select("*", { count: "exact", head: true }),
+        supabase.from("users").select("id", { count: "exact", head: true }),
         supabase.from("buildings").select("*", { count: "exact", head: true }),
         supabase.from("subjects").select("*", { count: "exact", head: true }),
         supabase.from("sections").select("*", { count: "exact", head: true }),
       ]);
+
+      const firstError =
+        usersCount.error || buildingsCount.error || subjectsCount.error || sectionsCount.error;
+      if (firstError) {
+        if (isPermissionDeniedError(firstError)) {
+          return { users: 0, buildings: 0, subjects: 0, sections: 0 };
+        }
+        throw formatSupabaseError(firstError);
+      }
 
       return {
         users: usersCount.count || 0,
@@ -862,10 +1205,13 @@ const mapScheduleRows = async (scheduleRows) => {
 
     return {
       id: row.id,
+      section_id: row.section_id || section?.id || null,
+      teacher_assignment_id: row.teacher_assignment_id || null,
       day: row.day_of_week || row.day || "Monday",
       time_start: row.time_start,
       time_end: row.time_end,
       subject: row.subject_code || subject?.subject_code || "",
+      subject_id: subject?.id || assignment?.subject_id || null,
       subject_title: subject?.subject_name || "",
       instructor: teacher?.full_name || teacher?.username || null,
       year: section?.grade_level || "",
@@ -1015,60 +1361,682 @@ const countExact = async (table) => {
   return count || 0;
 };
 
+const fetchUserLogSnapshot = async (userId) => {
+  const numericUserId = normalizeLogUserId(userId);
+  if (!numericUserId) return null;
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id,username,full_name,role")
+    .eq("id", numericUserId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw formatSupabaseError(error);
+  return data || null;
+};
+
+const deleteUserRecords = async (userId, options = {}) => {
+  const targetSnapshot =
+    options?.target_user && typeof options.target_user === "object"
+      ? options.target_user
+      : await fetchUserLogSnapshot(userId).catch(() => null);
+
+  await Promise.all([
+    supabase.from("user_assignments").delete().eq("user_id", userId),
+    supabase.from("teacher_assignments").delete().eq("teacher_id", userId),
+    supabase.from("grades").delete().eq("student_id", userId),
+    supabase.from("grades").delete().eq("teacher_id", userId),
+    supabase.from("teacher_evaluations").delete().eq("student_id", userId),
+    supabase.from("teacher_evaluations").delete().eq("teacher_id", userId),
+    supabase.from("announcements").delete().eq("author_id", userId),
+    supabase.from("feedbacks").delete().eq("student_id", userId),
+    supabase.from("feedbacks").update({ replied_by: null }).eq("replied_by", userId),
+  ]);
+
+  const { error } = await supabase.from("users").delete().eq("id", userId);
+  if (error) throw formatSupabaseError(error);
+
+  if (!options?.skip_log) {
+    await logStatusEvent({
+      action: options?.action || "delete_account",
+      category: options?.category || "account",
+      actor_user_id: options?.actor_user_id,
+      actor_username: options?.actor_username,
+      actor_role: options?.actor_role,
+      target_user_id: targetSnapshot?.id ?? userId,
+      target_username: targetSnapshot?.username || null,
+      target_role: targetSnapshot?.role || null,
+      message:
+        options?.message ||
+        `Account "${targetSnapshot?.full_name || targetSnapshot?.username || userId}" was deleted.`,
+      metadata: options?.metadata || {},
+    });
+  }
+
+  return { success: true };
+};
+
 export const AdminAPI = {
   getUsers: async (filters = {}) =>
     withApi(async () => {
-      const { data, error } = await supabase
-        .from("users")
-        .select("*")
-        .order("full_name", { ascending: true });
-      if (error) throw formatSupabaseError(error);
+      const fetchUsers = async () => {
+        const primarySelect = `${USER_SAFE_SELECT},expires_at`;
+        let { data, error } = await supabase
+          .from("users")
+          .select(primarySelect)
+          .order("full_name", { ascending: true });
 
-      const mapped = (data || []).map(normalizeUser);
+        if (error && isMissingColumnError(error, "expires_at")) {
+          const fallback = await supabase
+            .from("users")
+            .select(USER_SAFE_SELECT)
+            .order("full_name", { ascending: true });
+          data = fallback.data;
+          error = fallback.error;
+        }
+        if (error) throw formatSupabaseError(error);
+        return (data || []).map(normalizeUser);
+      };
+
+      let mapped = await fetchUsers();
+
+      const now = new Date();
+      const expiredUsers = mapped.filter((user) => {
+        if (!user?.expires_at) return false;
+        const expiresAt = new Date(user.expires_at);
+        return !Number.isNaN(expiresAt.getTime()) && expiresAt <= now;
+      });
+
+      if (expiredUsers.length > 0) {
+        for (const user of expiredUsers) {
+          await deleteUserRecords(user.id, {
+            action: "account_expired_cleanup",
+            category: "account",
+            actor_username: "system",
+            actor_role: "system",
+            target_user: user,
+            message: `Expired account "${user.full_name || user.username || user.id}" was removed.`,
+            metadata: {
+              expires_at: user.expires_at || null,
+              source: "account_access_refresh",
+            },
+          });
+        }
+        mapped = await fetchUsers();
+      }
+
+      if (filters?.includePurgeSummary) {
+        return {
+          users: mapped,
+          deletedExpiredCount: expiredUsers.length,
+        };
+      }
+
       if (!filters?.role) return mapped;
       const role = normalizeRole(filters.role);
       return mapped.filter((user) => user.roles.includes(role));
     }),
 
+  getStatusLogs: async (filters = {}) =>
+    withApi(async () => {
+      const limitValue = Number(filters?.limit);
+      const limit = Number.isFinite(limitValue)
+        ? Math.min(1000, Math.max(20, Math.trunc(limitValue)))
+        : 500;
+
+      let query = supabase
+        .from("status_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      const actionFilter = String(filters?.action || "")
+        .trim()
+        .toLowerCase();
+      if (actionFilter) {
+        query = query.eq("action", actionFilter);
+      }
+
+      const actorRoleFilter = normalizeLogRole(filters?.actor_role);
+      if (actorRoleFilter) {
+        query = query.eq("actor_role", actorRoleFilter);
+      }
+
+      const categoryFilter = String(filters?.category || "")
+        .trim()
+        .toLowerCase();
+      if (categoryFilter) {
+        query = query.eq("category", categoryFilter);
+      }
+
+      const dateFromRaw = String(filters?.date_from || "").trim();
+      if (dateFromRaw) {
+        const fromDate = new Date(dateFromRaw);
+        if (!Number.isNaN(fromDate.getTime())) {
+          query = query.gte("created_at", fromDate.toISOString());
+        }
+      }
+
+      const dateToRaw = String(filters?.date_to || "").trim();
+      if (dateToRaw) {
+        const toDate = new Date(dateToRaw);
+        if (!Number.isNaN(toDate.getTime())) {
+          const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dateToRaw);
+          if (isDateOnly) {
+            toDate.setHours(23, 59, 59, 999);
+          }
+          query = query.lte("created_at", toDate.toISOString());
+        }
+      }
+
+      const search = sanitizeLike(filters?.search);
+      if (search) {
+        query = query.or(
+          [
+            `actor_username.ilike.%${search}%`,
+            `actor_role.ilike.%${search}%`,
+            `target_username.ilike.%${search}%`,
+            `target_role.ilike.%${search}%`,
+            `action.ilike.%${search}%`,
+            `category.ilike.%${search}%`,
+            `message.ilike.%${search}%`,
+          ].join(","),
+        );
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        const message = String(error?.message || "").toLowerCase();
+        if (isMissingRelation(error) && message.includes("status_logs")) {
+          throw new Error(
+            "Status logs table is missing. Run the latest supabase.txt SQL patch to enable admin activity logs.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to load status logs.");
+      }
+
+      return (data || []).map(mapStatusLog);
+    }),
+
+  getAccountRequests: async (filters = {}) =>
+    withApi(async () => {
+      const status = String(filters?.status || "").trim().toLowerCase();
+      const requestType = String(filters?.request_type || "").trim().toLowerCase();
+      const limitValue = Number(filters?.limit);
+      const limit = Number.isFinite(limitValue)
+        ? Math.min(1000, Math.max(1, Math.trunc(limitValue)))
+        : 200;
+
+      const { data, error } = await supabase.rpc("app_get_account_requests", {
+        p_status: status || null,
+        p_request_type: requestType || null,
+        p_limit: limit,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_get_account_requests")) {
+          throw new Error(
+            "Account request RPC is missing. Run the latest supabase.txt to enable request approval workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to load account requests.");
+      }
+
+      return (Array.isArray(data) ? data : data ? [data] : []).map(mapAccountRequest);
+    }),
+
+  setAccountRequestStatus: async (requestId, status, note = null) =>
+    withApi(async () => {
+      const numericId = Number(requestId);
+      const normalizedStatus = String(status || "").trim().toLowerCase();
+      if (!Number.isFinite(numericId) || numericId <= 0) {
+        throw new Error("Invalid request selected.");
+      }
+      if (!["approved", "rejected"].includes(normalizedStatus)) {
+        throw new Error("Invalid request status.");
+      }
+
+      const { data, error } = await supabase.rpc("app_set_account_request_status", {
+        p_request_id: numericId,
+        p_status: normalizedStatus,
+        p_note: note == null ? null : String(note).trim() || null,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_set_account_request_status")) {
+          throw new Error(
+            "Account request status RPC is missing. Run the latest supabase.txt to enable approval workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to update request status.");
+      }
+
+      const row = Array.isArray(data) ? data[0] : data;
+      return row || { id: numericId, status: normalizedStatus };
+    }),
+
+  approveAllAccountRequests: async (requestType = null) =>
+    withApi(async () => {
+      const normalizedType = String(requestType || "").trim().toLowerCase();
+      const { data, error } = await supabase.rpc("app_approve_all_account_requests", {
+        p_request_type: normalizedType || null,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_approve_all_account_requests")) {
+          throw new Error(
+            "Batch approval RPC is missing. Run the latest supabase.txt to enable approve-all requests.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to approve requests.");
+      }
+
+      const value = Array.isArray(data) ? data[0] : data;
+      const approvedCount = Number(value || 0);
+      return Number.isFinite(approvedCount) ? approvedCount : 0;
+    }),
+
+  createUserWithPassword: async (payload = {}) =>
+    withApi(async () => {
+      const fullName = String(payload?.full_name || "").trim();
+      const username = String(payload?.username || "").trim();
+      const providedEmail = String(payload?.email || "").trim().toLowerCase();
+      const email = providedEmail.includes("@") ? providedEmail : buildSystemEmail(username);
+      const rawPassword = String(payload?.password || "");
+      const role = normalizeRole(payload?.role || "student");
+      const schoolId = buildAutoSchoolId(role);
+      const allowedRoles = ["student", "teacher", "admin", "nt"];
+      const expiresAt = parseOptionalFutureDate(payload?.expires_at, "account duration");
+
+      if (!fullName || !username || !rawPassword) {
+        throw new Error("Full name, username, and password are required.");
+      }
+      if (rawPassword.length < 8) {
+        throw new Error("Password must be at least 8 characters.");
+      }
+      if (!allowedRoles.includes(role)) {
+        throw new Error("Invalid role selected.");
+      }
+
+      const hashedPassword = await bcrypt.hash(rawPassword, 12);
+      const rpcPayload = {
+        p_username: username,
+        p_password_hash: hashedPassword,
+        p_email: email,
+        p_full_name: fullName,
+        p_school_id: schoolId || null,
+        p_role: role,
+        p_auth_uid: null,
+        p_expires_at: expiresAt,
+      };
+
+      const applyUserExpiry = async (userRow) => {
+        if (!userRow?.id || !expiresAt) return userRow;
+        await safeUserUpdate(userRow.id, {
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        });
+        return { ...userRow, expires_at: expiresAt };
+      };
+
+      const ensureSecureAuthProvisioning = async (userRow) => {
+        if (!userRow?.id) {
+          return { user: userRow, warning: "" };
+        }
+
+        const { data: syncData, error: syncError } = await supabase.rpc(
+          "app_admin_set_user_password",
+          {
+            p_user_id: userRow.id,
+            p_new_password: rawPassword,
+          },
+        );
+
+        if (syncError) {
+          if (isMissingFunctionError(syncError, "app_admin_set_user_password")) {
+            return {
+              user: userRow,
+              warning:
+                "User created, but secure auth provisioning RPC is missing. Run the latest supabase.txt.",
+            };
+          }
+          return {
+            user: userRow,
+            warning:
+              "User created, but secure auth provisioning failed. Open Account Access and set this password again.",
+          };
+        }
+
+        const syncRow = Array.isArray(syncData) ? (syncData[0] || null) : (syncData || null);
+        if (!syncRow?.auth_uid) {
+          return {
+            user: userRow,
+            warning:
+              "User created, but secure auth profile is still missing. Open Account Access and set this password again.",
+          };
+        }
+
+        const { data: refreshedRow, error: refreshedError } = await supabase
+          .from("users")
+          .select(`${USER_SAFE_SELECT},expires_at,auth_uid`)
+          .eq("id", userRow.id)
+          .limit(1)
+          .maybeSingle();
+
+        if (!refreshedError && refreshedRow) {
+          return { user: normalizeUser(refreshedRow), warning: "" };
+        }
+
+        return { user: { ...userRow, auth_uid: syncRow.auth_uid }, warning: "" };
+      };
+
+      const finalizeCreatedUser = async (userRow) => {
+        const provisioned = await ensureSecureAuthProvisioning(userRow);
+        const finalUser = provisioned?.user || userRow;
+        const warning = String(provisioned?.warning || "");
+
+        await logStatusEvent({
+          action: "create_account",
+          category: "account",
+          target_user_id: finalUser?.id || null,
+          target_username: finalUser?.username || null,
+          target_role: finalUser?.role || null,
+          message: `Created account "${finalUser?.full_name || finalUser?.username || "Unknown"}".`,
+          metadata: {
+            role: finalUser?.role || role,
+            has_expiry: Boolean(finalUser?.expires_at),
+            secure_auth_provisioned: !warning,
+          },
+        });
+
+        return {
+          success: true,
+          user: finalUser,
+          warning,
+        };
+      };
+
+      const { data, error } = await supabase.rpc("app_register_user", rpcPayload);
+      if (error) {
+        if (isMissingFunctionError(error, "app_register_user")) {
+          const { data: fallback, error: fallbackError } = await supabase
+            .from("users")
+            .insert({
+              username,
+              password: hashedPassword,
+              email,
+              full_name: fullName,
+              role,
+              roles: [role],
+              sub_role: null,
+              sub_roles: [],
+              school_id: schoolId || null,
+              image_path: DEFAULT_AVATAR,
+              expires_at: expiresAt,
+              updated_at: new Date().toISOString(),
+            })
+            .select(`${USER_SAFE_SELECT},expires_at`)
+            .single();
+          if (fallbackError) {
+            if (isMissingColumnError(fallbackError, "expires_at")) {
+              const retryFallback = await supabase
+                .from("users")
+                .insert({
+                  username,
+                  password: hashedPassword,
+                  email,
+                  full_name: fullName,
+                  role,
+                  roles: [role],
+                  sub_role: null,
+                  sub_roles: [],
+                  school_id: schoolId || null,
+                  image_path: DEFAULT_AVATAR,
+                  updated_at: new Date().toISOString(),
+                })
+                .select(USER_SAFE_SELECT)
+                .single();
+              if (retryFallback.error) {
+                const retryText = String(retryFallback.error.message || "").toLowerCase();
+                if (retryText.includes("username")) throw new Error("Username already exists.");
+                if (retryText.includes("email")) throw new Error("Email already exists.");
+                throw formatSupabaseError(retryFallback.error);
+              }
+              const retryUser = await applyUserExpiry(normalizeUser(retryFallback.data));
+              return finalizeCreatedUser(retryUser);
+            }
+            const errorText = String(fallbackError.message || "").toLowerCase();
+            if (errorText.includes("username")) throw new Error("Username already exists.");
+            if (errorText.includes("email")) throw new Error("Email already exists.");
+            throw formatSupabaseError(fallbackError);
+          }
+          const normalizedFallback = await applyUserExpiry(normalizeUser(fallback));
+          return finalizeCreatedUser(normalizedFallback);
+        }
+
+        const errorText = String(error.message || "").toLowerCase();
+        if (errorText.includes("username")) throw new Error("Username already exists.");
+        if (errorText.includes("email")) throw new Error("Email already exists.");
+        throw formatSupabaseError(error, "Failed to create user account.");
+      }
+
+      const row = Array.isArray(data) ? (data[0] || null) : (data || null);
+      const normalized = await applyUserExpiry(normalizeUser(row));
+      return finalizeCreatedUser(normalized);
+    }),
+
+  updateUserAccount: async (userId, payload = {}) =>
+    withApi(async () => {
+      const numericUserId = Number(userId);
+      const fullName = String(payload?.full_name || "").trim();
+      const username = String(payload?.username || "").trim();
+      const role = normalizeRole(payload?.role || "student");
+      const schoolId = String(payload?.school_id || "").trim();
+      const expiresRaw = String(payload?.expires_at || "").trim();
+      const expiresAt = expiresRaw ? parseOptionalFutureDate(expiresRaw, "account duration") : null;
+      const allowedRoles = ["student", "teacher", "admin", "nt"];
+
+      if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+        throw new Error("Invalid user selected.");
+      }
+      if (!fullName) {
+        throw new Error("Full name is required.");
+      }
+      if (!username) {
+        throw new Error("Username is required.");
+      }
+      if (!allowedRoles.includes(role)) {
+        throw new Error("Invalid role selected.");
+      }
+
+      const { data: existingUsername, error: usernameError } = await supabase
+        .from("users")
+        .select("id,username")
+        .ilike("username", username)
+        .neq("id", numericUserId)
+        .limit(1);
+      if (usernameError) throw formatSupabaseError(usernameError);
+      if ((existingUsername || []).length > 0) {
+        throw new Error("Username already exists.");
+      }
+
+      const updatedRow = await safeUserUpdate(numericUserId, {
+        full_name: fullName,
+        username,
+        role,
+        roles: [role],
+        school_id: schoolId || null,
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      });
+
+      const normalized = normalizeUser(updatedRow);
+      await logStatusEvent({
+        action: "account_update_admin",
+        category: "account",
+        target_user_id: normalized?.id || numericUserId,
+        target_username: normalized?.username || username,
+        target_role: normalized?.role || role,
+        message: `Admin updated account details for "${normalized?.full_name || normalized?.username || numericUserId}".`,
+        metadata: {
+          updated_fields: ["full_name", "username", "role", "school_id", "expires_at"],
+        },
+      });
+
+      return { success: true, user: normalized };
+    }),
+
+  adminSetUserPassword: async (userId, newPassword) =>
+    withApi(async () => {
+      const numericUserId = Number(userId);
+      const rawPassword = String(newPassword || "");
+
+      if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+        throw new Error("Invalid user selected.");
+      }
+      if (rawPassword.length < 8) {
+        throw new Error("Password must be at least 8 characters.");
+      }
+
+      const targetUser = await fetchUserLogSnapshot(numericUserId).catch(() => null);
+
+      const { data, error } = await supabase.rpc("app_admin_set_user_password", {
+        p_user_id: numericUserId,
+        p_new_password: rawPassword,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_admin_set_user_password")) {
+          const hashed = await bcrypt.hash(rawPassword, 12);
+          const { error: updateError } = await supabase
+            .from("users")
+            .update({ password: hashed, updated_at: new Date().toISOString() })
+            .eq("id", numericUserId);
+          if (updateError) {
+            throw formatSupabaseError(updateError, "Failed to update user password.");
+          }
+
+          await logStatusEvent({
+            action: "reset_password",
+            category: "account",
+            target_user_id: targetUser?.id || numericUserId,
+            target_username: targetUser?.username || null,
+            target_role: targetUser?.role || null,
+            message: `Password reset for "${targetUser?.full_name || targetUser?.username || numericUserId}".`,
+            metadata: { auth_synced: false },
+          });
+
+          return {
+            success: true,
+            warning:
+              "Password updated in public.users only. Run the latest supabase.txt to sync Supabase Auth password too.",
+          };
+        }
+        throw formatSupabaseError(error, "Failed to reset user password.");
+      }
+
+      const row = Array.isArray(data) ? (data[0] || null) : (data || null);
+      const authSynced = typeof row?.auth_synced === "boolean" ? row.auth_synced : null;
+
+      if (row?.auth_uid && authSynced === false) {
+        throw new Error(
+          "Password update did not sync to Supabase Auth. Run the latest supabase.txt, then retry.",
+        );
+      }
+
+      if (!row?.auth_uid) {
+        await logStatusEvent({
+          action: "reset_password",
+          category: "account",
+          target_user_id: targetUser?.id || numericUserId,
+          target_username: targetUser?.username || null,
+          target_role: targetUser?.role || null,
+          message: `Password reset for "${targetUser?.full_name || targetUser?.username || numericUserId}".`,
+          metadata: { auth_synced: false, auth_user_missing: true },
+        });
+
+        return {
+          success: true,
+          warning:
+            "Password saved in profile table, but secure auth profile is still missing. Run the latest supabase.txt and retry.",
+        };
+      }
+
+      await logStatusEvent({
+        action: "reset_password",
+        category: "account",
+        target_user_id: targetUser?.id || numericUserId,
+        target_username: targetUser?.username || null,
+        target_role: targetUser?.role || null,
+        message: `Password reset for "${targetUser?.full_name || targetUser?.username || numericUserId}".`,
+        metadata: { auth_synced: true },
+      });
+
+      return { success: true };
+    }),
+
   updateUserRoles: async (userId, roles) =>
     withApi(async () => {
       const normalized = normalizeRoles(roles, "student");
-      await safeUserUpdate(userId, {
+      const updatedRow = await safeUserUpdate(userId, {
         role: normalized[0],
         roles: normalized,
         updated_at: new Date().toISOString(),
       });
+
+      const normalizedUser = normalizeUser(updatedRow);
+      await logStatusEvent({
+        action: "account_role_update",
+        category: "role",
+        target_user_id: normalizedUser?.id || userId,
+        target_username: normalizedUser?.username || null,
+        target_role: normalizedUser?.role || null,
+        message: `Updated access roles for "${normalizedUser?.full_name || normalizedUser?.username || userId}".`,
+        metadata: { roles: normalized },
+      });
+
       return { success: true };
     }),
 
   updateUserSubRole: async (userId, primarySubRole, subRoles = []) =>
     withApi(async () => {
       const normalized = normalizeSubRoles(subRoles, primarySubRole);
-      await safeUserUpdate(userId, {
+      const updatedRow = await safeUserUpdate(userId, {
         sub_role: normalized[0] || null,
         sub_roles: normalized,
         updated_at: new Date().toISOString(),
       });
+
+      const normalizedUser = normalizeUser(updatedRow);
+      await logStatusEvent({
+        action: "account_sub_role_update",
+        category: "role",
+        target_user_id: normalizedUser?.id || userId,
+        target_username: normalizedUser?.username || null,
+        target_role: normalizedUser?.role || null,
+        message: `Updated functional roles for "${normalizedUser?.full_name || normalizedUser?.username || userId}".`,
+        metadata: {
+          sub_role: normalized[0] || null,
+          sub_roles: normalized,
+        },
+      });
+
       return { success: true };
     }),
 
   deleteUser: async (userId) =>
     withApi(async () => {
-      await Promise.all([
-        supabase.from("user_assignments").delete().eq("user_id", userId),
-        supabase.from("teacher_assignments").delete().eq("teacher_id", userId),
-        supabase.from("grades").delete().eq("student_id", userId),
-        supabase.from("grades").delete().eq("teacher_id", userId),
-        supabase.from("teacher_evaluations").delete().eq("student_id", userId),
-        supabase.from("teacher_evaluations").delete().eq("teacher_id", userId),
-        supabase.from("announcements").delete().eq("author_id", userId),
-        supabase.from("feedbacks").delete().eq("student_id", userId),
-        supabase.from("feedbacks").update({ replied_by: null }).eq("replied_by", userId),
-      ]);
-
-      const { error } = await supabase.from("users").delete().eq("id", userId);
-      if (error) throw formatSupabaseError(error);
-      return { success: true };
+      const numericUserId = Number(userId);
+      if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+        throw new Error("Invalid user selected.");
+      }
+      const targetUser = await fetchUserLogSnapshot(numericUserId).catch(() => null);
+      return deleteUserRecords(numericUserId, {
+        action: "delete_account",
+        category: "account",
+        target_user: targetUser,
+        message: `Deleted account "${targetUser?.full_name || targetUser?.username || numericUserId}".`,
+      });
     }),
 
   getDashboardStats: async () =>
@@ -1090,7 +2058,7 @@ export const AdminAPI = {
         countExact("schedules"),
         countExact("announcements"),
         countExact("study_load"),
-        supabase.from("users").select("*"),
+        supabase.from("users").select(USER_SAFE_SELECT),
         supabase.from("buildings").select("*"),
         supabase
           .from("announcements")
@@ -1527,7 +2495,7 @@ export const AdminAPI = {
         if (q) {
           const { data: users, error: usersError } = await supabase
             .from("users")
-            .select("*")
+            .select(USER_SAFE_SELECT)
             .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
             .limit(1);
           if (usersError) throw formatSupabaseError(usersError);
@@ -1559,10 +2527,10 @@ export const AdminAPI = {
               ? 0
               : null
             : parseNumber(payload.amount_lacking, 0),
-        sanctions: toBoolean(payload?.sanctions, false),
+        sanctions: toSmallintFlag(payload?.sanctions, 0),
         sanction_reason: payload?.sanction_reason || null,
         semester: payload?.semester || "1st Semester",
-        student_status: payload?.student_status || "Regular",
+        student_status: normalizeStudentStatusValue(payload?.student_status),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -1579,6 +2547,14 @@ export const AdminAPI = {
 
   updateUserAssignment: async (id, payload) =>
     withApi(async () => {
+      const { data: previousAssignment, error: previousAssignmentError } = await supabase
+        .from("user_assignments")
+        .select("id,user_id,section_id,section,student_status")
+        .eq("id", id)
+        .limit(1)
+        .maybeSingle();
+      if (previousAssignmentError) throw formatSupabaseError(previousAssignmentError);
+
       const updates = {
         updated_at: new Date().toISOString(),
       };
@@ -1613,13 +2589,15 @@ export const AdminAPI = {
       } else if (payload?.payment === "paid") {
         updates.amount_lacking = 0;
       }
-      if (payload?.sanctions !== undefined) updates.sanctions = toBoolean(payload.sanctions, false);
+      if (payload?.sanctions !== undefined) {
+        updates.sanctions = toSmallintFlag(payload.sanctions, 0);
+      }
       if (payload?.sanction_reason !== undefined) {
         updates.sanction_reason = payload.sanction_reason || null;
       }
       if (payload?.semester !== undefined) updates.semester = payload.semester || "1st Semester";
       if (payload?.student_status !== undefined) {
-        updates.student_status = payload.student_status || "Regular";
+        updates.student_status = normalizeStudentStatusValue(payload.student_status);
       }
 
       const { data, error } = await supabase
@@ -1629,6 +2607,21 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      const previousStatus = normalizeStudentStatusValue(previousAssignment?.student_status).toLowerCase();
+      const nextStatus = normalizeStudentStatusValue(data?.student_status).toLowerCase();
+      const isIrregularToRegular = previousStatus === "irregular" && nextStatus === "regular";
+
+      if (isIrregularToRegular && data?.user_id) {
+        const { error: clearCustomLoadError } = await supabase
+          .from("study_load")
+          .delete()
+          .eq("student_id", data.user_id);
+        if (clearCustomLoadError && !isMissingRelation(clearCustomLoadError)) {
+          throw formatSupabaseError(clearCustomLoadError);
+        }
+      }
+
       const mapped = await mapUserAssignmentRows([data]);
       return mapped[0] || data;
     }),
@@ -1650,7 +2643,7 @@ export const AdminAPI = {
 
       const { data, error } = await supabase
         .from("users")
-        .select("*")
+        .select(USER_SAFE_SELECT)
         .or(`full_name.ilike.%${safe}%,username.ilike.%${safe}%`)
         .limit(10);
       if (error) throw formatSupabaseError(error);
@@ -1792,7 +2785,7 @@ export const AdminAPI = {
         const q = sanitizeLike(payload.teacher_name);
         const { data: teachers, error: teacherError } = await supabase
           .from("users")
-          .select("*")
+          .select(USER_SAFE_SELECT)
           .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
           .limit(25);
         if (teacherError) throw formatSupabaseError(teacherError);
@@ -2248,6 +3241,175 @@ export const AdminAPI = {
         .from("study_load")
         .delete()
         .eq("id", id);
+      if (error) throw formatSupabaseError(error);
+      return { success: true };
+    }),
+
+  getIrregularStudents: async () =>
+    withApi(async () => {
+      const { data, error } = await supabase
+        .from("user_assignments")
+        .select("*")
+        .eq("status", "active")
+        .ilike("student_status", "irregular")
+        .order("updated_at", { ascending: false });
+      if (error) throw formatSupabaseError(error);
+      return mapUserAssignmentRows(data || []);
+    }),
+
+  getStudentCustomStudyLoad: async (studentId) =>
+    withApi(async () => {
+      const numericStudentId = parseNumber(studentId, null);
+      if (!numericStudentId) return [];
+
+      const { data, error } = await supabase
+        .from("study_load")
+        .select("*")
+        .eq("student_id", numericStudentId)
+        .order("subject_code", { ascending: true });
+      if (error) throw formatSupabaseError(error);
+
+      const rows = data || [];
+      const subjectIds = rows.map((row) => row.subject_id).filter(Boolean);
+      const sectionIds = rows.map((row) => row.section_id).filter(Boolean);
+      const [subjectsMap, sectionsMap] = await Promise.all([
+        fetchSubjectsByIds(subjectIds),
+        fetchSectionsByIds(sectionIds),
+      ]);
+
+      return rows.map((row) => {
+        const subject = subjectsMap.get(row.subject_id);
+        const section = sectionsMap.get(row.section_id);
+        return {
+          id: row.id,
+          student_id: row.student_id,
+          section_id: row.section_id,
+          section: section?.section_name || row.section || "",
+          subject_id: row.subject_id,
+          subject_code: subject?.subject_code || row.subject_code || "",
+          subject_title: subject?.subject_name || row.subject_title || "",
+          units: parseNumber(subject?.units ?? row.units, 0),
+          semester:
+            normalizeSemester(row.semester) === "2nd Semester"
+              ? "Second Semester"
+              : normalizeSemester(row.semester) === "1st Semester"
+                ? "First Semester"
+                : normalizeSemester(row.semester),
+          school_year: row.school_year || null,
+          teacher: row.teacher || null,
+          created_at: row.created_at || null,
+          updated_at: row.updated_at || null,
+        };
+      });
+    }),
+
+  addStudentCustomStudyLoad: async (payload) =>
+    withApi(async () => {
+      const studentId = parseNumber(payload?.student_id, null);
+      if (!studentId) throw new Error("Student is required.");
+
+      const subject = await findSubjectByCode(payload?.subject_code || payload?.subject);
+      if (!subject) throw new Error("Subject not found.");
+
+      const assignment = await getActiveAssignmentForUser(studentId);
+      if (!assignment) throw new Error("Student has no active section assignment.");
+      if (normalizeStudentStatusValue(assignment?.student_status) !== "Irregular") {
+        throw new Error("Custom study load is only allowed for students marked as Irregular.");
+      }
+
+      const section = await resolveSectionFromAssignment(assignment);
+      if (!section?.id && !section?.section_name) {
+        throw new Error("Student section is not configured.");
+      }
+
+      const { data: existingBySubjectId, error: existingBySubjectIdError } = await supabase
+        .from("study_load")
+        .select("id")
+        .eq("student_id", studentId)
+        .eq("subject_id", subject.id)
+        .limit(1);
+      if (existingBySubjectIdError) throw formatSupabaseError(existingBySubjectIdError);
+      if ((existingBySubjectId || []).length > 0) {
+        const duplicateError = new Error("This subject is already in the student's custom load.");
+        duplicateError.status = 409;
+        throw duplicateError;
+      }
+
+      const { data: existingByCode, error: existingByCodeError } = await supabase
+        .from("study_load")
+        .select("id")
+        .eq("student_id", studentId)
+        .ilike("subject_code", subject.subject_code)
+        .limit(1);
+      if (existingByCodeError) throw formatSupabaseError(existingByCodeError);
+      if ((existingByCode || []).length > 0) {
+        const duplicateError = new Error("This subject is already in the student's custom load.");
+        duplicateError.status = 409;
+        throw duplicateError;
+      }
+
+      let teacherName = null;
+      if (section?.id) {
+        const { data: teacherAssignment, error: teacherAssignmentError } = await supabase
+          .from("teacher_assignments")
+          .select("teacher_id")
+          .eq("status", "active")
+          .eq("section_id", section.id)
+          .eq("subject_id", subject.id)
+          .limit(1)
+          .maybeSingle();
+        if (teacherAssignmentError && !isMissingRelation(teacherAssignmentError)) {
+          throw formatSupabaseError(teacherAssignmentError);
+        }
+
+        if (teacherAssignment?.teacher_id) {
+          const usersMap = await fetchUsersByIds([teacherAssignment.teacher_id]);
+          const teacher = usersMap.get(teacherAssignment.teacher_id);
+          teacherName = teacher?.full_name || teacher?.username || null;
+        }
+      }
+
+      const semester = normalizeSemester(
+        payload?.semester || assignment?.semester || subject?.semester || "1st Semester",
+      );
+
+      const { data, error } = await supabase
+        .from("study_load")
+        .insert({
+          student_id: studentId,
+          subject_id: subject.id,
+          section_id: section?.id || assignment?.section_id || null,
+          school_year: assignment?.school_year || section?.school_year || currentSchoolYear(),
+          semester,
+          enrollment_status: "enrolled",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          course: section?.course || assignment?.department || subject?.course || null,
+          major: section?.major || assignment?.major || subject?.major || null,
+          year_level: normalizeYearLevel(section?.grade_level || assignment?.year_level || subject?.year_level),
+          section: section?.section_name || assignment?.section || null,
+          subject_code: subject.subject_code,
+          subject_title: subject.subject_name,
+          units: subject.units || 0,
+          teacher: teacherName,
+        })
+        .select("*")
+        .single();
+
+      if (error) throw formatSupabaseError(error);
+      return data;
+    }),
+
+  removeStudentCustomStudyLoad: async (id) =>
+    withApi(async () => {
+      const numericId = parseNumber(id, null);
+      if (!numericId) throw new Error("Invalid custom study load record.");
+
+      const { error } = await supabase
+        .from("study_load")
+        .delete()
+        .eq("id", numericId)
+        .not("student_id", "is", null);
       if (error) throw formatSupabaseError(error);
       return { success: true };
     }),
@@ -2735,22 +3897,34 @@ const formatSemesterLabel = (value) => {
 };
 
 const getActiveAssignmentForUser = async (userId) => {
+  await ensureAuthUidBoundForStoredUser();
+
   const { data, error } = await supabase
     .from("user_assignments")
     .select("*")
     .eq("user_id", userId)
-    .eq("status", "active")
     .order("updated_at", { ascending: false })
     .order("id", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(100);
 
   if (error) {
     if (isMissingRelation(error)) return null;
     throw formatSupabaseError(error);
   }
 
-  return data || null;
+  const rows = data || [];
+  if (!rows.length) return null;
+
+  const sorted = [...rows].sort((a, b) => {
+    const priorityDiff = assignmentStatusPriority(a?.status) - assignmentStatusPriority(b?.status);
+    if (priorityDiff !== 0) return priorityDiff;
+    const updatedDiff = String(b?.updated_at || "").localeCompare(String(a?.updated_at || ""));
+    if (updatedDiff !== 0) return updatedDiff;
+    return Number(b?.id || 0) - Number(a?.id || 0);
+  });
+
+  const activeLike = sorted.find((row) => !isInactiveAssignmentStatus(row?.status));
+  return activeLike || sorted[0] || null;
 };
 
 const resolveSectionFromAssignment = async (assignment) => {
@@ -2821,6 +3995,104 @@ const tryParseJson = (value) => {
 };
 
 export const StudentAPI = {
+  requestPasswordReset: async (note = null) =>
+    withApi(async () => {
+      const { data, error } = await supabase.rpc("app_request_password_reset", {
+        p_note: note == null ? null : String(note).trim() || null,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_request_password_reset")) {
+          throw new Error(
+            "Password reset request RPC is missing. Run the latest supabase.txt to enable request workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to submit password reset request.");
+      }
+
+      const row = Array.isArray(data) ? data[0] : data;
+      return row || null;
+    }),
+
+  getMyAccountRequests: async (limit = 20) =>
+    withApi(async () => {
+      const safeLimit = Number.isFinite(Number(limit))
+        ? Math.max(1, Math.min(100, Math.trunc(Number(limit))))
+        : 20;
+      const { data, error } = await supabase.rpc("app_get_my_account_requests", {
+        p_limit: safeLimit,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_get_my_account_requests")) {
+          throw new Error(
+            "Account request RPC is missing. Run the latest supabase.txt to enable request workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to load account requests.");
+      }
+
+      return (Array.isArray(data) ? data : data ? [data] : []).map(mapAccountRequest);
+    }),
+
+  completeApprovedPasswordReset: async (newPassword) =>
+    withApi(async () => {
+      const password = String(newPassword || "");
+      if (password.length < 8) {
+        throw new Error("Password must be at least 8 characters.");
+      }
+
+      const { data, error } = await supabase.rpc("app_complete_approved_password_reset", {
+        p_new_password: password,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_complete_approved_password_reset")) {
+          throw new Error(
+            "Approved reset RPC is missing. Run the latest supabase.txt to enable approved password reset.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to reset password.");
+      }
+
+      const value = Array.isArray(data) ? data[0] : data;
+
+      // Support scalar and object RPC return formats from PostgREST.
+      let synced = null;
+      if (typeof value === "boolean") {
+        synced = value;
+      } else if (value && typeof value === "object") {
+        if (typeof value.app_complete_approved_password_reset === "boolean") {
+          synced = value.app_complete_approved_password_reset;
+        } else if (typeof value.auth_synced === "boolean") {
+          synced = value.auth_synced;
+        } else if (typeof value.success === "boolean") {
+          synced = value.success;
+        }
+      }
+
+      if (synced == null) {
+        synced = toBoolean(value, false);
+      }
+
+      if (!synced) {
+        throw new Error(
+          "Password reset was not fully applied. Run the latest supabase.txt and try again.",
+        );
+      }
+
+      // Force password sync on the authenticated Supabase user as an additional guard.
+      const { error: authUpdateError } = await supabase.auth.updateUser({ password });
+      if (authUpdateError) {
+        throw formatSupabaseError(
+          authUpdateError,
+          "Password reset succeeded in database, but failed to sync active auth session password.",
+        );
+      }
+
+      return true;
+    }),
+
   getAssignment: async () =>
     withApi(async () => {
       const currentUser = requireStoredUser();
@@ -3049,35 +4321,128 @@ export const StudentAPI = {
       if (!assignment) return { teachers: [] };
 
       const section = await resolveSectionFromAssignment(assignment);
-      if (!section?.id && !section?.section_name) return { teachers: [] };
+      const scopedSectionName = String(section?.section_name || assignment?.section || "").trim();
+      const scopedSectionPattern = buildContainsPattern(scopedSectionName);
+      if (!section?.id && !scopedSectionName) return { teachers: [] };
 
-      let assignmentQuery = supabase
-        .from("teacher_assignments")
-        .select("*")
-        .eq("status", "active");
+      const rowsByKey = new Map();
+      const scheduleSubjectCodes = new Set();
+      const subjectCodesByAssignmentId = new Map();
+
+      const addAssignmentRow = (row) => {
+        if (!row) return;
+        const key =
+          row.id != null
+            ? `id:${row.id}`
+            : `teacher:${row.teacher_id || "null"}|subject:${row.subject_id || "null"}|section:${row.section_id || row.section || ""}`;
+        if (!rowsByKey.has(key)) {
+          rowsByKey.set(key, {
+            ...row,
+            schedule_subject_codes: [],
+          });
+        }
+      };
 
       if (section?.id) {
-        assignmentQuery = assignmentQuery.eq("section_id", section.id);
-      } else {
-        assignmentQuery = assignmentQuery.eq("section", section.section_name);
+        const { data: schedules, error: schedulesError } = await supabase
+          .from("schedules")
+          .select("teacher_assignment_id,subject_code")
+          .eq("section_id", section.id);
+        if (schedulesError && !isMissingRelation(schedulesError)) {
+          throw formatSupabaseError(schedulesError);
+        }
+
+        const scheduleRows = schedules || [];
+        scheduleRows.forEach((row) => {
+          const code = String(row?.subject_code || "").trim();
+          if (code) scheduleSubjectCodes.add(code);
+
+          const assignmentId = row?.teacher_assignment_id;
+          if (!assignmentId || !code) return;
+          if (!subjectCodesByAssignmentId.has(assignmentId)) {
+            subjectCodesByAssignmentId.set(assignmentId, new Set());
+          }
+          subjectCodesByAssignmentId.get(assignmentId).add(code);
+        });
+
+        const assignmentIds = Array.from(subjectCodesByAssignmentId.keys());
+        if (assignmentIds.length > 0) {
+          const { data: teacherAssignments, error: assignmentError } = await supabase
+            .from("teacher_assignments")
+            .select("*")
+            .in("id", assignmentIds)
+            .eq("status", "active");
+          if (assignmentError) {
+            if (!isMissingRelation(assignmentError)) {
+              throw formatSupabaseError(assignmentError);
+            }
+          } else {
+            (teacherAssignments || []).forEach(addAssignmentRow);
+          }
+        }
       }
 
-      const { data: teacherAssignments, error: assignmentError } = await assignmentQuery;
-      if (assignmentError) {
-        if (isMissingRelation(assignmentError)) return { teachers: [] };
-        throw formatSupabaseError(assignmentError);
+      const fallbackQueries = [];
+      if (section?.id) {
+        fallbackQueries.push(
+          supabase
+            .from("teacher_assignments")
+            .select("*")
+            .eq("status", "active")
+            .eq("section_id", section.id),
+        );
+      }
+      if (scopedSectionName) {
+        fallbackQueries.push(
+          supabase
+            .from("teacher_assignments")
+            .select("*")
+            .eq("status", "active")
+            .ilike("section", scopedSectionPattern || scopedSectionName),
+        );
       }
 
-      const rows = teacherAssignments || [];
+      if (fallbackQueries.length > 0) {
+        const fallbackResults = await Promise.all(fallbackQueries);
+        fallbackResults.forEach((result) => {
+          if (result?.error) {
+            if (isMissingRelation(result.error)) return;
+            throw formatSupabaseError(result.error);
+          }
+          (result?.data || []).forEach(addAssignmentRow);
+        });
+      }
+
+      const rows = Array.from(rowsByKey.values()).map((row) => ({
+        ...row,
+        schedule_subject_codes: Array.from(subjectCodesByAssignmentId.get(row.id) || new Set()),
+      }));
+
       if (!rows.length) return { teachers: [] };
 
       const teacherIds = Array.from(new Set(rows.map((row) => row.teacher_id).filter(Boolean)));
       const subjectIds = Array.from(new Set(rows.map((row) => row.subject_id).filter(Boolean)));
+      if (!teacherIds.length) return { teachers: [] };
 
-      const [teachersMap, subjectsMap] = await Promise.all([
+      const [teachersMap, subjectsMap, scheduleSubjectsResult] = await Promise.all([
         fetchUsersByIds(teacherIds),
         fetchSubjectsByIds(subjectIds),
+        scheduleSubjectCodes.size > 0
+          ? supabase.from("subjects").select("*").in("subject_code", Array.from(scheduleSubjectCodes))
+          : Promise.resolve({ data: [], error: null }),
       ]);
+
+      if (scheduleSubjectsResult.error) {
+        throw formatSupabaseError(scheduleSubjectsResult.error);
+      }
+
+      const subjectsByCode = new Map();
+      (scheduleSubjectsResult.data || []).forEach((row) => {
+        const mapped = mapSubject(row);
+        if (mapped?.subject_code) {
+          subjectsByCode.set(mapped.subject_code, mapped);
+        }
+      });
 
       let evaluatedIds = new Set();
       const { data: evaluations, error: evaluationsError } = await supabase
@@ -3093,33 +4458,57 @@ export const StudentAPI = {
 
       const grouped = new Map();
       rows.forEach((row) => {
-        const teacher = teachersMap.get(row.teacher_id);
-        if (!teacher) return;
+        const teacherId = parseNumber(row?.teacher_id, null);
+        if (!teacherId) return;
 
-        if (!grouped.has(row.teacher_id)) {
-          grouped.set(row.teacher_id, {
-            id: teacher.id,
-            name: teacher.full_name || teacher.username || `Teacher ${teacher.id}`,
-            image_path: teacher.image_path || DEFAULT_AVATAR,
+        const teacher = teachersMap.get(teacherId);
+        const fallbackTeacherName =
+          String(row?.teacher_name || "").trim() ||
+          String(row?.teacher_username || "").trim() ||
+          `Teacher #${teacherId}`;
+
+        if (!grouped.has(teacherId)) {
+          grouped.set(teacherId, {
+            id: teacherId,
+            name: teacher?.full_name || teacher?.username || fallbackTeacherName,
+            image_path: teacher?.image_path || row?.image_path || DEFAULT_AVATAR,
             subjects: [],
-            evaluated: evaluatedIds.has(teacher.id),
+            evaluated: evaluatedIds.has(teacherId),
           });
         }
+
+        const current = grouped.get(teacherId);
+        const upsertSubject = (subjectCodeValue = "", subjectTitleValue = "") => {
+          const code = String(subjectCodeValue || "").trim();
+          const title = String(subjectTitleValue || "").trim();
+          if (!code && !title) return;
+          const exists = current.subjects.some(
+            (entry) => entry.code === code && entry.title === title,
+          );
+          if (!exists) {
+            current.subjects.push({
+              code,
+              title,
+            });
+          }
+        };
 
         const subject = subjectsMap.get(row.subject_id);
-        const subjectCode = subject?.subject_code || row.subject_code || "";
-        const subjectName = subject?.subject_name || row.subject_title || "";
-        const current = grouped.get(row.teacher_id);
-
-        const exists = current.subjects.some(
-          (entry) => entry.code === subjectCode && entry.title === subjectName,
+        upsertSubject(
+          subject?.subject_code || row.subject_code || "",
+          subject?.subject_name || row.subject_title || "",
         );
-        if (!exists && (subjectCode || subjectName)) {
-          current.subjects.push({
-            code: subjectCode,
-            title: subjectName,
-          });
-        }
+
+        const scheduleCodes = Array.isArray(row.schedule_subject_codes)
+          ? row.schedule_subject_codes
+          : [];
+        scheduleCodes.forEach((code) => {
+          const matchedSubject = subjectsByCode.get(code);
+          upsertSubject(
+            matchedSubject?.subject_code || code,
+            matchedSubject?.subject_name || code,
+          );
+        });
       });
 
       return { teachers: Array.from(grouped.values()) };
@@ -3349,10 +4738,21 @@ export const TeacherAPI = {
         .from("teacher_assignments")
         .select("*")
         .eq("teacher_id", currentUser.id)
-        .eq("status", "active");
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
       if (assignmentsError) throw formatSupabaseError(assignmentsError);
 
-      const assignmentIds = (assignments || []).map((row) => row.id);
+      let assignmentIds = Array.from(
+        new Set(
+          (assignments || [])
+            .filter((row) => !isInactiveAssignmentStatus(row?.status))
+            .map((row) => row.id)
+            .filter(Boolean),
+        ),
+      );
+      if (!assignmentIds.length) {
+        assignmentIds = Array.from(new Set((assignments || []).map((row) => row.id).filter(Boolean)));
+      }
       if (!assignmentIds.length) return [];
 
       const { data: schedules, error: schedulesError } = await supabase
@@ -3522,54 +4922,79 @@ export const TeacherAPI = {
       const currentUser = requireStoredUser();
       const { data, error } = await supabase
         .from("teacher_assignments")
-        .select("*")
+        .select("id,status")
         .eq("teacher_id", currentUser.id)
-        .eq("status", "active");
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
       if (error) throw formatSupabaseError(error);
 
-      const rows = data || [];
-      if (!rows.length) return [];
+      let assignmentIds = Array.from(
+        new Set(
+          (data || [])
+            .filter((row) => !isInactiveAssignmentStatus(row?.status))
+            .map((row) => row.id)
+            .filter(Boolean),
+        ),
+      );
+      if (!assignmentIds.length) {
+        assignmentIds = Array.from(new Set((data || []).map((row) => row.id).filter(Boolean)));
+      }
+      if (!assignmentIds.length) return [];
 
-      const sectionIds = Array.from(new Set(rows.map((row) => row.section_id).filter(Boolean)));
-      const subjectIds = Array.from(new Set(rows.map((row) => row.subject_id).filter(Boolean)));
-      const [sectionsMap, subjectsMap] = await Promise.all([
-        fetchSectionsByIds(sectionIds),
-        fetchSubjectsByIds(subjectIds),
-      ]);
+      const { data: scheduleRows, error: scheduleError } = await supabase
+        .from("schedules")
+        .select("*")
+        .in("teacher_assignment_id", assignmentIds);
+      if (scheduleError) throw formatSupabaseError(scheduleError);
 
+      const mappedSchedules = await mapScheduleRows(scheduleRows || []);
       const grouped = new Map();
-      rows.forEach((row) => {
-        const section = sectionsMap.get(row.section_id);
-        const key = section?.id ? `id:${section.id}` : `name:${row.section || "unknown"}`;
+      mappedSchedules.forEach((row) => {
+        const sectionName = String(row.section || "").trim();
+        if (!sectionName) return;
+
+        const key = row.section_id ? `id:${row.section_id}` : `name:${sectionName.toLowerCase()}`;
 
         if (!grouped.has(key)) {
           grouped.set(key, {
-            id: section?.id || null,
-            name: section?.section_name || row.section || "",
-            section_name: section?.section_name || row.section || "",
-            year_level: section?.grade_level || "",
-            grade_level: section?.grade_level || "",
-            course: section?.course || null,
-            major: section?.major || null,
-            school_year: section?.school_year || currentSchoolYear(),
+            id: row.section_id || null,
+            name: sectionName,
+            section_name: sectionName,
+            year_level: row.year || "",
+            grade_level: row.year || "",
+            course: null,
+            major: null,
+            school_year: currentSchoolYear(),
             subjects: [],
+            schedule_count: 0,
           });
         }
 
-        const subject = subjectsMap.get(row.subject_id);
-        if (!subject) return;
-
         const bucket = grouped.get(key);
-        if (!bucket.subjects.some((item) => item.id === subject.id)) {
+        bucket.schedule_count += 1;
+
+        const subjectCode = String(row.subject || "").trim();
+        if (!subjectCode) return;
+
+        if (!bucket.subjects.some((item) => item.code === subjectCode)) {
           bucket.subjects.push({
-            id: subject.id,
-            code: subject.subject_code,
-            name: subject.subject_name,
+            id: row.subject_id || null,
+            code: subjectCode,
+            name: row.subject_title || subjectCode,
           });
         }
       });
 
-      return Array.from(grouped.values()).filter((item) => item.name);
+      return Array.from(grouped.values())
+        .filter((item) => item.name && item.subjects.length > 0)
+        .sort((a, b) => {
+          const yearA = Number.parseInt(String(a.year_level || "").replace(/\D+/g, ""), 10);
+          const yearB = Number.parseInt(String(b.year_level || "").replace(/\D+/g, ""), 10);
+          const normalizedYearA = Number.isFinite(yearA) ? yearA : 999;
+          const normalizedYearB = Number.isFinite(yearB) ? yearB : 999;
+          if (normalizedYearA !== normalizedYearB) return normalizedYearA - normalizedYearB;
+          return String(a.name || "").localeCompare(String(b.name || ""));
+        });
     }),
 
   createGrade: async (payload) =>
@@ -3581,12 +5006,70 @@ export const TeacherAPI = {
       const subject = await findSubjectByCode(payload?.subject);
       if (!subject) throw new Error("Subject not found.");
 
-      const assignment = await getActiveAssignmentForUser(studentId);
-      const section = await resolveSectionFromAssignment(assignment);
-      if (!section?.id) throw new Error("Student has no active section assignment.");
+      const section = await findSection({
+        sectionId: payload?.section_id,
+        sectionName: payload?.section,
+        year: payload?.year,
+      });
+      if (!section?.id) throw new Error("Section not found.");
+
+      const { data: myAssignments, error: myAssignmentsError } = await supabase
+        .from("teacher_assignments")
+        .select("id,section_id,subject_id,status")
+        .eq("teacher_id", currentUser.id)
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
+      if (myAssignmentsError) throw formatSupabaseError(myAssignmentsError);
+
+      let myAssignmentIds = Array.from(
+        new Set(
+          (myAssignments || [])
+            .filter((row) => !isInactiveAssignmentStatus(row?.status))
+            .map((row) => row.id)
+            .filter(Boolean),
+        ),
+      );
+      if (!myAssignmentIds.length) {
+        myAssignmentIds = Array.from(new Set((myAssignments || []).map((row) => row.id).filter(Boolean)));
+      }
+      if (!myAssignmentIds.length) {
+        throw new Error("You can only grade sections and subjects that are assigned to your schedule.");
+      }
+
+      const { data: activeSchedules, error: activeSchedulesError } = await supabase
+        .from("schedules")
+        .select("id")
+        .eq("section_id", section.id)
+        .eq("subject_code", subject.subject_code)
+        .in("teacher_assignment_id", myAssignmentIds)
+        .limit(1);
+      if (activeSchedulesError) throw formatSupabaseError(activeSchedulesError);
+
+      const hasDirectTeacherAssignment = (myAssignments || []).some((row) => {
+        if (!row) return false;
+        if (row.subject_id !== subject.id) return false;
+        if (row.section_id == null) return false;
+        return Number(row.section_id) === Number(section.id);
+      });
+
+      if (!(activeSchedules || []).length && !hasDirectTeacherAssignment) {
+        throw new Error("No active schedule found for this section and subject.");
+      }
+
+      const gradeableStudents = await TeacherAPI.getStudentsBySection({
+        sectionId: section.id,
+        sectionName: section.section_name || section.section || payload?.section || "",
+        subjectCode: subject.subject_code,
+      });
+      const isStudentInMasterList = (gradeableStudents || []).some(
+        (row) => Number(row?.id) === Number(studentId),
+      );
+      if (!isStudentInMasterList) {
+        throw new Error("Student is not in the selected section/subject master list.");
+      }
 
       const schoolYear = section.school_year || currentSchoolYear();
-      const semester = normalizeSemester(subject.semester || assignment?.semester || "1st Semester");
+      const semester = normalizeSemester(subject.semester || payload?.semester || "1st Semester");
 
       const { data: existing, error: existingError } = await supabase
         .from("grades")
@@ -3600,6 +5083,10 @@ export const TeacherAPI = {
         .maybeSingle();
       if (existingError) throw formatSupabaseError(existingError);
 
+      const prelimGrade = parseGradePoint(payload?.prelim, "Prelim grade");
+      const midtermGrade = parseGradePoint(payload?.midterm, "Midterm grade");
+      const finalsGrade = parseGradePoint(payload?.finals, "Finals grade");
+
       const gradePayload = {
         student_id: studentId,
         subject_id: subject.id,
@@ -3607,9 +5094,9 @@ export const TeacherAPI = {
         section_id: section.id,
         school_year: schoolYear,
         semester,
-        prelim_grade: parseNumber(payload?.prelim, null),
-        midterm_grade: parseNumber(payload?.midterm, null),
-        finals_grade: parseNumber(payload?.finals, null),
+        prelim_grade: prelimGrade,
+        midterm_grade: midtermGrade,
+        finals_grade: finalsGrade,
         updated_at: new Date().toISOString(),
       };
 
@@ -3638,12 +5125,16 @@ export const TeacherAPI = {
 
   updateGrade: async (id, payload) =>
     withApi(async () => {
+      const prelimGrade = parseGradePoint(payload?.prelim, "Prelim grade");
+      const midtermGrade = parseGradePoint(payload?.midterm, "Midterm grade");
+      const finalsGrade = parseGradePoint(payload?.finals, "Finals grade");
+
       const { data, error } = await supabase
         .from("grades")
         .update({
-          prelim_grade: parseNumber(payload?.prelim, null),
-          midterm_grade: parseNumber(payload?.midterm, null),
-          finals_grade: parseNumber(payload?.finals, null),
+          prelim_grade: prelimGrade,
+          midterm_grade: midtermGrade,
+          finals_grade: finalsGrade,
           updated_at: new Date().toISOString(),
         })
         .eq("id", id)
@@ -3660,35 +5151,248 @@ export const TeacherAPI = {
       return { success: true };
     }),
 
-  getStudentsBySection: async (sectionName) =>
+  getStudentsBySection: async (sectionInput, explicitSectionId = null, explicitSubjectCode = null) =>
     withApi(async () => {
-      if (!sectionName) return [];
+      await ensureAuthUidBoundForStoredUser();
 
-      const section = await findSection({ sectionName });
-      let assignments = [];
+      const sectionInputObject = typeof sectionInput === "object" && sectionInput !== null
+        ? sectionInput
+        : null;
+      const sectionName =
+        sectionInputObject
+          ? String(sectionInputObject?.sectionName || sectionInputObject?.name || "").trim()
+          : String(sectionInput || "").trim();
+      const sectionId =
+        parseNumber(
+          explicitSectionId ??
+            (sectionInputObject ? sectionInputObject?.sectionId ?? sectionInputObject?.id : null),
+          null,
+        ) || null;
+      const subjectCode = String(
+        explicitSubjectCode ??
+          (sectionInputObject ? sectionInputObject?.subjectCode ?? sectionInputObject?.subject : null) ??
+          "",
+      ).trim();
 
-      if (section?.id) {
-        const { data, error } = await supabase
-          .from("user_assignments")
-          .select("*")
-          .eq("status", "active")
-          .eq("section_id", section.id);
-        if (error) throw formatSupabaseError(error);
-        assignments = data || [];
-      } else {
-        const { data, error } = await supabase
-          .from("user_assignments")
-          .select("*")
-          .eq("status", "active")
-          .ilike("section", sectionName);
-        if (error) throw formatSupabaseError(error);
-        assignments = data || [];
+      if (!sectionName && !sectionId) return [];
+
+      const section = await findSection({ sectionId, sectionName });
+      const scopedSectionName = String(section?.section_name || sectionName || "").trim();
+      const scopedSectionPattern = buildContainsPattern(scopedSectionName);
+      if (!section?.id && !scopedSectionName) return [];
+
+      if (subjectCode) {
+        const { data: rpcStudents, error: rpcStudentsError } = await supabase.rpc(
+          "app_get_teacher_grade_students",
+          {
+            p_section_id: section?.id || null,
+            p_section_name: scopedSectionName || null,
+            p_subject_code: subjectCode,
+          },
+        );
+
+        if (!rpcStudentsError && Array.isArray(rpcStudents)) {
+          return (rpcStudents || [])
+            .map((row) => ({
+              id: parseNumber(row?.id, null),
+              username: String(row?.username || "").trim() || `student_${row?.id || "unknown"}`,
+              full_name:
+                String(row?.full_name || "").trim() ||
+                String(row?.username || "").trim() ||
+                `Student #${row?.id || "Unknown"}`,
+              school_id:
+                String(row?.school_id || "").trim() ||
+                String(row?.username || "").trim() ||
+                (row?.id != null ? String(row.id) : null),
+              email: null,
+              image_path: DEFAULT_AVATAR,
+              role: "student",
+              roles: ["student"],
+              sub_role: null,
+              sub_roles: [],
+              student_status: normalizeStudentStatusValue(row?.student_status),
+            }))
+            .filter((row) => row.id != null)
+            .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
+        }
+
+        if (
+          rpcStudentsError &&
+          !isMissingFunctionError(rpcStudentsError, "app_get_teacher_grade_students")
+        ) {
+          console.warn("app_get_teacher_grade_students failed, using fallback:", rpcStudentsError);
+        }
       }
 
-      const userIds = Array.from(new Set(assignments.map((row) => row.user_id).filter(Boolean)));
-      const usersMap = await fetchUsersByIds(userIds);
-      return userIds
-        .map((id) => usersMap.get(id))
+      const assignmentQueries = [];
+      if (section?.id) {
+        assignmentQueries.push(
+          supabase
+            .from("user_assignments")
+            .select("*")
+            .eq("section_id", section.id)
+            .order("updated_at", { ascending: false })
+            .order("id", { ascending: false }),
+        );
+      }
+      if (scopedSectionName) {
+        assignmentQueries.push(
+          supabase
+            .from("user_assignments")
+            .select("*")
+            .ilike("section", scopedSectionPattern || scopedSectionName)
+            .order("updated_at", { ascending: false })
+            .order("id", { ascending: false }),
+        );
+      }
+
+      const assignmentRowsByKey = new Map();
+      if (assignmentQueries.length > 0) {
+        const assignmentResults = await Promise.all(assignmentQueries);
+        assignmentResults.forEach((result) => {
+          if (result?.error) throw formatSupabaseError(result.error);
+          (result?.data || []).forEach((row) => {
+            const key = row?.id != null ? `id:${row.id}` : `user:${row?.user_id ?? "null"}|section:${row?.section_id ?? row?.section ?? ""}`;
+            if (!assignmentRowsByKey.has(key)) {
+              assignmentRowsByKey.set(key, row);
+            }
+          });
+        });
+      }
+
+      const assignmentByUserId = new Map();
+      Array.from(assignmentRowsByKey.values())
+        .sort((a, b) => {
+          const priorityDiff = assignmentStatusPriority(a?.status) - assignmentStatusPriority(b?.status);
+          if (priorityDiff !== 0) return priorityDiff;
+          const updatedA = String(a?.updated_at || "");
+          const updatedB = String(b?.updated_at || "");
+          const updatedDiff = updatedB.localeCompare(updatedA);
+          if (updatedDiff !== 0) return updatedDiff;
+          return Number(b?.id || 0) - Number(a?.id || 0);
+        })
+        .forEach((row) => {
+          const userId = parseNumber(row?.user_id, null);
+          if (!userId || assignmentByUserId.has(userId)) return;
+          if (isInactiveAssignmentStatus(row?.status)) return;
+          assignmentByUserId.set(userId, row);
+        });
+
+      const baseAssignments = Array.from(assignmentByUserId.values());
+      if (!baseAssignments.length) return [];
+      const baseAssignmentByUserId = new Map(
+        baseAssignments.map((row) => [parseNumber(row?.user_id, null), row]),
+      );
+
+      let filteredUserIds = baseAssignments.map((row) => row.user_id);
+
+      if (subjectCode) {
+        const subject = await findSubjectByCode(subjectCode);
+        const normalizedSubjectCode = String(subject?.subject_code || subjectCode).trim();
+        const selectClause = "id,student_id,section_id,section,subject_id,subject_code";
+
+        const runStudyLoadQuery = async (queryBuilder) => {
+          const scopedQueries = [];
+          if (section?.id) {
+            scopedQueries.push(queryBuilder(supabase.from("study_load").select(selectClause).eq("section_id", section.id)));
+          }
+          if (scopedSectionName) {
+            scopedQueries.push(
+              queryBuilder(
+                supabase
+                  .from("study_load")
+                  .select(selectClause)
+                  .ilike("section", scopedSectionPattern || scopedSectionName),
+              ),
+            );
+          }
+          if (!scopedQueries.length) return [];
+
+          const scopedResults = await Promise.all(scopedQueries);
+          const scopedRowsByKey = new Map();
+
+          scopedResults.forEach((result) => {
+            if (result?.error) {
+              if (isMissingRelation(result.error)) return;
+              throw formatSupabaseError(result.error);
+            }
+
+            (result?.data || []).forEach((row) => {
+              const key =
+                row?.id != null
+                  ? `id:${row.id}`
+                  : `sid:${row?.student_id ?? "null"}|sub:${row?.subject_id ?? row?.subject_code ?? ""}|section:${row?.section_id ?? row?.section ?? ""}`;
+              if (!scopedRowsByKey.has(key)) {
+                scopedRowsByKey.set(key, row);
+              }
+            });
+          });
+
+          return Array.from(scopedRowsByKey.values());
+        };
+
+        const [rowsBySubjectId, rowsBySubjectCode] = await Promise.all([
+          subject?.id ? runStudyLoadQuery((query) => query.eq("subject_id", subject.id)) : Promise.resolve([]),
+          normalizedSubjectCode
+            ? runStudyLoadQuery((query) => query.ilike("subject_code", normalizedSubjectCode))
+            : Promise.resolve([]),
+        ]);
+
+        const irregularStudentIdsForSubject = new Set(
+          [...rowsBySubjectId, ...rowsBySubjectCode]
+            .map((row) => parseNumber(row?.student_id, null))
+            .filter(Boolean),
+        );
+
+        filteredUserIds = baseAssignments
+          .filter((assignmentRow) => {
+            const userId = parseNumber(assignmentRow?.user_id, null);
+            if (!userId) return false;
+
+            const studentStatus = normalizeStudentStatusValue(assignmentRow?.student_status).toLowerCase();
+            if (studentStatus === "irregular") {
+              return irregularStudentIdsForSubject.has(userId);
+            }
+            return true;
+          })
+          .map((assignmentRow) => assignmentRow.user_id);
+      }
+
+      const uniqueUserIds = Array.from(new Set(filteredUserIds.filter(Boolean)));
+      if (!uniqueUserIds.length) return [];
+
+      const usersMap = await fetchUsersByIds(uniqueUserIds);
+      return uniqueUserIds
+        .map((id) => {
+          const user = usersMap.get(id);
+          if (user) return user;
+
+          const assignmentRow = baseAssignmentByUserId.get(parseNumber(id, null)) || {};
+          const fallbackName =
+            String(assignmentRow?.full_name || "").trim() ||
+            String(assignmentRow?.student_name || "").trim() ||
+            String(assignmentRow?.username || "").trim() ||
+            `Student #${id}`;
+          const fallbackUsername =
+            String(assignmentRow?.username || "").trim() || `student_${id}`;
+
+          return {
+            id: parseNumber(id, null),
+            username: fallbackUsername,
+            full_name: fallbackName,
+            school_id:
+              String(assignmentRow?.school_id || "").trim() ||
+              String(assignmentRow?.student_school_id || "").trim() ||
+              String(assignmentRow?.username || "").trim() ||
+              (id != null ? String(id) : null),
+            email: assignmentRow?.email || null,
+            image_path: assignmentRow?.image_path || DEFAULT_AVATAR,
+            role: "student",
+            roles: ["student"],
+            sub_role: null,
+            sub_roles: [],
+          };
+        })
         .filter(Boolean)
         .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
     }),
