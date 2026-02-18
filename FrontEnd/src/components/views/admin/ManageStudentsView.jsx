@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
+import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../Utils/constants';
 import { Search, UserPlus, Users, Layers, BookOpen, GraduationCap, X, Check, Save, Trash2, Filter, AlertCircle, Edit, ShieldAlert, CreditCard, UserCheck } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';

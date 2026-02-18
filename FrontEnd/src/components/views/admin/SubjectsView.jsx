@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
-import { COURSE_MAJOR_CONFIG, SEMESTER_OPTIONS, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
-import { formatOrdinal } from '../../../utils/formatting';
+import { COURSE_MAJOR_CONFIG, SEMESTER_OPTIONS, YEAR_LEVEL_OPTIONS } from '../../../Utils/constants';
+import { formatOrdinal } from '../../../Utils/formatting';
 import { BookOpen, PlusCircle, Trash2, Edit2, Search, Filter, Book, Hash, GraduationCap, Calendar, Clock, Save, XCircle, X } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
