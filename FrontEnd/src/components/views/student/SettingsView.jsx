@@ -1,34 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
-import { AuthAPI, getAvatarUrl } from '../../../services/api';
+import { AuthAPI, StudentAPI, getAvatarUrl } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { User, Lock, Mail, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Camera, Save, ShieldCheck, CheckCircle, AlertTriangle, KeyRound } from 'lucide-react';
 
 const SettingsView = ({ currentUser }) => {
     const [loading, setLoading] = useState(false);
+    const [requestLoading, setRequestLoading] = useState(false);
+    const [requestSubmitting, setRequestSubmitting] = useState(false);
+    const [resetSubmitting, setResetSubmitting] = useState(false);
     const [message, setMessage] = useState(null);
     const [previewUrl, setPreviewUrl] = useState("images/sample.jpg");
     const { checkAuth } = useAuth();
-    
-    
-    const [formData, setFormData] = useState({
-        username: '',
-        full_name: '',
-        gender: '',
-        password: '',
-        confirmPassword: ''
-    });
+    const [latestRequest, setLatestRequest] = useState(null);
+    const [passwordForm, setPasswordForm] = useState({ password: "", confirm: "" });
+    const [approvalConsumed, setApprovalConsumed] = useState(false);
 
     useEffect(() => {
         if (currentUser) {
-            setFormData(prev => ({
-                ...prev,
-                username: currentUser.username || '',
-                full_name: currentUser.full_name || '',
-                gender: (currentUser.gender || '').toLowerCase()
-            }));
-
-            
             const loadPreview = async () => {
                 let url = "images/sample.jpg";
                 if (currentUser.avatar_url) {
@@ -51,61 +40,137 @@ const SettingsView = ({ currentUser }) => {
         }
     };
 
+    const loadResetRequests = async () => {
+        try {
+            setRequestLoading(true);
+            const rows = await StudentAPI.getMyAccountRequests(20);
+            const activeRequest = Array.isArray(rows)
+                ? rows.find((row) => {
+                    const status = String(row?.status || '').toLowerCase();
+                    return status === 'pending' || status === 'approved';
+                })
+                : null;
+            setLatestRequest(activeRequest || null);
+            if (activeRequest) {
+                setApprovalConsumed(false);
+            }
+        } catch (error) {
+            setLatestRequest(null);
+            setMessage({
+                type: 'danger',
+                text: error.message || 'Failed to load password reset requests.',
+            });
+        } finally {
+            setRequestLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (currentUser?.id) {
+            loadResetRequests();
+        }
+    }, [currentUser?.id]);
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setMessage(null);
-        
-        if (formData.password || formData.confirmPassword) {
-            if (formData.password !== formData.confirmPassword) {
-                setMessage({ type: 'danger', text: 'Passwords do not match' });
-                return;
-            }
-            if (formData.password.length < 8) {
-                setMessage({ type: 'danger', text: 'Password must be at least 8 characters' });
-                return;
-            }
+
+        const fileInput = document.getElementById('profileImageInput');
+        if (!fileInput || !fileInput.files[0]) {
+            setMessage({ type: 'danger', text: 'Select a profile image first.' });
+            return;
         }
 
         setLoading(true);
         const submitData = new FormData();
-        submitData.append('username', formData.username);
-        submitData.append('full_name', formData.full_name);
-        if (formData.gender) submitData.append('gender', formData.gender);
-        if (formData.password) submitData.append('password', formData.password);
-        
-        const fileInput = document.getElementById('profileImageInput');
-        if (fileInput && fileInput.files[0]) {
-            submitData.append('profile_image', fileInput.files[0]);
-        }
+        submitData.append('profile_image', fileInput.files[0]);
 
         try {
             const result = await AuthAPI.updateProfile(submitData);
             if (result.success) {
                 await checkAuth();
-                setMessage({ type: 'success', text: 'Profile updated successfully!' });
+                setMessage({ type: 'success', text: 'Profile image updated successfully!' });
             } else {
-                setMessage({ type: 'danger', text: result.error || 'Failed to update profile' });
+                setMessage({ type: 'danger', text: result.error || 'Failed to update profile image.' });
             }
         } catch (err) {
-            console.error("Profile update error:", err);
+            console.error("Profile image update error:", err);
             setMessage({ type: 'danger', text: err.message || 'An error occurred' });
         } finally {
             setLoading(false);
         }
     };
 
-    const handleGoogleLink = () => {
-        setMessage({
-            type: 'danger',
-            text: 'Google account linking is disabled in Supabase-only mode.'
-        });
+    const requestStatus = String(latestRequest?.status || '').toLowerCase();
+    const canRequestReset =
+        !requestLoading && requestStatus !== 'pending' && requestStatus !== 'approved';
+    const canCompleteReset = requestStatus === 'approved' && !approvalConsumed;
+
+    const handleRequestPasswordReset = async () => {
+        try {
+            setMessage(null);
+            setRequestSubmitting(true);
+            const result = await StudentAPI.requestPasswordReset();
+            await loadResetRequests();
+            setMessage({
+                type: 'success',
+                text: result?.message || 'Password reset request submitted. Wait for admin approval.',
+            });
+        } catch (error) {
+            setMessage({
+                type: 'danger',
+                text: error.message || 'Failed to submit password reset request.',
+            });
+        } finally {
+            setRequestSubmitting(false);
+        }
+    };
+
+    const handleApprovedReset = async (e) => {
+        e.preventDefault();
+        const password = String(passwordForm.password || '');
+        const confirm = String(passwordForm.confirm || '');
+
+        if (password.length < 8) {
+            setMessage({ type: 'danger', text: 'Password must be at least 8 characters.' });
+            return;
+        }
+        if (password !== confirm) {
+            setMessage({ type: 'danger', text: 'Password confirmation does not match.' });
+            return;
+        }
+
+        try {
+            setMessage(null);
+            setResetSubmitting(true);
+            const synced = await StudentAPI.completeApprovedPasswordReset(password);
+            if (!synced) {
+                throw new Error('Password was not synced to secure auth. Please contact admin.');
+            }
+            setPasswordForm({ password: "", confirm: "" });
+            setApprovalConsumed(true);
+            setLatestRequest(null);
+            await loadResetRequests();
+            setMessage({
+                type: 'success',
+                text: 'Password updated successfully. Approval consumed. Request again next time you need another reset.',
+            });
+        } catch (error) {
+            await loadResetRequests();
+            setMessage({
+                type: 'danger',
+                text: error.message || 'Failed to reset password.',
+            });
+        } finally {
+            setResetSubmitting(false);
+        }
     };
 
     return (
         <Container>
             <Header>
                 <h2>Account Settings</h2>
-                <p>Manage your profile information and security</p>
+                <p>Manage your profile image and security</p>
             </Header>
 
             {message && (
@@ -140,88 +205,62 @@ const SettingsView = ({ currentUser }) => {
                     <MainSettings>
                         <Card>
                             <CardHeader>
-                                <User size={20} />
-                                <h3>Personal Information</h3>
-                            </CardHeader>
-                            <CardBody>
-                                <FormGroup>
-                                    <Label>Full Name</Label>
-                                    <InputWrapper>
-                                        <User size={18} />
-                                        <Input 
-                                            type="text" 
-                                            value={formData.full_name} 
-                                            onChange={e => setFormData({...formData, full_name: e.target.value})} 
-                                            required 
-                                        />
-                                    </InputWrapper>
-                                </FormGroup>
-                                <FormGroup>
-                                    <Label>Username</Label>
-                                    <InputWrapper>
-                                        <User size={18} />
-                                        <Input 
-                                            type="text" 
-                                            value={formData.username} 
-                                            onChange={e => setFormData({...formData, username: e.target.value})} 
-                                            required 
-                                        />
-                                    </InputWrapper>
-                                </FormGroup>
-                                <FormGroup>
-                                    <Label>Gender</Label>
-                                    <Select
-                                        value={formData.gender}
-                                        onChange={e => setFormData({...formData, gender: e.target.value})}
-                                    >
-                                        <option value="">Select</option>
-                                        <option value="male">Male</option>
-                                        <option value="female">Female</option>
-                                        <option value="lgbtq+">LGBTQ+</option>
-                                    </Select>
-                                </FormGroup>
-                            </CardBody>
-                        </Card>
-
-                        <Card>
-                            <CardHeader>
                                 <ShieldCheck size={20} />
                                 <h3>Security</h3>
                             </CardHeader>
                             <CardBody>
                                 <FormGroup>
-                                    <Label>Google Account</Label>
-                                    <GoogleBtn type="button" onClick={handleGoogleLink} $linked={currentUser?.google_linked}>
-                                        <Mail size={18} />
-                                        {currentUser?.google_linked ? "Connected to Google" : "Connect Google Account"}
-                                        {currentUser?.google_linked && <CheckCircle size={16} />}
-                                    </GoogleBtn>
+                                    <Label>Password Reset Request</Label>
+                                    <RequestStatus $status={requestStatus || 'none'}>
+                                        <span className="dot" />
+                                        {requestLoading
+                                            ? 'Checking request status...'
+                                            : requestStatus === 'approved'
+                                                ? 'Approved - you can reset your password now.'
+                                                : requestStatus === 'pending'
+                                                    ? 'Pending admin approval.'
+                                                    : 'No active request.'}
+                                    </RequestStatus>
+                                    <Button
+                                        type="button"
+                                        $secondary
+                                        disabled={!canRequestReset || requestSubmitting}
+                                        onClick={handleRequestPasswordReset}
+                                    >
+                                        <KeyRound size={18} />
+                                        {requestSubmitting ? 'Submitting Request...' : 'Request Password Reset'}
+                                    </Button>
+                                    <p className="hint">
+                                        Submit a request first. Once approved by admin, you can set a new password below.
+                                    </p>
                                 </FormGroup>
-                                <Divider />
-                                <FormGroup>
-                                    <Label>New Password</Label>
-                                    <InputWrapper>
-                                        <Lock size={18} />
-                                        <Input 
-                                            type="password" 
-                                            placeholder="Leave blank to keep current" 
-                                            value={formData.password}
-                                            onChange={e => setFormData({...formData, password: e.target.value})}
-                                        />
-                                    </InputWrapper>
-                                </FormGroup>
-                                <FormGroup>
-                                    <Label>Confirm Password</Label>
-                                    <InputWrapper>
-                                        <Lock size={18} />
-                                        <Input 
-                                            type="password" 
-                                            placeholder="Confirm new password"
-                                            value={formData.confirmPassword}
-                                            onChange={e => setFormData({...formData, confirmPassword: e.target.value})}
-                                        />
-                                    </InputWrapper>
-                                </FormGroup>
+
+                                {canCompleteReset && (
+                                    <ResetForm onSubmit={handleApprovedReset}>
+                                        <FormGroup>
+                                            <Label>New Password</Label>
+                                            <Input
+                                                type="password"
+                                                value={passwordForm.password}
+                                                onChange={e => setPasswordForm({ ...passwordForm, password: e.target.value })}
+                                                required
+                                            />
+                                        </FormGroup>
+                                        <FormGroup>
+                                            <Label>Confirm Password</Label>
+                                            <Input
+                                                type="password"
+                                                value={passwordForm.confirm}
+                                                onChange={e => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                                                required
+                                            />
+                                        </FormGroup>
+                                        <Button type="submit" disabled={resetSubmitting}>
+                                            <Save size={18} />
+                                            {resetSubmitting ? 'Resetting Password...' : 'Reset Password'}
+                                        </Button>
+                                    </ResetForm>
+                                )}
                             </CardBody>
                         </Card>
                     </MainSettings>
@@ -229,14 +268,13 @@ const SettingsView = ({ currentUser }) => {
 
                 <Actions>
                     <Button type="submit" disabled={loading}>
-                        <Save size={18} /> {loading ? 'Saving Changes...' : 'Save Changes'}
+                        <Save size={18} /> {loading ? 'Saving Image...' : 'Save Profile Image'}
                     </Button>
                 </Actions>
             </Form>
         </Container>
     );
 };
-
 
 const Container = styled.div`
   animation: fadeIn 0.4s ease-out;
@@ -338,17 +376,43 @@ const Select = styled.select`
   &:focus { outline: none; border-color: var(--accent-primary); }
 `;
 
-const Divider = styled.div`
-  height: 1px; background: var(--border-color); margin: 0.5rem 0;
+const RequestStatus = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: ${({ $status }) =>
+      $status === 'approved'
+        ? '#10b981'
+        : $status === 'pending'
+          ? '#f59e0b'
+          : $status === 'rejected'
+            ? '#ef4444'
+            : $status === 'completed'
+              ? '#3b82f6'
+              : '#9ca3af'};
+  }
 `;
 
-const GoogleBtn = styled.button`
-  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 10px;
-  background: ${props => props.$linked ? 'var(--bg-tertiary)' : 'white'};
-  color: ${props => props.$linked ? 'var(--text-primary)' : '#333'};
-  border: 1px solid var(--border-color); border-radius: 8px; font-weight: 600; cursor: pointer;
-  transition: all 0.2s;
-  &:hover { background: var(--bg-tertiary); }
+const ResetForm = styled.form`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
 `;
 
 const Actions = styled.div`
