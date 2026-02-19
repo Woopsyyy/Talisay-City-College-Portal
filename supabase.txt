@@ -1365,10 +1365,18 @@ begin
     raise exception 'Only administrators can assign non-student roles.';
   end if;
 
-  if exists (select 1 from public.users where lower(username) = lower(v_username)) then
+  if exists (
+    select 1
+    from public.users u
+    where lower(u.username) = lower(v_username)
+  ) then
     raise exception 'Username already exists.';
   end if;
-  if exists (select 1 from public.users where lower(email) = v_email) then
+  if exists (
+    select 1
+    from public.users u
+    where lower(u.email) = v_email
+  ) then
     raise exception 'Email already exists.';
   end if;
 

@@ -118,6 +118,17 @@ const isMissingColumnError = (error, columnName = "") => {
   );
 };
 
+const isAmbiguousColumnError = (error, columnName = "") => {
+  const message = String(error?.message || "").toLowerCase();
+  const target = String(columnName || "").toLowerCase();
+  const ambiguous = error?.code === "42702" || (
+    message.includes("column reference") && message.includes("is ambiguous")
+  );
+  if (!ambiguous) return false;
+  if (!target) return true;
+  return message.includes(`"${target}"`) || message.includes(target);
+};
+
 
 const withApi = async (fn, { silent = false } = {}) => {
   if (!silent) {
@@ -1803,7 +1814,11 @@ export const AdminAPI = {
 
       const { data, error } = await supabase.rpc("app_register_user", rpcPayload);
       if (error) {
-        if (isMissingFunctionError(error, "app_register_user")) {
+        if (
+          isMissingFunctionError(error, "app_register_user") ||
+          isAmbiguousColumnError(error, "username") ||
+          isAmbiguousColumnError(error, "email")
+        ) {
           const { data: fallback, error: fallbackError } = await supabase
             .from("users")
             .insert({
