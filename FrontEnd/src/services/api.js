@@ -59,6 +59,45 @@ const formatSupabaseError = (error, fallback = "Database request failed") => {
   return formatted;
 };
 
+const normalizeErrorText = (errorLike) => {
+  if (!errorLike) return "";
+  if (typeof errorLike === "string") return errorLike.toLowerCase();
+  return [errorLike.message, errorLike.details, errorLike.hint, errorLike.code]
+    .filter((part) => typeof part === "string" && part.trim().length > 0)
+    .join(" ")
+    .toLowerCase();
+};
+
+const isDuplicateConstraintError = (errorLike) => {
+  const errorCode = String(errorLike?.code || "").trim();
+  const errorText = normalizeErrorText(errorLike);
+  return (
+    errorCode === "23505" ||
+    errorText.includes("duplicate key value violates unique constraint") ||
+    errorText.includes("already exists")
+  );
+};
+
+const isUsernameConflictError = (errorLike) => {
+  const errorText = normalizeErrorText(errorLike);
+  if (!errorText) return false;
+  if (errorText.includes("username already exists")) return true;
+  if (!isDuplicateConstraintError(errorLike)) return false;
+  return (
+    errorText.includes("username") ||
+    errorText.includes("users_username_key") ||
+    errorText.includes("idx_users_username_lower")
+  );
+};
+
+const isEmailConflictError = (errorLike) => {
+  const errorText = normalizeErrorText(errorLike);
+  if (!errorText) return false;
+  if (errorText.includes("email already exists")) return true;
+  if (!isDuplicateConstraintError(errorLike)) return false;
+  return errorText.includes("email") || errorText.includes("users_email_key");
+};
+
 const isMissingFunctionError = (error, fnName = "") => {
   const message = String(error?.message || "").toLowerCase();
   const name = String(fnName || "").toLowerCase();
@@ -321,6 +360,12 @@ const sanitizeLike = (value) =>
     .replace(/[%_,()']/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const escapeLikePattern = (value) =>
+  String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
 
 const normalizeLocalEmailPart = (username, fallback = "user") => {
   const base = String(username || "")
@@ -1797,26 +1842,27 @@ export const AdminAPI = {
                 .select(USER_SAFE_SELECT)
                 .single();
               if (retryFallback.error) {
-                const retryText = String(retryFallback.error.message || "").toLowerCase();
-                if (retryText.includes("username")) throw new Error("Username already exists.");
-                if (retryText.includes("email")) throw new Error("Email already exists.");
+                if (isUsernameConflictError(retryFallback.error)) {
+                  throw new Error("Username already exists.");
+                }
+                if (isEmailConflictError(retryFallback.error)) {
+                  throw new Error("Email already exists.");
+                }
                 throw formatSupabaseError(retryFallback.error);
               }
               const retryUser = await applyUserExpiry(normalizeUser(retryFallback.data));
               return finalizeCreatedUser(retryUser);
             }
-            const errorText = String(fallbackError.message || "").toLowerCase();
-            if (errorText.includes("username")) throw new Error("Username already exists.");
-            if (errorText.includes("email")) throw new Error("Email already exists.");
+            if (isUsernameConflictError(fallbackError)) throw new Error("Username already exists.");
+            if (isEmailConflictError(fallbackError)) throw new Error("Email already exists.");
             throw formatSupabaseError(fallbackError);
           }
           const normalizedFallback = await applyUserExpiry(normalizeUser(fallback));
           return finalizeCreatedUser(normalizedFallback);
         }
 
-        const errorText = String(error.message || "").toLowerCase();
-        if (errorText.includes("username")) throw new Error("Username already exists.");
-        if (errorText.includes("email")) throw new Error("Email already exists.");
+        if (isUsernameConflictError(error)) throw new Error("Username already exists.");
+        if (isEmailConflictError(error)) throw new Error("Email already exists.");
         throw formatSupabaseError(error, "Failed to create user account.");
       }
 
@@ -1852,7 +1898,7 @@ export const AdminAPI = {
       const { data: existingUsername, error: usernameError } = await supabase
         .from("users")
         .select("id,username")
-        .ilike("username", username)
+        .ilike("username", escapeLikePattern(username))
         .neq("id", numericUserId)
         .limit(1);
       if (usernameError) throw formatSupabaseError(usernameError);
