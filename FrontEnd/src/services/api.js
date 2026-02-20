@@ -311,6 +311,7 @@ const normalizeUser = (row) => {
 
   return {
     ...row,
+    image_path: row.image_path || DEFAULT_AVATAR,
     role: roles[0] || "student",
     roles,
     sub_role: subRoles[0] || null,
@@ -942,6 +943,29 @@ export const AuthAPI = {
           }
           return Boolean(confirmData);
         };
+        const tryRepairAuthProfile = async () => {
+          const { data: repairData, error: repairError } = await supabase.rpc(
+            "app_repair_auth_profile_for_login",
+            {
+              p_identifier: identifier,
+              p_password: passwordText,
+            },
+          );
+          if (repairError) {
+            if (
+              isMissingFunctionError(repairError, "app_repair_auth_profile_for_login") ||
+              isPermissionDeniedError(repairError)
+            ) {
+              return false;
+            }
+            throw formatSupabaseError(repairError);
+          }
+
+          const repairRow = Array.isArray(repairData)
+            ? (repairData[0] || null)
+            : (repairData || null);
+          return Boolean(repairRow?.auth_uid) && repairRow?.auth_synced !== false;
+        };
         await supabase.auth.signOut({ scope: "local" }).catch(() => {});
         const trySignIn = async () =>
           supabase.auth.signInWithPassword({
@@ -966,9 +990,17 @@ export const AuthAPI = {
             authMsg.includes("user not found");
 
           if (likelyMissingAuthUser) {
-            throw new Error(
-              "Secure auth profile is missing for this account. Ask an admin to reset the password once in Admin > Account Access.",
-            );
+            const repaired = await tryRepairAuthProfile();
+            if (repaired) {
+              ({ error: signInError } = await trySignIn());
+              authMsg = String(signInError?.message || "").toLowerCase();
+            }
+
+            if (!repaired) {
+              throw new Error(
+                "Secure auth profile is missing for this account. Ask an admin to reset the password once in Admin > Account Access.",
+              );
+            }
           }
         }
 

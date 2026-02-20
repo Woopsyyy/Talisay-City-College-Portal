@@ -370,6 +370,76 @@ begin
 end;
 $$;
 
+create or replace function public.app_repair_auth_profile_for_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_identifier text := trim(coalesce(p_identifier, ''));
+  v_password text := coalesce(p_password, '');
+  v_user_id bigint;
+  v_user_password text;
+begin
+  if v_identifier = '' or v_password = '' then
+    return;
+  end if;
+
+  select
+    u.id,
+    u.password
+  into v_user_id,
+       v_user_password
+  from public.users u
+  where lower(coalesce(u.username, '')) = lower(v_identifier)
+    and (u.expires_at is null or u.expires_at > now())
+  order by
+    case when u.auth_uid is not null then 0 else 1 end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+
+  if not found then
+    return;
+  end if;
+
+  if not (
+    v_user_password = crypt(v_password, v_user_password)
+    or (
+      v_user_password like '$2y$%'
+      and replace(v_user_password, '$2y$', '$2a$')
+        = crypt(
+            v_password,
+            replace(v_user_password, '$2y$', '$2a$')
+          )
+    )
+  ) then
+    return;
+  end if;
+
+  return query
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => v_password
+  ) p
+  limit 1;
+end;
+$$;
+
 create or replace function public.app_log_status_event(
   p_action text,
   p_category text default 'general',
@@ -1288,6 +1358,7 @@ revoke all on function public.app_is_student() from public;
 revoke all on function public.app_is_staff() from public;
 revoke all on function public.app_bind_auth_uid_for_user(bigint) from public;
 revoke all on function public.app_ensure_auth_user_for_password(bigint, text) from public;
+revoke all on function public.app_repair_auth_profile_for_login(text, text) from public;
 revoke all on function public.app_log_status_event(text, text, text, bigint, text, text, bigint, text, text, jsonb) from public;
 revoke all on function public.app_purge_expired_users() from public;
 revoke all on function public.app_request_password_reset(text) from public;
@@ -1307,6 +1378,7 @@ grant execute on function public.app_is_teacher() to authenticated;
 grant execute on function public.app_is_student() to authenticated;
 grant execute on function public.app_is_staff() to authenticated;
 grant execute on function public.app_bind_auth_uid_for_user(bigint) to authenticated;
+grant execute on function public.app_repair_auth_profile_for_login(text, text) to anon, authenticated;
 grant execute on function public.app_log_status_event(text, text, text, bigint, text, text, bigint, text, text, jsonb) to anon, authenticated;
 grant execute on function public.app_request_password_reset(text) to authenticated;
 grant execute on function public.app_get_my_account_requests(integer) to authenticated;
