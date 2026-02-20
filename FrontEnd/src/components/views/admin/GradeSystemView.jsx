@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
-import { formatOrdinal } from '../../../Utils/formatting';
+import { formatOrdinal } from '../../../utils/formatting';
 import { BookOpen, Filter, Calendar, Layers, Trash2, Search, User, Award, AlertCircle } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';

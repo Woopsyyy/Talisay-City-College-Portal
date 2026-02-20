@@ -1146,6 +1146,140 @@ begin
 end;
 $$;
 
+create or replace function public.app_get_discipline_records(
+  p_school_year text default null,
+  p_department text default null,
+  p_year_level text default null,
+  p_section text default null,
+  p_user_id bigint default null,
+  p_limit integer default 1000
+)
+returns table (
+  id bigint,
+  created_at timestamptz,
+  action text,
+  target_user_id bigint,
+  target_username text,
+  target_role text,
+  message text,
+  metadata jsonb
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_school_year text := nullif(trim(coalesce(p_school_year, '')), '');
+  v_department text := lower(nullif(trim(coalesce(p_department, '')), ''));
+  v_year_level text := lower(nullif(trim(coalesce(p_year_level, '')), ''));
+  v_section text := lower(nullif(trim(coalesce(p_section, '')), ''));
+  v_limit integer := greatest(1, least(coalesce(p_limit, 1000), 5000));
+begin
+  if not (public.app_is_admin() or public.app_has_role('osas') or public.app_has_role('nt')) then
+    raise exception 'Only OSAS, NT, or administrators can view discipline records.';
+  end if;
+
+  return query
+  select
+    l.id,
+    l.created_at,
+    l.action,
+    l.target_user_id,
+    l.target_username,
+    l.target_role,
+    l.message,
+    coalesce(l.metadata, '{}'::jsonb) as metadata
+  from public.status_logs l
+  where lower(coalesce(l.category, '')) = 'discipline'
+    and (p_user_id is null or l.target_user_id = p_user_id)
+    and (
+      v_school_year is null
+      or coalesce(l.metadata ->> 'school_year', '') = v_school_year
+    )
+    and (
+      v_department is null
+      or lower(coalesce(l.metadata ->> 'department', '')) = v_department
+    )
+    and (
+      v_year_level is null
+      or lower(coalesce(l.metadata ->> 'year_level', '')) = v_year_level
+    )
+    and (
+      v_section is null
+      or lower(coalesce(l.metadata ->> 'section', '')) = v_section
+    )
+  order by l.created_at desc, l.id desc
+  limit v_limit;
+end;
+$$;
+
+create or replace function public.app_get_payment_records(
+  p_school_year text default null,
+  p_department text default null,
+  p_year_level text default null,
+  p_section text default null,
+  p_user_id bigint default null,
+  p_limit integer default 1000
+)
+returns table (
+  id bigint,
+  created_at timestamptz,
+  action text,
+  target_user_id bigint,
+  target_username text,
+  target_role text,
+  message text,
+  metadata jsonb
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_school_year text := nullif(trim(coalesce(p_school_year, '')), '');
+  v_department text := lower(nullif(trim(coalesce(p_department, '')), ''));
+  v_year_level text := lower(nullif(trim(coalesce(p_year_level, '')), ''));
+  v_section text := lower(nullif(trim(coalesce(p_section, '')), ''));
+  v_limit integer := greatest(1, least(coalesce(p_limit, 1000), 5000));
+begin
+  if not (public.app_is_admin() or public.app_has_role('treasury') or public.app_has_role('nt')) then
+    raise exception 'Only Treasury, NT, or administrators can view payment records.';
+  end if;
+
+  return query
+  select
+    l.id,
+    l.created_at,
+    l.action,
+    l.target_user_id,
+    l.target_username,
+    l.target_role,
+    l.message,
+    coalesce(l.metadata, '{}'::jsonb) as metadata
+  from public.status_logs l
+  where lower(coalesce(l.category, '')) = 'payment'
+    and (p_user_id is null or l.target_user_id = p_user_id)
+    and (
+      v_school_year is null
+      or coalesce(l.metadata ->> 'school_year', '') = v_school_year
+    )
+    and (
+      v_department is null
+      or lower(coalesce(l.metadata ->> 'department', '')) = v_department
+    )
+    and (
+      v_year_level is null
+      or lower(coalesce(l.metadata ->> 'year_level', '')) = v_year_level
+    )
+    and (
+      v_section is null
+      or lower(coalesce(l.metadata ->> 'section', '')) = v_section
+    )
+  order by l.created_at desc, l.id desc
+  limit v_limit;
+end;
+$$;
+
 revoke all on function public.app_current_user_id() from public;
 revoke all on function public.app_has_role(text) from public;
 revoke all on function public.app_is_admin() from public;
@@ -1163,6 +1297,8 @@ revoke all on function public.app_get_account_requests(text, text, integer) from
 revoke all on function public.app_set_account_request_status(bigint, text, text) from public;
 revoke all on function public.app_approve_all_account_requests(text) from public;
 revoke all on function public.app_get_teacher_grade_students(bigint, text, text) from public;
+revoke all on function public.app_get_discipline_records(text, text, text, text, bigint, integer) from public;
+revoke all on function public.app_get_payment_records(text, text, text, text, bigint, integer) from public;
 
 grant execute on function public.app_current_user_id() to authenticated;
 grant execute on function public.app_has_role(text) to authenticated;
@@ -1179,6 +1315,8 @@ grant execute on function public.app_get_account_requests(text, text, integer) t
 grant execute on function public.app_set_account_request_status(bigint, text, text) to authenticated;
 grant execute on function public.app_approve_all_account_requests(text) to authenticated;
 grant execute on function public.app_get_teacher_grade_students(bigint, text, text) to authenticated;
+grant execute on function public.app_get_discipline_records(text, text, text, text, bigint, integer) to authenticated;
+grant execute on function public.app_get_payment_records(text, text, text, text, bigint, integer) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Secure auth RPCs (used by frontend auth flow)
@@ -2138,62 +2276,49 @@ using (
 );
 
 -- ---------------------------------------------------------------------------
--- Optional admin seed (password: admin123)
+-- Optional admin seed template (disabled by default)
 -- ---------------------------------------------------------------------------
-insert into public.users (
-  username,
-  password,
-  email,
-  full_name,
-  role,
-  roles,
-  sub_role,
-  sub_roles,
-  school_id,
-  image_path
-)
-select
-  'admin',
-  '$2a$12$kKgxNqdWOXgtEwQ06uwBEOqFEZufzM7kUEp1jjt.wSxBuGuksLjZa',
-  'admin@tcc.edu.ph',
-  'System Administrator',
-  'admin',
-  '["admin"]'::jsonb,
-  null,
-  '[]'::jsonb,
-  'ADMIN001',
-  '/images/sample.jpg'
-where not exists (
-  select 1 from public.users where username = 'admin'
-);
+-- SECURITY NOTE:
+-- Do not commit real bootstrap credentials. If you need a local seed, set
+-- v_seed_enabled := true and provide a strong v_admin_password before running.
+do $$
+declare
+  v_seed_enabled boolean := false;
+  v_admin_username text := 'admin';
+  v_admin_email text := 'admin@example.local';
+  v_admin_password text := null;
+begin
+  if not v_seed_enabled or nullif(trim(coalesce(v_admin_password, '')), '') is null then
+    return;
+  end if;
 
--- Optional second admin seed (password: 09939057827)
-insert into public.users (
-  username,
-  password,
-  email,
-  full_name,
-  role,
-  roles,
-  sub_role,
-  sub_roles,
-  school_id,
-  image_path
-)
-select
-  'Woopsy',
-  crypt('09939057827', gen_salt('bf', 12)),
-  'woopsy@tcc.edu.ph',
-  'Woopsy Administrator',
-  'admin',
-  '["admin"]'::jsonb,
-  null,
-  '[]'::jsonb,
-  'ADMIN002',
-  '/images/sample.jpg'
-where not exists (
-  select 1
-  from public.users
-  where lower(username) = lower('Woopsy')
-     or lower(email) = lower('woopsy@tcc.edu.ph')
-);
+  insert into public.users (
+    username,
+    password,
+    email,
+    full_name,
+    role,
+    roles,
+    sub_role,
+    sub_roles,
+    school_id,
+    image_path
+  )
+  select
+    v_admin_username,
+    crypt(v_admin_password, gen_salt('bf', 12)),
+    v_admin_email,
+    'System Administrator',
+    'admin',
+    '["admin"]'::jsonb,
+    null,
+    '[]'::jsonb,
+    'ADMIN001',
+    '/images/sample.jpg'
+  where not exists (
+    select 1
+    from public.users u
+    where lower(u.username) = lower(v_admin_username)
+       or lower(u.email) = lower(v_admin_email)
+  );
+end $$;

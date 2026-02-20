@@ -8,8 +8,8 @@ import {
 
 const SUB_ROLE_CONFIG = {
     nt: { icon: Briefcase, color: '#f59e0b', path: '/nt/dashboard/study_load', label: 'Other/Staff' },
-    osas: { icon: ShieldAlert, color: '#ec4899', path: '/nt/dashboard/sanctions', label: 'OSAS' },
-    treasury: { icon: CreditCard, color: '#10b981', path: '/nt/dashboard/payments', label: 'Treasury' },
+    osas: { icon: ShieldAlert, color: '#ec4899', path: '/nt/dashboard/warning', label: 'OSAS' },
+    treasury: { icon: CreditCard, color: '#10b981', path: '/nt/dashboard/payment', label: 'Treasury' },
     dean: { icon: Award, color: '#eab308', path: '/teachers/schedule', label: 'Dean' }
 };
 

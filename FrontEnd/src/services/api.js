@@ -435,6 +435,33 @@ const normalizeStudentStatusValue = (value) => {
   return "Regular";
 };
 
+const inferSanctionLevelFromReason = (reason) => {
+  const text = String(reason || "").trim().toLowerCase();
+  if (!text) return null;
+  if (text.includes("major")) return "major";
+  if (text.includes("minor")) return "minor";
+  return null;
+};
+
+const normalizeOffenseLevel = (value, fallback = "minor") => {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (raw.includes("major")) return "major";
+  if (raw.includes("minor")) return "minor";
+  return fallback;
+};
+
+const normalizeSchoolYearValue = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return currentSchoolYear();
+  const match = raw.match(/^(\d{4})\s*[-/]\s*(\d{4})$/);
+  if (match) {
+    return `${match[1]}-${match[2]}`;
+  }
+  return raw;
+};
+
 const parseGradePoint = (value, label = "Grade") => {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -1326,6 +1353,7 @@ const mapUserAssignmentRows = async (rows) => {
       sanctions,
       sanction_reason: row.sanction_reason || "",
       semester: row.semester || "1st Semester",
+      school_year: row.school_year || section?.school_year || currentSchoolYear(),
       student_status: row.student_status || "Regular",
     };
   });
@@ -1470,6 +1498,82 @@ const deleteUserRecords = async (userId, options = {}) => {
   }
 
   return { success: true };
+};
+
+const mapScopedRecordEvent = (row) => {
+  const metadata =
+    row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+      ? row.metadata
+      : {};
+  const targetUserId =
+    parseNumber(row?.target_user_id, null) ??
+    parseNumber(metadata?.target_user_id, null) ??
+    parseNumber(metadata?.user_id, null) ??
+    parseNumber(metadata?.student_id, null);
+  const targetUsername =
+    String(row?.target_username || "").trim() ||
+    String(metadata?.target_username || "").trim() ||
+    String(metadata?.student_name || "").trim() ||
+    "";
+
+  return {
+    id: parseNumber(row?.id, null),
+    created_at: row?.created_at || null,
+    action: String(row?.action || "")
+      .trim()
+      .toLowerCase(),
+    message: String(row?.message || "").trim(),
+    target_user_id: targetUserId,
+    target_username: targetUsername,
+    metadata,
+  };
+};
+
+const matchesAssignmentFilters = (assignment, filters = {}) => {
+  const targetYear = String(filters?.year || filters?.year_level || "").trim().toLowerCase();
+  const targetSection = String(filters?.section || "").trim().toLowerCase();
+  const targetDepartment = String(filters?.department || "").trim().toLowerCase();
+  const targetSchoolYear = normalizeSchoolYearValue(filters?.school_year || "");
+
+  if (targetYear) {
+    const assignmentYear = String(assignment?.year || assignment?.year_level || "")
+      .trim()
+      .toLowerCase();
+    if (assignmentYear && assignmentYear !== targetYear) return false;
+  }
+
+  if (targetSection) {
+    const assignmentSection = String(assignment?.section || assignment?.section_name || "")
+      .trim()
+      .toLowerCase();
+    if (assignmentSection && assignmentSection !== targetSection) return false;
+  }
+
+  if (targetDepartment) {
+    const assignmentDepartment = String(assignment?.department || "")
+      .trim()
+      .toLowerCase();
+    if (assignmentDepartment && assignmentDepartment !== targetDepartment) return false;
+  }
+
+  if (targetSchoolYear) {
+    const assignmentSchoolYear = normalizeSchoolYearValue(assignment?.school_year || "");
+    if (assignmentSchoolYear && assignmentSchoolYear !== targetSchoolYear) return false;
+  }
+
+  return true;
+};
+
+const fetchScopedRecordEvents = async (rpcName, args = {}) => {
+  const { data, error } = await supabase.rpc(rpcName, args);
+  if (error) {
+    if (isMissingFunctionError(error, rpcName) || isPermissionDeniedError(error)) {
+      return [];
+    }
+    throw formatSupabaseError(error);
+  }
+  const rows = Array.isArray(data) ? data : data ? [data] : [];
+  return rows.map(mapScopedRecordEvent);
 };
 
 export const AdminAPI = {
@@ -2548,6 +2652,416 @@ export const AdminAPI = {
       return mapUserAssignmentRows(data || []);
     }),
 
+  getDisciplineRecords: async (filters = {}) =>
+    withApi(async () => {
+      const allAssignments = await AdminAPI.getUserAssignments();
+      const scopedAssignments = (allAssignments || []).filter((assignment) =>
+        matchesAssignmentFilters(assignment, filters),
+      );
+
+      const schoolYear = normalizeSchoolYearValue(filters?.school_year || currentSchoolYear());
+      const events = await fetchScopedRecordEvents("app_get_discipline_records", {
+        p_school_year: schoolYear || null,
+        p_department: String(filters?.department || "").trim() || null,
+        p_year_level: String(filters?.year || filters?.year_level || "").trim() || null,
+        p_section: String(filters?.section || "").trim() || null,
+        p_user_id: parseNumber(filters?.user_id, null),
+        p_limit: 5000,
+      });
+
+      const summaryByUser = new Map();
+      scopedAssignments.forEach((assignment) => {
+        const userId = parseNumber(assignment?.user_id, null);
+        if (!userId) return;
+        summaryByUser.set(userId, {
+          user_id: userId,
+          assignment_id: assignment.id,
+          full_name: assignment.full_name || assignment.username || `Student #${userId}`,
+          username: assignment.username || "",
+          school_id: assignment.school_id || "",
+          year_level: assignment.year_level || assignment.year || "",
+          section: assignment.section || assignment.section_name || "",
+          department: assignment.department || "",
+          school_year: normalizeSchoolYearValue(assignment.school_year || schoolYear),
+          warning_count: 0,
+          sanction_count: assignment.sanctions ? 1 : 0,
+          current_sanction: Boolean(assignment.sanctions),
+          current_sanction_reason: assignment.sanction_reason || "",
+          last_sanction_level:
+            normalizeOffenseLevel(
+              inferSanctionLevelFromReason(assignment.sanction_reason || ""),
+              "",
+            ) || null,
+          last_event_at: null,
+          events: [],
+        });
+      });
+
+      events.forEach((event) => {
+        const userId = parseNumber(event?.target_user_id, null);
+        if (!userId) return;
+
+        if (!summaryByUser.has(userId)) {
+          summaryByUser.set(userId, {
+            user_id: userId,
+            assignment_id: null,
+            full_name: event.target_username || `Student #${userId}`,
+            username: event.target_username || "",
+            school_id: "",
+            year_level: String(event?.metadata?.year_level || "").trim(),
+            section: String(event?.metadata?.section || "").trim(),
+            department: String(event?.metadata?.department || "").trim(),
+            school_year: normalizeSchoolYearValue(event?.metadata?.school_year || schoolYear),
+            warning_count: 0,
+            sanction_count: 0,
+            current_sanction: false,
+            current_sanction_reason: "",
+            last_sanction_level: null,
+            last_event_at: null,
+            events: [],
+          });
+        }
+
+        const summary = summaryByUser.get(userId);
+        summary.events.push(event);
+        if (!summary.last_event_at || String(event.created_at || "") > String(summary.last_event_at || "")) {
+          summary.last_event_at = event.created_at || summary.last_event_at;
+        }
+
+        if (event.action.includes("warning")) {
+          summary.warning_count += 1;
+        }
+        if (event.action.includes("sanction")) {
+          summary.sanction_count += 1;
+          const level =
+            normalizeOffenseLevel(
+              event?.metadata?.sanction_level ||
+                inferSanctionLevelFromReason(event?.message || ""),
+              "",
+            ) || null;
+          if (level) summary.last_sanction_level = level;
+        }
+      });
+
+      return Array.from(summaryByUser.values())
+        .map((item) => ({
+          ...item,
+          events: (item.events || []).sort((a, b) =>
+            String(b.created_at || "").localeCompare(String(a.created_at || "")),
+          ),
+        }))
+        .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
+    }),
+
+  getDisciplineRecordForStudent: async (userId, filters = {}) =>
+    withApi(async () => {
+      const targetUserId = parseNumber(userId, null);
+      if (!targetUserId) throw new Error("Invalid student selected.");
+
+      const rows = await AdminAPI.getDisciplineRecords({ ...filters, user_id: targetUserId });
+      const row = (rows || []).find((item) => parseNumber(item?.user_id, null) === targetUserId);
+      if (!row) {
+        return {
+          user_id: targetUserId,
+          warning_count: 0,
+          sanction_count: 0,
+          current_sanction: false,
+          events: [],
+        };
+      }
+      return row;
+    }),
+
+  issueStudentWarning: async (assignmentInput, payload = {}) =>
+    withApi(async () => {
+      const assignmentId =
+        parseNumber(assignmentInput?.id, null) ?? parseNumber(assignmentInput, null);
+      if (!assignmentId) throw new Error("Invalid student assignment.");
+
+      const description = String(payload?.description || payload?.reason || "").trim();
+      if (!description) throw new Error("Warning description is required.");
+
+      const offenseLevel = normalizeOffenseLevel(
+        payload?.offense_level || payload?.sanction_level || payload?.level,
+        "minor",
+      );
+
+      const { data: assignmentRow, error: assignmentError } = await supabase
+        .from("user_assignments")
+        .select("*")
+        .eq("id", assignmentId)
+        .limit(1)
+        .maybeSingle();
+      if (assignmentError) throw formatSupabaseError(assignmentError);
+      if (!assignmentRow?.user_id) throw new Error("Student assignment not found.");
+
+      const targetUser = await fetchUserLogSnapshot(assignmentRow.user_id).catch(() => null);
+      const schoolYear = normalizeSchoolYearValue(
+        payload?.school_year || assignmentRow?.school_year || currentSchoolYear(),
+      );
+      const sectionName = String(assignmentRow?.section || payload?.section || "").trim();
+      const yearLevel = normalizeYearLevel(
+        payload?.year_level || assignmentRow?.year_level || assignmentRow?.grade_level || "",
+      );
+      const department = String(payload?.department || assignmentRow?.department || "").trim();
+
+      const previousEvents = await fetchScopedRecordEvents("app_get_discipline_records", {
+        p_school_year: schoolYear || null,
+        p_department: department || null,
+        p_year_level: yearLevel || null,
+        p_section: sectionName || null,
+        p_user_id: assignmentRow.user_id,
+        p_limit: 5000,
+      });
+      const warningCount = (previousEvents || []).filter((event) =>
+        String(event?.action || "").includes("warning"),
+      ).length + 1;
+      const previousSanctions = (previousEvents || []).filter((event) =>
+        String(event?.action || "").includes("sanction"),
+      ).length;
+
+      await logStatusEvent({
+        action: "student_warning_issued",
+        category: "discipline",
+        target_user_id: assignmentRow.user_id,
+        target_username: targetUser?.username || null,
+        target_role: targetUser?.role || "student",
+        message: `Warning issued to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}": ${description}`,
+        metadata: {
+          assignment_id: assignmentId,
+          warning_count: warningCount,
+          description,
+          offense_level: offenseLevel,
+          school_year: schoolYear,
+          section: sectionName,
+          year_level: yearLevel,
+          department,
+        },
+      });
+
+      let sanctionApplied = false;
+      let sanctionReason = "";
+      const shouldAutoSanction = warningCount > 0 && warningCount % 3 === 0;
+      if (shouldAutoSanction) {
+        sanctionApplied = true;
+        const sanctionLabel = offenseLevel === "major" ? "Major offense" : "Minor offense";
+        sanctionReason = `${sanctionLabel} sanction: ${description}`;
+
+        const { error: sanctionUpdateError } = await supabase
+          .from("user_assignments")
+          .update({
+            sanctions: 1,
+            sanction_reason: sanctionReason,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", assignmentId);
+        if (sanctionUpdateError) throw formatSupabaseError(sanctionUpdateError);
+
+        await logStatusEvent({
+          action: "student_sanction_applied",
+          category: "discipline",
+          target_user_id: assignmentRow.user_id,
+          target_username: targetUser?.username || null,
+          target_role: targetUser?.role || "student",
+          message: `Auto-sanction applied to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}" after 3 warnings (${offenseLevel}).`,
+          metadata: {
+            assignment_id: assignmentId,
+            warning_count: warningCount,
+            sanction_count: previousSanctions + 1,
+            sanction_level: offenseLevel,
+            sanction_reason: sanctionReason,
+            source: "auto_after_three_warnings",
+            school_year: schoolYear,
+            section: sectionName,
+            year_level: yearLevel,
+            department,
+          },
+        });
+      }
+
+      return {
+        success: true,
+        warning_count: warningCount,
+        sanction_applied: sanctionApplied,
+        sanction_level: sanctionApplied ? offenseLevel : null,
+        sanction_reason: sanctionReason || null,
+      };
+    }),
+
+  applyGeneralPayment: async (payload = {}) =>
+    withApi(async () => {
+      const amount = parseNumber(payload?.amount, null);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Payment amount must be greater than 0.");
+      }
+
+      const filters = {
+        department: String(payload?.department || "").trim(),
+        year: String(payload?.year || payload?.year_level || "").trim(),
+        section: String(payload?.section || "").trim(),
+        school_year: normalizeSchoolYearValue(payload?.school_year || currentSchoolYear()),
+      };
+
+      if (!filters.department && !filters.year && !filters.section) {
+        throw new Error("Select at least department, year, or section before applying payment.");
+      }
+
+      const reason = String(payload?.reason || payload?.description || "General lacking payment")
+        .trim();
+      const allAssignments = await AdminAPI.getUserAssignments();
+      const scopedAssignments = (allAssignments || []).filter((assignment) =>
+        matchesAssignmentFilters(assignment, filters),
+      );
+
+      if (!scopedAssignments.length) {
+        throw new Error("No student records match the selected scope.");
+      }
+
+      const nowIso = new Date().toISOString();
+      await Promise.all(
+        scopedAssignments.map(async (assignment) => {
+          const { error: updateError } = await supabase
+            .from("user_assignments")
+            .update({
+              payment: "owing",
+              amount_lacking: amount,
+              updated_at: nowIso,
+            })
+            .eq("id", assignment.id);
+          if (updateError) throw formatSupabaseError(updateError);
+
+          await logStatusEvent({
+            action: "payment_lacking_assigned",
+            category: "payment",
+            target_user_id: assignment.user_id,
+            target_username: assignment.username || null,
+            target_role: "student",
+            message: `Assigned lacking payment of PHP ${amount.toFixed(2)} to "${assignment.full_name || assignment.username || assignment.user_id}".`,
+            metadata: {
+              assignment_id: assignment.id,
+              amount,
+              reason,
+              school_year: filters.school_year,
+              department: assignment.department || filters.department || null,
+              year_level: assignment.year_level || assignment.year || filters.year || null,
+              section: assignment.section || filters.section || null,
+            },
+          });
+        }),
+      );
+
+      return {
+        success: true,
+        updated_count: scopedAssignments.length,
+        amount,
+      };
+    }),
+
+  getPaymentRecords: async (filters = {}) =>
+    withApi(async () => {
+      const allAssignments = await AdminAPI.getUserAssignments();
+      const scopedAssignments = (allAssignments || []).filter((assignment) =>
+        matchesAssignmentFilters(assignment, filters),
+      );
+
+      const schoolYear = normalizeSchoolYearValue(filters?.school_year || currentSchoolYear());
+      const events = await fetchScopedRecordEvents("app_get_payment_records", {
+        p_school_year: schoolYear || null,
+        p_department: String(filters?.department || "").trim() || null,
+        p_year_level: String(filters?.year || filters?.year_level || "").trim() || null,
+        p_section: String(filters?.section || "").trim() || null,
+        p_user_id: parseNumber(filters?.user_id, null),
+        p_limit: 5000,
+      });
+
+      const summaryByUser = new Map();
+      scopedAssignments.forEach((assignment) => {
+        const userId = parseNumber(assignment?.user_id, null);
+        if (!userId) return;
+        summaryByUser.set(userId, {
+          user_id: userId,
+          assignment_id: assignment.id,
+          full_name: assignment.full_name || assignment.username || `Student #${userId}`,
+          username: assignment.username || "",
+          school_id: assignment.school_id || "",
+          year_level: assignment.year_level || assignment.year || "",
+          section: assignment.section || assignment.section_name || "",
+          department: assignment.department || "",
+          school_year: normalizeSchoolYearValue(assignment.school_year || schoolYear),
+          payment_status: assignment.payment || "paid",
+          amount_lacking: parseNumber(assignment.amount_lacking, 0) || 0,
+          receipt_count: 0,
+          last_payment_at: null,
+          receipts: [],
+        });
+      });
+
+      events.forEach((event) => {
+        const userId = parseNumber(event?.target_user_id, null);
+        if (!userId) return;
+
+        if (!summaryByUser.has(userId)) {
+          summaryByUser.set(userId, {
+            user_id: userId,
+            assignment_id: null,
+            full_name: event.target_username || `Student #${userId}`,
+            username: event.target_username || "",
+            school_id: "",
+            year_level: String(event?.metadata?.year_level || "").trim(),
+            section: String(event?.metadata?.section || "").trim(),
+            department: String(event?.metadata?.department || "").trim(),
+            school_year: normalizeSchoolYearValue(event?.metadata?.school_year || schoolYear),
+            payment_status: "paid",
+            amount_lacking: 0,
+            receipt_count: 0,
+            last_payment_at: null,
+            receipts: [],
+          });
+        }
+
+        const summary = summaryByUser.get(userId);
+        summary.receipts.push(event);
+        summary.receipt_count += 1;
+        if (!summary.last_payment_at || String(event.created_at || "") > String(summary.last_payment_at || "")) {
+          summary.last_payment_at = event.created_at || summary.last_payment_at;
+        }
+
+        const amountFromEvent = parseNumber(event?.metadata?.amount, null);
+        if (amountFromEvent != null && amountFromEvent >= 0) {
+          summary.amount_lacking = amountFromEvent;
+          summary.payment_status = amountFromEvent > 0 ? "owing" : "paid";
+        }
+      });
+
+      return Array.from(summaryByUser.values())
+        .map((item) => ({
+          ...item,
+          receipts: (item.receipts || []).sort((a, b) =>
+            String(b.created_at || "").localeCompare(String(a.created_at || "")),
+          ),
+        }))
+        .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
+    }),
+
+  getPaymentRecordForStudent: async (userId, filters = {}) =>
+    withApi(async () => {
+      const targetUserId = parseNumber(userId, null);
+      if (!targetUserId) throw new Error("Invalid student selected.");
+
+      const rows = await AdminAPI.getPaymentRecords({ ...filters, user_id: targetUserId });
+      const row = (rows || []).find((item) => parseNumber(item?.user_id, null) === targetUserId);
+      if (!row) {
+        return {
+          user_id: targetUserId,
+          payment_status: "paid",
+          amount_lacking: 0,
+          receipt_count: 0,
+          receipts: [],
+        };
+      }
+      return row;
+    }),
+
   createUserAssignment: async (payload) =>
     withApi(async () => {
       let userId = payload?.user_id || payload?.existing_user_id || null;
@@ -2591,6 +3105,7 @@ export const AdminAPI = {
         sanctions: toSmallintFlag(payload?.sanctions, 0),
         sanction_reason: payload?.sanction_reason || null,
         semester: payload?.semester || "1st Semester",
+        school_year: normalizeSchoolYearValue(payload?.school_year || section.school_year || currentSchoolYear()),
         student_status: normalizeStudentStatusValue(payload?.student_status),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -2610,7 +3125,9 @@ export const AdminAPI = {
     withApi(async () => {
       const { data: previousAssignment, error: previousAssignmentError } = await supabase
         .from("user_assignments")
-        .select("id,user_id,section_id,section,student_status")
+        .select(
+          "id,user_id,section_id,section,student_status,payment,amount_lacking,sanctions,sanction_reason,year_level,department,school_year",
+        )
         .eq("id", id)
         .limit(1)
         .maybeSingle();
@@ -2657,6 +3174,9 @@ export const AdminAPI = {
         updates.sanction_reason = payload.sanction_reason || null;
       }
       if (payload?.semester !== undefined) updates.semester = payload.semester || "1st Semester";
+      if (payload?.school_year !== undefined) {
+        updates.school_year = normalizeSchoolYearValue(payload.school_year || currentSchoolYear());
+      }
       if (payload?.student_status !== undefined) {
         updates.student_status = normalizeStudentStatusValue(payload.student_status);
       }
@@ -2681,6 +3201,77 @@ export const AdminAPI = {
         if (clearCustomLoadError && !isMissingRelation(clearCustomLoadError)) {
           throw formatSupabaseError(clearCustomLoadError);
         }
+      }
+
+      const targetUser = data?.user_id
+        ? await fetchUserLogSnapshot(data.user_id).catch(() => null)
+        : null;
+      const schoolYear = normalizeSchoolYearValue(
+        data?.school_year || previousAssignment?.school_year || currentSchoolYear(),
+      );
+      const yearLevel = normalizeYearLevel(
+        data?.year_level || previousAssignment?.year_level || "",
+      );
+      const sectionName = String(data?.section || previousAssignment?.section || "").trim();
+      const department = String(data?.department || previousAssignment?.department || "").trim();
+
+      const previousPayment = String(previousAssignment?.payment || "paid").trim().toLowerCase();
+      const nextPayment = String(data?.payment || previousPayment || "paid").trim().toLowerCase();
+      const previousAmount = parseNumber(previousAssignment?.amount_lacking, 0) || 0;
+      const nextAmount = parseNumber(data?.amount_lacking, 0) || 0;
+      if (previousPayment !== nextPayment || previousAmount !== nextAmount) {
+        await logStatusEvent({
+          action: "payment_status_updated",
+          category: "payment",
+          target_user_id: data?.user_id || previousAssignment?.user_id || null,
+          target_username: targetUser?.username || null,
+          target_role: targetUser?.role || "student",
+          message: `Payment status updated for "${targetUser?.full_name || targetUser?.username || data?.user_id || id}".`,
+          metadata: {
+            assignment_id: data?.id || id,
+            previous_payment: previousPayment,
+            next_payment: nextPayment,
+            previous_amount_lacking: previousAmount,
+            next_amount_lacking: nextAmount,
+            school_year: schoolYear,
+            section: sectionName,
+            year_level: yearLevel,
+            department,
+          },
+        });
+      }
+
+      const previousSanctions = toSmallintFlag(previousAssignment?.sanctions, 0);
+      const nextSanctions = toSmallintFlag(data?.sanctions, previousSanctions);
+      const previousSanctionReason = String(previousAssignment?.sanction_reason || "").trim();
+      const nextSanctionReason = String(data?.sanction_reason || "").trim();
+      if (previousSanctions !== nextSanctions || previousSanctionReason !== nextSanctionReason) {
+        await logStatusEvent({
+          action: nextSanctions ? "student_sanction_applied" : "student_sanction_cleared",
+          category: "discipline",
+          target_user_id: data?.user_id || previousAssignment?.user_id || null,
+          target_username: targetUser?.username || null,
+          target_role: targetUser?.role || "student",
+          message: nextSanctions
+            ? `Sanction updated for "${targetUser?.full_name || targetUser?.username || data?.user_id || id}".`
+            : `Sanction cleared for "${targetUser?.full_name || targetUser?.username || data?.user_id || id}".`,
+          metadata: {
+            assignment_id: data?.id || id,
+            sanctions_before: previousSanctions,
+            sanctions_after: nextSanctions,
+            sanction_reason_before: previousSanctionReason || null,
+            sanction_reason_after: nextSanctionReason || null,
+            sanction_level:
+              normalizeOffenseLevel(
+                inferSanctionLevelFromReason(nextSanctionReason || previousSanctionReason || ""),
+                "",
+              ) || null,
+            school_year: schoolYear,
+            section: sectionName,
+            year_level: yearLevel,
+            department,
+          },
+        });
       }
 
       const mapped = await mapUserAssignmentRows([data]);

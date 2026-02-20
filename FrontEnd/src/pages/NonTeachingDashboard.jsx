@@ -8,6 +8,11 @@ import {
   BookOpen,
   ClipboardList,
   CalendarCheck,
+  Megaphone,
+  FolderKanban,
+  AlertTriangle,
+  ReceiptText,
+  Settings,
   LogOut,
   ShieldAlert,
   CreditCard,
@@ -27,15 +32,27 @@ const TeacherManagementView = lazy(() => import("../components/views/admin/Teach
 const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
 const StaffSanctionsView = lazy(() => import("../components/views/staff/SanctionsView"));
 const StaffPaymentsView = lazy(() => import("../components/views/staff/PaymentsView"));
+const StaffWarningsView = lazy(() => import("../components/views/staff/WarningsView"));
+const StaffDisciplineRecordsView = lazy(() => import("../components/views/staff/DisciplineRecordsView"));
+const StaffTreasuryPaymentView = lazy(() => import("../components/views/staff/TreasuryPaymentView"));
+const StaffPaymentRecordsView = lazy(() => import("../components/views/staff/PaymentRecordsView"));
+const AnnouncementsView = lazy(() => import("../components/views/admin/AnnouncementsView"));
+const ProjectsView = lazy(() => import("../components/views/admin/ProjectsView"));
+const SettingsView = lazy(() => import("../components/views/teacher/SettingsView"));
 
 const NonTeachingDashboard = () => {
   const navigate = useNavigate();
-  const { user: currentUser, loading: authLoading, avatarUrl, logout } = useAuth();
+  const {
+    user: currentUser,
+    loading: authLoading,
+    avatarUrl,
+    logout,
+    activeRole,
+    activeSubRole,
+  } = useAuth();
   const location = useLocation();
   const pathParts = location.pathname.split('/');
   const lastPart = pathParts[pathParts.length - 1];
-
-  const { activeRole } = useAuth();
   const gatherSubRoles = (user) => {
     if (!user) return [];
     const raw = [
@@ -59,21 +76,48 @@ const NonTeachingDashboard = () => {
   };
 
   const normalizedSubRoles = gatherSubRoles(currentUser);
-  const isFacultyMode = activeRole === 'faculty';
+  const normalizedRoles =
+    Array.isArray(currentUser?.roles) && currentUser.roles.length
+      ? currentUser.roles.map((role) => String(role || "").toLowerCase().trim())
+      : currentUser?.role
+        ? [String(currentUser.role).toLowerCase().trim()]
+        : [];
+  const hasNtRole = normalizedRoles.includes("nt") || normalizedSubRoles.includes("nt");
+  const hasOsasRole = normalizedSubRoles.includes("osas");
+  const hasTreasuryRole = normalizedSubRoles.includes("treasury");
+
+  const preferredSubRole = String(activeSubRole || "")
+    .trim()
+    .toLowerCase();
+  const staffContext = (() => {
+    if (preferredSubRole === "osas" && hasOsasRole) return "osas";
+    if (preferredSubRole === "treasury" && hasTreasuryRole) return "treasury";
+    if (preferredSubRole === "nt" && hasNtRole) return "nt";
+    if (hasNtRole) return "nt";
+    if (hasOsasRole) return "osas";
+    if (hasTreasuryRole) return "treasury";
+    return "nt";
+  })();
+
+  const isOsasMode = staffContext === "osas";
+  const isTreasuryMode = staffContext === "treasury";
 
   useEffect(() => {
     const roles = Array.isArray(currentUser?.roles) && currentUser.roles.length
       ? currentUser.roles
       : currentUser?.role ? [currentUser.role] : [];
-    
-    // Allow entry if they are admin, or have nt role, or have any staff sub-roles
-    const subRoles = Array.isArray(currentUser?.sub_roles) ? currentUser.sub_roles : [currentUser?.sub_role].filter(Boolean);
-    const hasStaffAccess = roles.includes('admin') || roles.includes('nt') || subRoles.some(r => ['nt', 'osas', 'treasury'].includes(r));
+
+    const roleSet = new Set(roles.map((role) => String(role || "").toLowerCase().trim()));
+    const subRoles = gatherSubRoles(currentUser);
+    const hasStaffAccess =
+      roleSet.has("admin") ||
+      roleSet.has("nt") ||
+      subRoles.some((role) => ["nt", "osas", "treasury"].includes(role));
 
     if (!authLoading && (!currentUser || !hasStaffAccess)) {
-      if (roles.includes('admin')) navigate('/admin/dashboard');
-      else if (roles.includes('teacher')) navigate('/teachers');
-      else if (roles.includes('student')) navigate('/home');
+      if (roleSet.has("admin")) navigate("/admin/dashboard");
+      else if (roleSet.has("teacher")) navigate("/teachers");
+      else if (roleSet.has("student")) navigate("/home");
       else navigate("/");
     }
   }, [authLoading, currentUser, navigate]);
@@ -97,12 +141,24 @@ const NonTeachingDashboard = () => {
     { id: "buildings", icon: Building2, label: "Buildings" },
   ];
 
-  const facultyNavItems = [
-    ...(normalizedSubRoles.includes('osas') ? [{ id: "sanctions", icon: ShieldAlert, label: "Sanctions" }] : []),
-    ...(normalizedSubRoles.includes('treasury') ? [{ id: "payments", icon: CreditCard, label: "Payments" }] : []),
+  const osasNavItems = [
+    { id: "announcements", icon: Megaphone, label: "Announcement" },
+    { id: "projects", icon: FolderKanban, label: "Project" },
+    { id: "warning", icon: AlertTriangle, label: "Warning" },
+    { id: "sanction", icon: ShieldAlert, label: "Sanction" },
+    { id: "record", icon: BookOpen, label: "Record" },
+    { id: "settings", icon: Settings, label: "Settings" },
   ];
 
-  const navItems = isFacultyMode && facultyNavItems.length > 0 ? facultyNavItems : ntNavItems;
+  const treasuryNavItems = [
+    { id: "announcements", icon: Megaphone, label: "Announcement" },
+    { id: "projects", icon: FolderKanban, label: "Project" },
+    { id: "payment", icon: CreditCard, label: "Payment" },
+    { id: "record", icon: ReceiptText, label: "Record" },
+    { id: "settings", icon: Settings, label: "Settings" },
+  ];
+
+  const navItems = isOsasMode ? osasNavItems : isTreasuryMode ? treasuryNavItems : ntNavItems;
   const defaultSection = navItems.length > 0 ? navItems[0].id : "study_load";
   const allowedSections = navItems.map((item) => item.id);
   const currentSection =
@@ -110,10 +166,13 @@ const NonTeachingDashboard = () => {
       ? defaultSection
       : lastPart;
 
-  const facultyLabel = normalizedSubRoles
-    .filter((role) => role === 'osas' || role === 'treasury')
-    .map((role) => role.toUpperCase())
-    .join(', ');
+  const sidebarRoleLabel = isOsasMode
+    ? "OSAS"
+    : isTreasuryMode
+      ? "TREASURY"
+      : activeRole === "faculty"
+        ? "FACULTY STAFF"
+        : "STAFF";
 
   const heroSpotlights = {
     study_load: {
@@ -140,28 +199,78 @@ const NonTeachingDashboard = () => {
       title: "Buildings & Facilities",
       copy: "Manage campus infrastructure, track room usage, and organize section allocations.",
     },
-    sanctions: {
-        title: "Sanction Management",
-        copy: "Record and monitor student disciplinary actions.",
+    announcements: {
+      title: "Announcements",
+      copy: "Create and publish announcements for students and staff audiences.",
     },
-    payments: {
-        title: "Payment Tracking",
-        copy: "Manage and verify student payment balances.",
-    }
+    projects: {
+      title: "Projects",
+      copy: "Track ongoing projects, budgets, and progress updates.",
+    },
+    warning: {
+      title: "Warning",
+      copy: "Issue student warnings with required descriptions and offense level.",
+    },
+    sanction: {
+      title: "Sanction",
+      copy: "Manage sanctions and disciplinary status of students.",
+    },
+    payment: {
+      title: "Payment",
+      copy: "Assign general lacking payments by department, year, and section.",
+    },
+    record: {
+      title: "Record",
+      copy: "Review per-student warning/sanction and payment history records.",
+    },
+    settings: {
+      title: "Settings",
+      copy: "Manage your profile details and account preferences.",
+    },
   };
 
   const renderContent = () => {
     return (
       <Suspense fallback={<PageSkeleton />}>
         <Routes>
-          <Route path="study_load" element={<StudyLoadView />} />
-          <Route path="irregular_study_load" element={<IrregularStudyLoadView />} />
-          <Route path="teacher_scheduling" element={<TeacherManagementView />} />
-          <Route path="subjects" element={<SubjectsView />} />
-          <Route path="sections" element={<SectionsView />} />
-          <Route path="buildings" element={<FacilitiesView />} />
-          <Route path="sanctions" element={<StaffSanctionsView />} />
-          <Route path="payments" element={<StaffPaymentsView />} />
+          {!isOsasMode && !isTreasuryMode && (
+            <>
+              <Route path="study_load" element={<StudyLoadView />} />
+              <Route path="irregular_study_load" element={<IrregularStudyLoadView />} />
+              <Route path="teacher_scheduling" element={<TeacherManagementView />} />
+              <Route path="subjects" element={<SubjectsView />} />
+              <Route path="sections" element={<SectionsView />} />
+              <Route path="buildings" element={<FacilitiesView />} />
+              <Route path="sanctions" element={<StaffSanctionsView />} />
+              <Route path="payments" element={<StaffPaymentsView />} />
+            </>
+          )}
+
+          {isOsasMode && (
+            <>
+              <Route path="announcements" element={<AnnouncementsView />} />
+              <Route path="projects" element={<ProjectsView />} />
+              <Route path="warning" element={<StaffWarningsView />} />
+              <Route path="sanction" element={<StaffSanctionsView />} />
+              <Route path="record" element={<StaffDisciplineRecordsView />} />
+              <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+              <Route path="sanctions" element={<Navigate to="/nt/dashboard/sanction" replace />} />
+              <Route path="payments" element={<Navigate to="/nt/dashboard/record" replace />} />
+            </>
+          )}
+
+          {isTreasuryMode && (
+            <>
+              <Route path="announcements" element={<AnnouncementsView />} />
+              <Route path="projects" element={<ProjectsView />} />
+              <Route path="payment" element={<StaffTreasuryPaymentView />} />
+              <Route path="record" element={<StaffPaymentRecordsView />} />
+              <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+              <Route path="payments" element={<Navigate to="/nt/dashboard/payment" replace />} />
+              <Route path="sanctions" element={<Navigate to="/nt/dashboard/record" replace />} />
+            </>
+          )}
+
           <Route index element={<Navigate to={defaultSection} replace />} />
           <Route
             path="*"
@@ -180,12 +289,23 @@ const NonTeachingDashboard = () => {
     );
   }
 
-  const currentRoles = Array.isArray(currentUser?.roles) && currentUser.roles.length
-    ? currentUser.roles
-    : currentUser?.role ? [currentUser.role] : [];
-  
-  const currentSubRoles = Array.isArray(currentUser?.sub_roles) ? currentUser.sub_roles : [currentUser?.sub_role].filter(Boolean);
-  const hasStaffAccess = currentRoles.includes('admin') || currentRoles.includes('nt') || currentSubRoles.some(r => ['nt', 'osas', 'treasury'].includes(r.toLowerCase()));
+  const currentRoles = (
+    Array.isArray(currentUser?.roles) && currentUser.roles.length
+      ? currentUser.roles
+      : currentUser?.role
+        ? [currentUser.role]
+        : []
+  ).map((role) => String(role || "").toLowerCase().trim());
+
+  const currentSubRoles = (
+    Array.isArray(currentUser?.sub_roles)
+      ? currentUser.sub_roles
+      : [currentUser?.sub_role].filter(Boolean)
+  ).map((role) => String(role || "").toLowerCase().trim());
+  const hasStaffAccess =
+    currentRoles.includes("admin") ||
+    currentRoles.includes("nt") ||
+    currentSubRoles.some((role) => ["nt", "osas", "treasury"].includes(role));
 
   if (!currentUser || (!hasStaffAccess)) return null;
 
@@ -201,7 +321,7 @@ const NonTeachingDashboard = () => {
           <UserInfo>
             <UserName>{currentUser?.full_name}</UserName>
             {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
-            <UserRole>{isFacultyMode ? (facultyLabel || "FACULTY") : "STAFF"}</UserRole>
+            <UserRole>{sidebarRoleLabel}</UserRole>
           </UserInfo>
         </SidebarHeader>
 
@@ -232,7 +352,13 @@ const NonTeachingDashboard = () => {
       <MainContent>
         <HeroSection>
           <HeroContent>
-          <HeroEyebrow>{isFacultyMode ? "Faculty Access" : "Non-Teaching Portal"}</HeroEyebrow>
+          <HeroEyebrow>
+            {isOsasMode
+              ? "OSAS Portal"
+              : isTreasuryMode
+                ? "Treasury Portal"
+                : "Non-Teaching Portal"}
+          </HeroEyebrow>
             <HeroTitle>
               Welcome back, {currentUser?.full_name}.
             </HeroTitle>
