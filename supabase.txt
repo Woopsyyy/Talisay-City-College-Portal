@@ -1479,7 +1479,8 @@ declare
   v_school_id text := trim(coalesce(p_school_id, ''));
   v_role text := lower(trim(coalesce(p_role, 'student')));
   v_hash text := coalesce(p_password_hash, '');
-  v_school_prefix text := null;
+  v_generated_school_id text := null;
+  v_attempt integer := 0;
   v_inserted public.users%rowtype;
 begin
   if v_username = '' then
@@ -1519,13 +1520,27 @@ begin
   end if;
 
   if v_school_id = '' then
-    v_school_prefix := case v_role
-      when 'student' then 'STU'
-      when 'teacher' then 'TCH'
-      when 'admin' then 'ADM'
-      when 'nt' then 'NT'
-      else 'USR'
-    end;
+    -- Generate "YYYY - ####" and avoid duplicates in existing users.
+    loop
+      v_attempt := v_attempt + 1;
+      if v_attempt > 500 then
+        raise exception 'Unable to generate unique school ID.';
+      end if;
+
+      v_generated_school_id := format(
+        '%s - %s',
+        to_char(now(), 'YYYY'),
+        lpad((floor(random() * 10000)::int)::text, 4, '0')
+      );
+
+      exit when not exists (
+        select 1
+        from public.users u
+        where trim(coalesce(u.school_id, '')) = v_generated_school_id
+      );
+    end loop;
+
+    v_school_id := v_generated_school_id;
   end if;
 
   insert into public.users (
@@ -1557,19 +1572,6 @@ begin
     p_expires_at
   )
   returning * into v_inserted;
-
-  if coalesce(v_inserted.school_id, '') = '' then
-    update public.users
-       set school_id = format(
-             '%s%s%s',
-             coalesce(v_school_prefix, 'USR'),
-             to_char(now(), 'YYYY'),
-             lpad(v_inserted.id::text, 6, '0')
-           ),
-           updated_at = now()
-     where id = v_inserted.id
-     returning * into v_inserted;
-  end if;
 
   return query
   select

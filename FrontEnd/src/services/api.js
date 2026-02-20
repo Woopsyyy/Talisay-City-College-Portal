@@ -398,18 +398,43 @@ const buildStableSystemEmail = (username) => {
   return `${safe}@local.tcc`;
 };
 
-const buildAutoSchoolId = (role) => {
-  const normalizedRole = normalizeRole(role || "student");
-  const prefixByRole = {
-    student: "STU",
-    teacher: "TCH",
-    nt: "NT",
-    admin: "ADM",
-  };
-  const prefix = prefixByRole[normalizedRole] || "USR";
+const buildAutoSchoolId = async () => {
   const year = new Date().getFullYear();
-  const suffix = Math.floor(100000 + Math.random() * 900000);
-  return `${prefix}${year}${suffix}`;
+
+  const generateCandidate = () =>
+    `${year} - ${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}`;
+
+  const isAvailable = async (candidate) => {
+    const { count, error } = await supabase
+      .from("users")
+      .select("id", { head: true, count: "exact" })
+      .eq("school_id", candidate);
+
+    if (error) {
+      if (isPermissionDeniedError(error) || isMissingRelation(error)) {
+        return true;
+      }
+      throw formatSupabaseError(error, "Failed to generate school ID.");
+    }
+
+    return Number(count || 0) === 0;
+  };
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const candidate = generateCandidate();
+    if (await isAvailable(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (let value = 0; value < 10000; value += 1) {
+    const candidate = `${year} - ${String(value).padStart(4, "0")}`;
+    if (await isAvailable(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error("Unable to generate unique school ID. Please try again.");
 };
 
 const parseNumber = (value, fallback = null) => {
@@ -1804,7 +1829,7 @@ export const AdminAPI = {
       const email = providedEmail.includes("@") ? providedEmail : buildSystemEmail(username);
       const rawPassword = String(payload?.password || "");
       const role = normalizeRole(payload?.role || "student");
-      const schoolId = buildAutoSchoolId(role);
+      const schoolId = await buildAutoSchoolId();
       const allowedRoles = ["student", "teacher", "admin", "nt"];
       const expiresAt = parseOptionalFutureDate(payload?.expires_at, "account duration");
 
