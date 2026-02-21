@@ -922,8 +922,8 @@ export const AuthAPI = {
         const rpcRow = Array.isArray(rpcData) ? (rpcData[0] || null) : (rpcData || null);
         if (!rpcRow) throw new Error("Invalid username or password.");
 
-        const loginEmail =
-          String(rpcRow.email || "").trim().toLowerCase() ||
+        let loginEmail =
+          String(rpcRow.auth_email || rpcRow.email || "").trim().toLowerCase() ||
           buildStableSystemEmail(rpcRow.username || identifier);
 
         const passwordText = String(password);
@@ -952,11 +952,11 @@ export const AuthAPI = {
             },
           );
           if (repairError) {
-            if (
-              isMissingFunctionError(repairError, "app_repair_auth_profile_for_login") ||
-              isPermissionDeniedError(repairError)
-            ) {
-              return false;
+            if (isMissingFunctionError(repairError, "app_repair_auth_profile_for_login")) {
+              return { repaired: false, authEmail: null, reason: "missing_function" };
+            }
+            if (isPermissionDeniedError(repairError)) {
+              return { repaired: false, authEmail: null, reason: "permission_denied" };
             }
             throw formatSupabaseError(repairError);
           }
@@ -964,7 +964,11 @@ export const AuthAPI = {
           const repairRow = Array.isArray(repairData)
             ? (repairData[0] || null)
             : (repairData || null);
-          return Boolean(repairRow?.auth_uid) && repairRow?.auth_synced !== false;
+          return {
+            repaired: Boolean(repairRow?.auth_uid) && repairRow?.auth_synced !== false,
+            authEmail: String(repairRow?.auth_email || "").trim().toLowerCase() || null,
+            reason: "",
+          };
         };
         await supabase.auth.signOut({ scope: "local" }).catch(() => {});
         const trySignIn = async () =>
@@ -990,13 +994,26 @@ export const AuthAPI = {
             authMsg.includes("user not found");
 
           if (likelyMissingAuthUser) {
-            const repaired = await tryRepairAuthProfile();
-            if (repaired) {
+            const repairResult = await tryRepairAuthProfile();
+            if (repairResult.repaired) {
+              if (repairResult.authEmail) {
+                loginEmail = repairResult.authEmail;
+              }
               ({ error: signInError } = await trySignIn());
               authMsg = String(signInError?.message || "").toLowerCase();
             }
 
-            if (!repaired) {
+            if (!repairResult.repaired) {
+              if (repairResult.reason === "missing_function") {
+                throw new Error(
+                  "Secure login repair function app_repair_auth_profile_for_login is missing in this Supabase project. Run the latest SQL from supabase.txt in production.",
+                );
+              }
+              if (repairResult.reason === "permission_denied") {
+                throw new Error(
+                  "Secure login repair function exists but execute permission is denied. Grant execute on app_repair_auth_profile_for_login to anon/authenticated.",
+                );
+              }
               throw new Error(
                 "Secure auth profile is missing for this account. Ask an admin to reset the password once in Admin > Account Access.",
               );
