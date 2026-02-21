@@ -179,7 +179,7 @@ returns table (
 )
 language sql
 security definer
-set search_path = public
+set search_path = public, auth
 as $$
   update public.users u
      set auth_uid = auth.uid(),
@@ -188,6 +188,33 @@ as $$
      and u.id = p_user_id
      and (u.auth_uid is null or u.auth_uid = auth.uid())
   returning u.id, u.auth_uid;
+$$;
+
+create or replace function public.app_username_auth_email(
+  p_username text,
+  p_user_id bigint default null
+)
+returns text
+language plpgsql
+immutable
+set search_path = public
+as $$
+declare
+  v_local text;
+begin
+  v_local := lower(trim(regexp_replace(coalesce(p_username, ''), '[^a-zA-Z0-9._-]+', '.', 'g')));
+  v_local := trim(both '.' from v_local);
+
+  if v_local = '' then
+    if coalesce(p_user_id, 0) > 0 then
+      v_local := format('user%s', p_user_id);
+    else
+      v_local := 'user';
+    end if;
+  end if;
+
+  return v_local || '@local.tcc';
+end;
 $$;
 
 create or replace function public.app_ensure_auth_user_for_password(
@@ -231,7 +258,7 @@ begin
   end if;
 
   v_auth_uid := v_user.auth_uid;
-  v_auth_email := lower(trim(coalesce(v_user.email, '')));
+  v_auth_email := public.app_username_auth_email(v_user.username, v_user.id);
 
   if v_auth_uid is not null then
     perform 1
@@ -249,15 +276,6 @@ begin
     where lower(coalesce(au.email, '')) = v_auth_email
     order by au.created_at
     limit 1;
-  end if;
-
-  if v_auth_email = '' then
-    v_auth_email := lower(trim(regexp_replace(coalesce(v_user.username, 'user'), '[^a-zA-Z0-9._-]+', '.', 'g')));
-    v_auth_email := trim(both '.' from v_auth_email);
-    if v_auth_email = '' then
-      v_auth_email := format('user%s', p_user_id);
-    end if;
-    v_auth_email := v_auth_email || '@local.tcc';
   end if;
 
   if v_auth_uid is null then
@@ -357,7 +375,6 @@ begin
 
   update public.users
      set auth_uid = v_auth_uid,
-         email = coalesce(nullif(trim(coalesce(email, '')), ''), nullif(v_auth_email, '')),
          updated_at = now()
    where id = p_user_id;
 
@@ -1414,7 +1431,7 @@ returns table (
 )
 language sql
 security definer
-set search_path = public, extensions
+set search_path = public, auth, extensions
 as $$
   with candidate as (
     select u.*
@@ -1430,7 +1447,10 @@ as $$
   select
     u.id,
     u.username,
-    u.email,
+    coalesce(
+      nullif(lower(trim(coalesce(au.email, ''))), ''),
+      public.app_username_auth_email(u.username, u.id)
+    ) as email,
     u.full_name,
     u.role,
     u.roles,
@@ -1442,6 +1462,8 @@ as $$
     u.created_at,
     u.updated_at
   from candidate u
+  left join auth.users au
+    on au.id = u.auth_uid
   where (
       u.password = crypt(coalesce(p_password, ''), u.password)
       or (
@@ -1498,7 +1520,10 @@ as $$
   select
     u.id,
     u.username,
-    u.email,
+    coalesce(
+      nullif(lower(trim(coalesce(au.email, ''))), ''),
+      public.app_username_auth_email(u.username, u.id)
+    ) as email,
     u.full_name,
     u.role,
     u.roles,
@@ -1510,6 +1535,8 @@ as $$
     u.created_at,
     u.updated_at
   from public.users u
+  left join auth.users au
+    on au.id = u.auth_uid
   where u.id = public.app_current_user_id()
   limit 1;
 $$;
@@ -1546,7 +1573,6 @@ set search_path = public
 as $$
 declare
   v_username text := trim(coalesce(p_username, ''));
-  v_email text := lower(trim(coalesce(p_email, '')));
   v_full_name text := trim(coalesce(p_full_name, ''));
   v_school_id text := trim(coalesce(p_school_id, ''));
   v_role text := lower(trim(coalesce(p_role, 'student')));
@@ -1557,9 +1583,6 @@ declare
 begin
   if v_username = '' then
     raise exception 'Username is required.';
-  end if;
-  if v_email = '' then
-    raise exception 'Email is required.';
   end if;
   if v_full_name = '' then
     raise exception 'Full name is required.';
@@ -1583,14 +1606,6 @@ begin
   ) then
     raise exception 'Username already exists.';
   end if;
-  if exists (
-    select 1
-    from public.users u
-    where lower(u.email) = v_email
-  ) then
-    raise exception 'Email already exists.';
-  end if;
-
   if v_school_id = '' then
     -- Generate "YYYY - ####" and avoid duplicates in existing users.
     loop
@@ -1618,7 +1633,6 @@ begin
   insert into public.users (
     username,
     password,
-    email,
     full_name,
     role,
     roles,
@@ -1632,7 +1646,6 @@ begin
   values (
     v_username,
     v_hash,
-    v_email,
     v_full_name,
     v_role,
     jsonb_build_array(v_role),
@@ -1649,7 +1662,7 @@ begin
   select
     v_inserted.id,
     v_inserted.username,
-    v_inserted.email,
+    public.app_username_auth_email(v_inserted.username, v_inserted.id),
     v_inserted.full_name,
     v_inserted.role,
     v_inserted.roles,
@@ -1761,12 +1774,12 @@ as $$
 declare
   v_email text;
 begin
-  select u.email
+  select public.app_username_auth_email(u.username, u.id)
     into v_email
   from public.users u
   where (
       lower(u.username) = lower(trim(coalesce(p_identifier, '')))
-      or lower(u.email) = lower(trim(coalesce(p_identifier, '')))
+      or lower(public.app_username_auth_email(u.username, u.id)) = lower(trim(coalesce(p_identifier, '')))
     )
     and (
       u.password = crypt(coalesce(p_password, ''), u.password)
@@ -2359,7 +2372,6 @@ do $$
 declare
   v_seed_enabled boolean := false;
   v_admin_username text := 'admin';
-  v_admin_email text := 'admin@example.local';
   v_admin_password text := null;
 begin
   if not v_seed_enabled or nullif(trim(coalesce(v_admin_password, '')), '') is null then
@@ -2369,7 +2381,6 @@ begin
   insert into public.users (
     username,
     password,
-    email,
     full_name,
     role,
     roles,
@@ -2381,7 +2392,6 @@ begin
   select
     v_admin_username,
     crypt(v_admin_password, gen_salt('bf', 12)),
-    v_admin_email,
     'System Administrator',
     'admin',
     '["admin"]'::jsonb,
@@ -2393,6 +2403,5 @@ begin
     select 1
     from public.users u
     where lower(u.username) = lower(v_admin_username)
-       or lower(u.email) = lower(v_admin_email)
   );
 end $$;
