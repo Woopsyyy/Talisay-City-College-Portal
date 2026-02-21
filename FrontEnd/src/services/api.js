@@ -9,7 +9,7 @@ const BACKUP_PREFIX = String(import.meta.env.VITE_SUPABASE_BACKUP_PREFIX || "bac
   .replace(/\/+$/, "");
 const DEFAULT_AVATAR = "/images/sample.jpg";
 const USER_SAFE_SELECT =
-  "id,username,email,full_name,role,roles,sub_role,sub_roles,school_id,image_path,created_at,updated_at";
+  "id,username,full_name,role,roles,sub_role,sub_roles,school_id,image_path,created_at,updated_at";
 
 let activeRequests = 0;
 const loadingSubscribers = new Set();
@@ -88,14 +88,6 @@ const isUsernameConflictError = (errorLike) => {
     errorText.includes("users_username_key") ||
     errorText.includes("idx_users_username_lower")
   );
-};
-
-const isEmailConflictError = (errorLike) => {
-  const errorText = normalizeErrorText(errorLike);
-  if (!errorText) return false;
-  if (errorText.includes("email already exists")) return true;
-  if (!isDuplicateConstraintError(errorLike)) return false;
-  return errorText.includes("email") || errorText.includes("users_email_key");
 };
 
 const isMissingFunctionError = (error, fnName = "") => {
@@ -387,11 +379,6 @@ const normalizeLocalEmailPart = (username, fallback = "user") => {
     .replace(/\.+/g, ".")
     .replace(/^\.+|\.+$/g, "");
   return base || fallback;
-};
-
-const buildSystemEmail = (username) => {
-  const safe = normalizeLocalEmailPart(username, `user${Date.now()}`);
-  return `${safe}.${Date.now()}@local.tcc`;
 };
 
 const buildStableSystemEmail = (username) => {
@@ -1874,8 +1861,6 @@ export const AdminAPI = {
     withApi(async () => {
       const fullName = String(payload?.full_name || "").trim();
       const username = String(payload?.username || "").trim();
-      const providedEmail = String(payload?.email || "").trim().toLowerCase();
-      const email = providedEmail.includes("@") ? providedEmail : buildSystemEmail(username);
       const rawPassword = String(payload?.password || "");
       const role = normalizeRole(payload?.role || "student");
       const schoolId = await buildAutoSchoolId();
@@ -1896,7 +1881,6 @@ export const AdminAPI = {
       const rpcPayload = {
         p_username: username,
         p_password_hash: hashedPassword,
-        p_email: email,
         p_full_name: fullName,
         p_school_id: schoolId || null,
         p_role: role,
@@ -1994,15 +1978,13 @@ export const AdminAPI = {
       if (error) {
         if (
           isMissingFunctionError(error, "app_register_user") ||
-          isAmbiguousColumnError(error, "username") ||
-          isAmbiguousColumnError(error, "email")
+          isAmbiguousColumnError(error, "username")
         ) {
           const { data: fallback, error: fallbackError } = await supabase
             .from("users")
             .insert({
               username,
               password: hashedPassword,
-              email,
               full_name: fullName,
               role,
               roles: [role],
@@ -2022,7 +2004,6 @@ export const AdminAPI = {
                 .insert({
                   username,
                   password: hashedPassword,
-                  email,
                   full_name: fullName,
                   role,
                   roles: [role],
@@ -2038,16 +2019,12 @@ export const AdminAPI = {
                 if (isUsernameConflictError(retryFallback.error)) {
                   throw new Error("Username already exists.");
                 }
-                if (isEmailConflictError(retryFallback.error)) {
-                  throw new Error("Email already exists.");
-                }
                 throw formatSupabaseError(retryFallback.error);
               }
               const retryUser = await applyUserExpiry(normalizeUser(retryFallback.data));
               return finalizeCreatedUser(retryUser);
             }
             if (isUsernameConflictError(fallbackError)) throw new Error("Username already exists.");
-            if (isEmailConflictError(fallbackError)) throw new Error("Email already exists.");
             throw formatSupabaseError(fallbackError);
           }
           const normalizedFallback = await applyUserExpiry(normalizeUser(fallback));
@@ -2055,7 +2032,6 @@ export const AdminAPI = {
         }
 
         if (isUsernameConflictError(error)) throw new Error("Username already exists.");
-        if (isEmailConflictError(error)) throw new Error("Email already exists.");
         throw formatSupabaseError(error, "Failed to create user account.");
       }
 
