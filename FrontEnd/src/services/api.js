@@ -20,7 +20,9 @@ const emitLoading = () => {
   loadingSubscribers.forEach((callback) => {
     try {
       callback(active);
-    } catch (_) {}
+    } catch (error) {
+      void error;
+    }
   });
 };
 
@@ -28,7 +30,9 @@ const emitUnauthorized = () => {
   unauthorizedSubscribers.forEach((callback) => {
     try {
       callback();
-    } catch (_) {}
+    } catch (error) {
+      void error;
+    }
   });
 };
 
@@ -145,7 +149,7 @@ const readStoredUser = () => {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw || raw === "undefined") return null;
     return JSON.parse(raw);
-  } catch (_) {
+  } catch {
     return null;
   }
 };
@@ -153,14 +157,18 @@ const readStoredUser = () => {
 const writeStoredUser = (user) => {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(user));
-  } catch (_) {}
+  } catch (error) {
+    void error;
+  }
 };
 
 const clearStoredUser = () => {
   try {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem("tcc_avatar");
-  } catch (_) {}
+  } catch (error) {
+    void error;
+  }
 };
 
 const normalizeLogRole = (value) => {
@@ -185,7 +193,7 @@ const normalizeLogMetadata = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   try {
     return JSON.parse(JSON.stringify(value));
-  } catch (_) {
+  } catch {
     return {};
   }
 };
@@ -259,7 +267,9 @@ const normalizeListValue = (value) => {
       try {
         const parsed = JSON.parse(trimmed);
         return Array.isArray(parsed) ? parsed : [];
-      } catch (_) {}
+      } catch (error) {
+        void error;
+      }
     }
     return trimmed
       .split(",")
@@ -351,12 +361,6 @@ const isMissingRelation = (error) => {
 const isPermissionDeniedError = (error) => {
   const message = String(error?.message || "").toLowerCase();
   return error?.code === "42501" || message.includes("permission denied");
-};
-
-const normalizeBcryptHash = (hash) => {
-  if (!hash) return "";
-  if (hash.startsWith("$2y$")) return `$2a$${hash.slice(4)}`;
-  return hash;
 };
 
 const sanitizeLike = (value) =>
@@ -885,7 +889,7 @@ export const getAvatarUrl = async (_userId, imagePath) => {
 
     const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(cleaned);
     return data?.publicUrl || DEFAULT_AVATAR;
-  } catch (_) {
+  } catch {
     return DEFAULT_AVATAR;
   }
 };
@@ -1068,7 +1072,7 @@ export const AuthAPI = {
       throw formatSupabaseError(rpcError);
     }),
 
-  signup: async (_userData) =>
+  signup: async () =>
     withApi(async () => {
       throw new Error("Self-service account creation is disabled. Contact an administrator.");
     }),
@@ -2387,7 +2391,7 @@ export const AdminAPI = {
       if (rawTemplate) {
         try {
           template = typeof rawTemplate === "string" ? JSON.parse(rawTemplate) : rawTemplate;
-        } catch (_) {
+        } catch {
           template = null;
         }
       }
@@ -4691,7 +4695,7 @@ const tryParseJson = (value) => {
   if (typeof value !== "string") return null;
   try {
     return JSON.parse(value);
-  } catch (_) {
+  } catch {
     return null;
   }
 };
