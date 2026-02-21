@@ -15,30 +15,63 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      DISCORD_WEBHOOK_SUCCESS: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
+      DISCORD_WEBHOOK_FAIL: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: FrontEnd/package-lock.json
 
+      # Cache frontend node_modules
+      - name: Cache frontend node_modules
+        uses: actions/cache@v3
+        with:
+          path: FrontEnd/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('FrontEnd/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
       - name: Validate required Vercel secrets
         run: |
-          test -n "${{ secrets.VERCEL_TOKEN }}"
-          test -n "${{ secrets.VERCEL_ORG_ID }}"
-          test -n "${{ secrets.VERCEL_PROJECT_ID }}"
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_PROJECT_ID"
+
+      - name: Resolve Vercel org id
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.VERCEL_ORG_ID }}" ]; then
+            echo "VERCEL_ORG_ID=${{ secrets.VERCEL_ORG_ID }}" >> "$GITHUB_ENV"
+          else
+            account_id="$(
+              curl -fsS \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID" \
+              | node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(0,'utf8')); if(!data.accountId){process.exit(1)}; process.stdout.write(String(data.accountId));"
+            )"
+            echo "VERCEL_ORG_ID=$account_id" >> "$GITHUB_ENV"
+          fi
 
       - name: Install frontend dependencies
         run: npm ci --prefix FrontEnd
 
+      - name: Lint frontend
+        run: npm run lint --prefix FrontEnd
+
       - name: Typecheck frontend
         run: npm run typecheck --prefix FrontEnd
+
+      - name: Run frontend tests
+        run: npm test --prefix FrontEnd
 
       - name: Build frontend
         run: npm run build --prefix FrontEnd
@@ -47,10 +80,30 @@ jobs:
         run: npm i -g vercel@latest
 
       - name: Pull Vercel project settings
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build Vercel output
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy to Vercel production
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+      - name: Run Supabase migrations
+        if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: npx supabase db push
+
+      # Success notification
+      - name: Notify Discord on success
+        if: ${{ success() && env.DISCORD_WEBHOOK_SUCCESS != '' }}
+        uses: Ilshidur/action-discord@v2
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
+          message: "✅ Frontend deployed to Vercel Production successfully! 🎉"
+
+      # Failure notification
+      - name: Notify Discord on failure
+        if: ${{ failure() && env.DISCORD_WEBHOOK_FAIL != '' }}
+        uses: Ilshidur/action-discord@v2
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
+          message: "❌ Deployment FAILED! Check logs: ${{ github.workflow }} run #${{ github.run_number }} (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"

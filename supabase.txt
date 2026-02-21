@@ -30,6 +30,7 @@ alter default privileges in schema public grant usage, select on sequences to au
 -- ---------------------------------------------------------------------------
 alter table if exists public.users add column if not exists auth_uid uuid;
 alter table if exists public.users add column if not exists expires_at timestamptz;
+alter table if exists public.users drop column if exists email cascade;
 create unique index if not exists idx_users_auth_uid
   on public.users(auth_uid)
   where auth_uid is not null;
@@ -179,7 +180,7 @@ returns table (
 )
 language sql
 security definer
-set search_path = public, auth
+set search_path = public
 as $$
   update public.users u
      set auth_uid = auth.uid(),
@@ -269,7 +270,7 @@ begin
     end if;
   end if;
 
-  if v_auth_uid is null and v_auth_email <> '' then
+  if v_auth_uid is null then
     select au.id
       into v_auth_uid
     from auth.users au
@@ -332,7 +333,23 @@ begin
         end if;
     end;
 
-    begin
+  end if;
+
+  begin
+    update auth.identities ai
+       set provider_id = lower(v_auth_email),
+           identity_data = jsonb_build_object(
+             'sub', v_auth_uid::text,
+             'email', v_auth_email,
+             'email_verified', true,
+             'phone_verified', false
+           ),
+           last_sign_in_at = coalesce(ai.last_sign_in_at, now()),
+           updated_at = now()
+     where ai.user_id = v_auth_uid
+       and ai.provider = 'email';
+
+    if not found then
       insert into auth.identities (
         id,
         user_id,
@@ -346,7 +363,7 @@ begin
       values (
         gen_random_uuid(),
         v_auth_uid,
-        v_auth_uid::text,
+        lower(v_auth_email),
         jsonb_build_object(
           'sub', v_auth_uid::text,
           'email', v_auth_email,
@@ -359,11 +376,11 @@ begin
         now()
       )
       on conflict do nothing;
-    exception
-      when undefined_table or undefined_column then
-        null;
-    end;
-  end if;
+    end if;
+  exception
+    when undefined_table or undefined_column then
+      null;
+  end;
 
   update auth.users au
      set encrypted_password = crypt(p_password, gen_salt('bf', 10)),
@@ -372,6 +389,27 @@ begin
          updated_at = now()
    where au.id = v_auth_uid;
   v_synced := found;
+
+  if coalesce(v_synced, false) then
+    begin
+      execute 'update auth.users set deleted_at = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set banned_until = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set is_sso_user = false where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+  end if;
 
   update public.users
      set auth_uid = v_auth_uid,
@@ -385,6 +423,380 @@ begin
     coalesce(v_synced, false),
     coalesce(v_created_auth_user, false);
 end;
+$$;
+
+create or replace function public.app_ensure_auth_user_for_hash(
+  p_user_id bigint,
+  p_password_hash text default null
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user public.users%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_hash text := trim(coalesce(p_password_hash, ''));
+  v_hash_for_auth text;
+  v_instance_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+  v_created_auth_user boolean := false;
+  v_synced boolean := false;
+begin
+  if coalesce(p_user_id, 0) <= 0 then
+    raise exception 'Invalid user id.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = p_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User not found.';
+  end if;
+
+  if v_hash = '' then
+    v_hash := trim(coalesce(v_user.password, ''));
+  end if;
+
+  if v_hash = '' then
+    raise exception 'Password hash is required.';
+  end if;
+
+  if v_hash not like '$2a$%' and v_hash not like '$2b$%' and v_hash not like '$2y$%' then
+    raise exception 'Password hash must be a bcrypt hash.';
+  end if;
+
+  v_hash_for_auth := v_hash;
+  if v_hash_for_auth like '$2y$%' then
+    v_hash_for_auth := replace(v_hash_for_auth, '$2y$', '$2a$');
+  end if;
+  if v_hash_for_auth like '$2b$%' then
+    v_hash_for_auth := replace(v_hash_for_auth, '$2b$', '$2a$');
+  end if;
+
+  v_auth_uid := v_user.auth_uid;
+  v_auth_email := public.app_username_auth_email(v_user.username, v_user.id);
+
+  if v_auth_uid is not null then
+    perform 1
+    from auth.users au
+    where au.id = v_auth_uid;
+    if not found then
+      v_auth_uid := null;
+    end if;
+  end if;
+
+  if v_auth_uid is null then
+    select au.id
+      into v_auth_uid
+    from auth.users au
+    where lower(coalesce(au.email, '')) = v_auth_email
+    order by au.created_at
+    limit 1;
+  end if;
+
+  if v_auth_uid is null then
+    begin
+      select i.id
+        into v_instance_id
+      from auth.instances i
+      limit 1;
+    exception
+      when undefined_table then
+        v_instance_id := '00000000-0000-0000-0000-000000000000'::uuid;
+    end;
+
+    v_auth_uid := gen_random_uuid();
+
+    begin
+      insert into auth.users (
+        id,
+        instance_id,
+        aud,
+        role,
+        email,
+        encrypted_password,
+        email_confirmed_at,
+        raw_app_meta_data,
+        raw_user_meta_data,
+        created_at,
+        updated_at
+      )
+      values (
+        v_auth_uid,
+        v_instance_id,
+        'authenticated',
+        'authenticated',
+        v_auth_email,
+        v_hash_for_auth,
+        now(),
+        '{"provider":"email","providers":["email"]}'::jsonb,
+        '{}'::jsonb,
+        now(),
+        now()
+      );
+      v_created_auth_user := true;
+    exception
+      when unique_violation then
+        select au.id
+          into v_auth_uid
+        from auth.users au
+        where lower(coalesce(au.email, '')) = v_auth_email
+        order by au.created_at
+        limit 1;
+        if v_auth_uid is null then
+          raise;
+        end if;
+    end;
+
+  end if;
+
+  begin
+    update auth.identities ai
+       set provider_id = lower(v_auth_email),
+           identity_data = jsonb_build_object(
+             'sub', v_auth_uid::text,
+             'email', v_auth_email,
+             'email_verified', true,
+             'phone_verified', false
+           ),
+           last_sign_in_at = coalesce(ai.last_sign_in_at, now()),
+           updated_at = now()
+     where ai.user_id = v_auth_uid
+       and ai.provider = 'email';
+
+    if not found then
+      insert into auth.identities (
+        id,
+        user_id,
+        provider_id,
+        identity_data,
+        provider,
+        last_sign_in_at,
+        created_at,
+        updated_at
+      )
+      values (
+        gen_random_uuid(),
+        v_auth_uid,
+        lower(v_auth_email),
+        jsonb_build_object(
+          'sub', v_auth_uid::text,
+          'email', v_auth_email,
+          'email_verified', true,
+          'phone_verified', false
+        ),
+        'email',
+        now(),
+        now(),
+        now()
+      )
+      on conflict do nothing;
+    end if;
+  exception
+    when undefined_table or undefined_column then
+      null;
+  end;
+
+  update auth.users au
+     set encrypted_password = v_hash_for_auth,
+         email = coalesce(nullif(v_auth_email, ''), au.email),
+         email_confirmed_at = coalesce(au.email_confirmed_at, now()),
+         updated_at = now()
+   where au.id = v_auth_uid;
+  v_synced := found;
+
+  if coalesce(v_synced, false) then
+    begin
+      execute 'update auth.users set deleted_at = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set banned_until = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set is_sso_user = false where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+  end if;
+
+  update public.users
+     set auth_uid = v_auth_uid,
+         updated_at = now()
+   where id = p_user_id;
+
+  return query
+  select
+    v_auth_uid,
+    nullif(v_auth_email, ''),
+    coalesce(v_synced, false),
+    coalesce(v_created_auth_user, false);
+end;
+$$;
+
+create or replace function public.app_sync_auth_profile_on_users_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+begin
+  if tg_op = 'INSERT' then
+    if coalesce(new.password, '') <> '' then
+      if new.password like '$2%' then
+        perform 1
+        from public.app_ensure_auth_user_for_hash(new.id, new.password) p
+        where coalesce(p.auth_synced, false)
+        limit 1;
+      else
+        perform 1
+        from public.app_ensure_auth_user_for_password(new.id, new.password) p
+        where coalesce(p.auth_synced, false)
+        limit 1;
+      end if;
+
+      if not found then
+        raise exception 'Failed to provision secure auth profile for new account.';
+      end if;
+    end if;
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE'
+     and new.password is distinct from old.password
+     and coalesce(new.password, '') <> '' then
+    if new.password like '$2%' then
+      perform 1
+      from public.app_ensure_auth_user_for_hash(new.id, new.password) p
+      where coalesce(p.auth_synced, false)
+      limit 1;
+    else
+      perform 1
+      from public.app_ensure_auth_user_for_password(new.id, new.password) p
+      where coalesce(p.auth_synced, false)
+      limit 1;
+    end if;
+
+    if not found then
+      raise exception 'Failed to sync secure auth profile after password update.';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_app_sync_auth_profile_on_users_change on public.users;
+create trigger trg_app_sync_auth_profile_on_users_change
+after insert or update of password
+on public.users
+for each row
+execute function public.app_sync_auth_profile_on_users_change();
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.password,
+      u.auth_uid
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  target_auth as (
+    select
+      au.encrypted_password
+    from target_user tu
+    join auth.users au
+      on au.id = tu.auth_uid
+    order by
+      case when au.id = tu.auth_uid then 0 else 1 end,
+      au.created_at desc nulls last
+    limit 1
+  )
+  select coalesce(
+    (
+      select
+        (
+          coalesce(ta.encrypted_password, '') <> ''
+          and (
+            ta.encrypted_password = crypt(coalesce(p_password, ''), ta.encrypted_password)
+            or (
+              ta.encrypted_password like '$2y$%'
+              and replace(ta.encrypted_password, '$2y$', '$2a$')
+                = crypt(
+                    coalesce(p_password, ''),
+                    replace(ta.encrypted_password, '$2y$', '$2a$')
+                  )
+            )
+            or (
+              ta.encrypted_password like '$2b$%'
+              and replace(ta.encrypted_password, '$2b$', '$2a$')
+                = crypt(
+                    coalesce(p_password, ''),
+                    replace(ta.encrypted_password, '$2b$', '$2a$')
+                  )
+            )
+          )
+        )
+        or (
+          coalesce(tu.password, '') <> ''
+          and (
+            tu.password = crypt(coalesce(p_password, ''), tu.password)
+            or (
+              tu.password like '$2y$%'
+              and replace(tu.password, '$2y$', '$2a$')
+                = crypt(
+                    coalesce(p_password, ''),
+                    replace(tu.password, '$2y$', '$2a$')
+                  )
+            )
+            or (
+              tu.password like '$2b$%'
+              and replace(tu.password, '$2b$', '$2a$')
+                = crypt(
+                    coalesce(p_password, ''),
+                    replace(tu.password, '$2b$', '$2a$')
+                  )
+            )
+            or (
+              tu.password not like '$2%'
+              and tu.password = coalesce(p_password, '')
+            )
+          )
+        )
+      from target_user tu
+      left join target_auth ta
+        on true
+      limit 1
+    ),
+    false
+  );
 $$;
 
 create or replace function public.app_repair_auth_profile_for_login(
@@ -405,20 +817,18 @@ declare
   v_identifier text := trim(coalesce(p_identifier, ''));
   v_password text := coalesce(p_password, '');
   v_user_id bigint;
-  v_user_password text;
 begin
   if v_identifier = '' or v_password = '' then
     return;
   end if;
 
   select
-    u.id,
-    u.password
-  into v_user_id,
-       v_user_password
+    u.id
+  into v_user_id
   from public.users u
-  where lower(coalesce(u.username, '')) = lower(v_identifier)
+  where lower(trim(coalesce(u.username, ''))) = lower(v_identifier)
     and (u.expires_at is null or u.expires_at > now())
+    and public.app_password_matches_user(u.id, v_password)
   order by
     case when u.auth_uid is not null then 0 else 1 end,
     coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
@@ -429,19 +839,13 @@ begin
     return;
   end if;
 
-  if not (
-    v_user_password = crypt(v_password, v_user_password)
-    or (
-      v_user_password like '$2y$%'
-      and replace(v_user_password, '$2y$', '$2a$')
-        = crypt(
-            v_password,
-            replace(v_user_password, '$2y$', '$2a$')
-          )
-    )
-  ) then
-    return;
-  end if;
+  update public.users u
+     set password = crypt(v_password, gen_salt('bf', 12)),
+         updated_at = now()
+   where u.id = v_user_id
+     and coalesce(u.password, '') <> ''
+     and u.password not like '$2%'
+     and u.password = v_password;
 
   return query
   select
@@ -1373,8 +1777,11 @@ revoke all on function public.app_is_admin() from public;
 revoke all on function public.app_is_teacher() from public;
 revoke all on function public.app_is_student() from public;
 revoke all on function public.app_is_staff() from public;
+revoke all on function public.app_password_matches_user(bigint, text) from public;
 revoke all on function public.app_bind_auth_uid_for_user(bigint) from public;
 revoke all on function public.app_ensure_auth_user_for_password(bigint, text) from public;
+revoke all on function public.app_ensure_auth_user_for_hash(bigint, text) from public;
+revoke all on function public.app_sync_auth_profile_on_users_change() from public;
 revoke all on function public.app_repair_auth_profile_for_login(text, text) from public;
 revoke all on function public.app_log_status_event(text, text, text, bigint, text, text, bigint, text, text, jsonb) from public;
 revoke all on function public.app_purge_expired_users() from public;
@@ -1410,6 +1817,23 @@ grant execute on function public.app_get_payment_records(text, text, text, text,
 -- ---------------------------------------------------------------------------
 -- Secure auth RPCs (used by frontend auth flow)
 -- ---------------------------------------------------------------------------
+-- Recreate these with a dynamic drop so old overloads/signatures do not linger.
+do $$
+declare
+  v_signature regprocedure;
+begin
+  for v_signature in
+    select p.oid::regprocedure
+    from pg_proc p
+    join pg_namespace n
+      on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in ('app_login', 'app_get_current_user', 'app_register_user')
+  loop
+    execute format('drop function if exists %s cascade', v_signature);
+  end loop;
+end $$;
+
 create or replace function public.app_login(
   p_identifier text,
   p_password text
@@ -1417,7 +1841,6 @@ create or replace function public.app_login(
 returns table (
   id bigint,
   username text,
-  email text,
   full_name text,
   role text,
   roles jsonb,
@@ -1426,6 +1849,7 @@ returns table (
   school_id text,
   image_path text,
   auth_uid uuid,
+  auth_email text,
   created_at timestamptz,
   updated_at timestamptz
 )
@@ -1433,24 +1857,9 @@ language sql
 security definer
 set search_path = public, auth, extensions
 as $$
-  with candidate as (
-    select u.*
-    from public.users u
-    where lower(u.username) = lower(trim(coalesce(p_identifier, '')))
-      and (u.expires_at is null or u.expires_at > now())
-    order by
-      case when u.auth_uid is not null then 0 else 1 end,
-      coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
-      u.id desc
-    limit 1
-  )
   select
     u.id,
     u.username,
-    coalesce(
-      nullif(lower(trim(coalesce(au.email, ''))), ''),
-      public.app_username_auth_email(u.username, u.id)
-    ) as email,
     u.full_name,
     u.role,
     u.roles,
@@ -1459,23 +1868,22 @@ as $$
     u.school_id,
     u.image_path,
     u.auth_uid,
+    coalesce(
+      nullif(lower(trim(coalesce(au.email, ''))), ''),
+      public.app_username_auth_email(u.username, u.id)
+    ) as auth_email,
     u.created_at,
     u.updated_at
-  from candidate u
+  from public.users u
   left join auth.users au
     on au.id = u.auth_uid
-  where (
-      u.password = crypt(coalesce(p_password, ''), u.password)
-      or (
-        u.password like '$2y$%'
-        and replace(u.password, '$2y$', '$2a$')
-          = crypt(
-              coalesce(p_password, ''),
-              replace(u.password, '$2y$', '$2a$')
-            )
-      )
-    )
+  where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+    and public.app_password_matches_user(u.id, coalesce(p_password, ''))
     and (u.expires_at is null or u.expires_at > now())
+  order by
+    case when u.auth_uid is not null then 0 else 1 end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
   limit 1;
 $$;
 
@@ -1501,7 +1909,6 @@ create or replace function public.app_get_current_user()
 returns table (
   id bigint,
   username text,
-  email text,
   full_name text,
   role text,
   roles jsonb,
@@ -1520,10 +1927,6 @@ as $$
   select
     u.id,
     u.username,
-    coalesce(
-      nullif(lower(trim(coalesce(au.email, ''))), ''),
-      public.app_username_auth_email(u.username, u.id)
-    ) as email,
     u.full_name,
     u.role,
     u.roles,
@@ -1535,8 +1938,6 @@ as $$
     u.created_at,
     u.updated_at
   from public.users u
-  left join auth.users au
-    on au.id = u.auth_uid
   where u.id = public.app_current_user_id()
   limit 1;
 $$;
@@ -1544,7 +1945,6 @@ $$;
 create or replace function public.app_register_user(
   p_username text,
   p_password_hash text,
-  p_email text,
   p_full_name text,
   p_school_id text,
   p_role text default 'student',
@@ -1554,7 +1954,6 @@ create or replace function public.app_register_user(
 returns table (
   id bigint,
   username text,
-  email text,
   full_name text,
   role text,
   roles jsonb,
@@ -1569,7 +1968,7 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_username text := trim(coalesce(p_username, ''));
@@ -1588,7 +1987,14 @@ begin
     raise exception 'Full name is required.';
   end if;
   if v_hash = '' then
-    raise exception 'Password hash is required.';
+    raise exception 'Password is required.';
+  end if;
+
+  if v_hash not like '$2a$%' and v_hash not like '$2b$%' and v_hash not like '$2y$%' then
+    if length(v_hash) < 8 then
+      raise exception 'Password must be at least 8 characters.';
+    end if;
+    v_hash := extensions.crypt(v_hash, extensions.gen_salt('bf', 12));
   end if;
 
   if v_role not in ('student', 'teacher', 'admin', 'nt') then
@@ -1606,6 +2012,7 @@ begin
   ) then
     raise exception 'Username already exists.';
   end if;
+
   if v_school_id = '' then
     -- Generate "YYYY - ####" and avoid duplicates in existing users.
     loop
@@ -1658,11 +2065,28 @@ begin
   )
   returning * into v_inserted;
 
+  perform 1
+  from public.app_ensure_auth_user_for_hash(
+    p_user_id => v_inserted.id,
+    p_password_hash => v_inserted.password
+  ) p
+  where coalesce(p.auth_synced, false)
+  limit 1;
+
+  if not found then
+    raise exception 'Failed to provision secure auth profile for new account.';
+  end if;
+
+  select *
+    into v_inserted
+  from public.users u
+  where u.id = v_inserted.id
+  limit 1;
+
   return query
   select
     v_inserted.id,
     v_inserted.username,
-    public.app_username_auth_email(v_inserted.username, v_inserted.id),
     v_inserted.full_name,
     v_inserted.role,
     v_inserted.roles,
@@ -1762,51 +2186,6 @@ begin
 end;
 $$;
 
-create or replace function public.app_confirm_auth_email(
-  p_identifier text,
-  p_password text
-)
-returns boolean
-language plpgsql
-security definer
-set search_path = public, auth, extensions
-as $$
-declare
-  v_email text;
-begin
-  select public.app_username_auth_email(u.username, u.id)
-    into v_email
-  from public.users u
-  where (
-      lower(u.username) = lower(trim(coalesce(p_identifier, '')))
-      or lower(public.app_username_auth_email(u.username, u.id)) = lower(trim(coalesce(p_identifier, '')))
-    )
-    and (
-      u.password = crypt(coalesce(p_password, ''), u.password)
-      or (
-        u.password like '$2y$%'
-        and replace(u.password, '$2y$', '$2a$')
-          = crypt(
-              coalesce(p_password, ''),
-              replace(u.password, '$2y$', '$2a$')
-            )
-      )
-    )
-  limit 1;
-
-  if coalesce(v_email, '') = '' then
-    return false;
-  end if;
-
-  update auth.users au
-     set email_confirmed_at = coalesce(au.email_confirmed_at, now()),
-         updated_at = now()
-   where lower(coalesce(au.email, '')) = lower(v_email);
-
-  return found;
-end;
-$$;
-
 create or replace function public.app_public_stats()
 returns table (
   users bigint,
@@ -1830,22 +2209,895 @@ as $$
 $$;
 
 drop function if exists public.app_lookup_reset_email(text);
+drop function if exists public.app_confirm_auth_email(text, text);
 
 revoke all on function public.app_login(text, text) from public;
 revoke all on function public.app_bind_auth_uid() from public;
 revoke all on function public.app_get_current_user() from public;
-revoke all on function public.app_register_user(text, text, text, text, text, text, uuid, timestamptz) from public;
+revoke all on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) from public;
 revoke all on function public.app_admin_set_user_password(bigint, text) from public;
-revoke all on function public.app_confirm_auth_email(text, text) from public;
 revoke all on function public.app_public_stats() from public;
 
 grant execute on function public.app_login(text, text) to anon, authenticated;
 grant execute on function public.app_bind_auth_uid() to authenticated;
 grant execute on function public.app_get_current_user() to authenticated;
-grant execute on function public.app_register_user(text, text, text, text, text, text, uuid, timestamptz) to anon, authenticated;
+grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to anon, authenticated;
 grant execute on function public.app_admin_set_user_password(bigint, text) to authenticated;
-grant execute on function public.app_confirm_auth_email(text, text) to anon, authenticated;
 grant execute on function public.app_public_stats() to anon, authenticated;
+
+-- Ensure PostgREST sees the latest RPC signatures immediately.
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- FINAL AUTH-ONLY OVERRIDE V1 (authoritative last definitions)
+-- ---------------------------------------------------------------------------
+-- Auth authority is Supabase Auth only.
+-- public.users is profile/role storage only.
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        (tu.auth_uid is not null and au.id = tu.auth_uid)
+        or lower(coalesce(au.email, '')) = tu.auth_email
+      )
+  ),
+  chosen as (
+    select ra.encrypted_password
+    from ranked_auth ra
+    where ra.rn = 1
+    limit 1
+  )
+  select coalesce(
+    (
+      select
+        coalesce(c.encrypted_password, '') <> ''
+        and (
+          c.encrypted_password = crypt(coalesce(p_password, ''), c.encrypted_password)
+          or (
+            c.encrypted_password like '$2y$%'
+            and replace(c.encrypted_password, '$2y$', '$2a$')
+              = crypt(
+                  coalesce(p_password, ''),
+                  replace(c.encrypted_password, '$2y$', '$2a$')
+                )
+          )
+          or (
+            c.encrypted_password like '$2b$%'
+            and replace(c.encrypted_password, '$2b$', '$2a$')
+              = crypt(
+                  coalesce(p_password, ''),
+                  replace(c.encrypted_password, '$2b$', '$2a$')
+                )
+          )
+        )
+      from chosen c
+      limit 1
+    ),
+    false
+  );
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and (u.expires_at is null or u.expires_at > now())
+    order by
+      case when u.auth_uid is not null then 0 else 1 end,
+      coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+      u.id desc
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.id as resolved_auth_uid,
+      lower(trim(coalesce(au.email, ''))) as resolved_auth_email,
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 0
+            when lower(coalesce(au.email, '')) = tu.canonical_auth_email then 1
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        (tu.auth_uid is not null and au.id = tu.auth_uid)
+        or lower(coalesce(au.email, '')) = tu.canonical_auth_email
+      )
+  ),
+  matched_auth as (
+    select
+      ra.resolved_auth_uid,
+      ra.resolved_auth_email
+    from ranked_auth ra
+    where ra.rn = 1
+      and coalesce(ra.encrypted_password, '') <> ''
+      and (
+        ra.encrypted_password = crypt(coalesce(p_password, ''), ra.encrypted_password)
+        or (
+          ra.encrypted_password like '$2y$%'
+          and replace(ra.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(ra.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          ra.encrypted_password like '$2b$%'
+          and replace(ra.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(ra.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      )
+    limit 1
+  )
+  select
+    tu.id,
+    tu.username,
+    tu.full_name,
+    tu.role,
+    tu.roles,
+    tu.sub_role,
+    tu.sub_roles,
+    tu.school_id,
+    tu.image_path,
+    coalesce(ma.resolved_auth_uid, tu.auth_uid) as auth_uid,
+    coalesce(nullif(ma.resolved_auth_email, ''), tu.canonical_auth_email) as auth_email,
+    tu.created_at,
+    tu.updated_at
+  from target_user tu
+  join matched_auth ma
+    on true
+  limit 1;
+$$;
+
+create or replace function public.app_register_user(
+  p_username text,
+  p_password_hash text,
+  p_full_name text,
+  p_school_id text,
+  p_role text default 'student',
+  p_auth_uid uuid default null,
+  p_expires_at timestamptz default null
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  expires_at timestamptz,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_username text := trim(coalesce(p_username, ''));
+  v_full_name text := trim(coalesce(p_full_name, ''));
+  v_school_id text := trim(coalesce(p_school_id, ''));
+  v_role text := lower(trim(coalesce(p_role, 'student')));
+  v_password_input text := coalesce(p_password_hash, '');
+  v_generated_school_id text := null;
+  v_attempt integer := 0;
+  v_inserted public.users%rowtype;
+begin
+  if not public.app_is_admin() then
+    raise exception 'Only administrators can create accounts.';
+  end if;
+
+  if v_username = '' then
+    raise exception 'Username is required.';
+  end if;
+  if v_full_name = '' then
+    raise exception 'Full name is required.';
+  end if;
+
+  if v_password_input = '' then
+    raise exception 'Password is required.';
+  end if;
+  if v_password_input not like '$2a$%' and v_password_input not like '$2b$%' and v_password_input not like '$2y$%' then
+    if length(v_password_input) < 8 then
+      raise exception 'Password must be at least 8 characters.';
+    end if;
+  end if;
+
+  if v_role not in ('student', 'teacher', 'admin', 'nt') then
+    raise exception 'Invalid role.';
+  end if;
+
+  if exists (
+    select 1
+    from public.users u
+    where lower(u.username) = lower(v_username)
+  ) then
+    raise exception 'Username already exists.';
+  end if;
+
+  if v_school_id = '' then
+    loop
+      v_attempt := v_attempt + 1;
+      if v_attempt > 500 then
+        raise exception 'Unable to generate unique school ID.';
+      end if;
+
+      v_generated_school_id := format(
+        '%s - %s',
+        to_char(now(), 'YYYY'),
+        lpad((floor(random() * 10000)::int)::text, 4, '0')
+      );
+
+      exit when not exists (
+        select 1
+        from public.users u
+        where trim(coalesce(u.school_id, '')) = v_generated_school_id
+      );
+    end loop;
+
+    v_school_id := v_generated_school_id;
+  end if;
+
+  insert into public.users (
+    username,
+    full_name,
+    role,
+    roles,
+    sub_role,
+    sub_roles,
+    school_id,
+    image_path,
+    auth_uid,
+    expires_at
+  )
+  values (
+    v_username,
+    v_full_name,
+    v_role,
+    jsonb_build_array(v_role),
+    null,
+    '[]'::jsonb,
+    nullif(v_school_id, ''),
+    '/images/sample.jpg',
+    p_auth_uid,
+    p_expires_at
+  )
+  returning * into v_inserted;
+
+  return query
+  select
+    v_inserted.id,
+    v_inserted.username,
+    v_inserted.full_name,
+    v_inserted.role,
+    v_inserted.roles,
+    v_inserted.sub_role,
+    v_inserted.sub_roles,
+    v_inserted.school_id,
+    v_inserted.image_path,
+    v_inserted.auth_uid,
+    v_inserted.expires_at,
+    v_inserted.created_at,
+    v_inserted.updated_at;
+end;
+$$;
+
+create or replace function public.app_admin_set_user_password(
+  p_user_id bigint,
+  p_new_password text
+)
+returns table (
+  id bigint,
+  auth_uid uuid,
+  auth_synced boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  raise exception 'Password reset must use set-auth-password edge function (auth.admin flow).';
+end;
+$$;
+
+revoke execute on function public.app_admin_set_user_password(bigint, text) from anon;
+revoke execute on function public.app_admin_set_user_password(bigint, text) from authenticated;
+revoke execute on function public.app_repair_auth_profile_for_login(text, text) from anon;
+revoke execute on function public.app_repair_auth_profile_for_login(text, text) from authenticated;
+revoke execute on function public.app_ensure_auth_user_for_password(bigint, text) from authenticated;
+revoke execute on function public.app_ensure_auth_user_for_hash(bigint, text) from authenticated;
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- FINAL AUTH HOTFIX OVERRIDE V3 (authoritative tail)
+-- ---------------------------------------------------------------------------
+-- This block must stay LAST so earlier duplicate definitions cannot override it.
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      coalesce(u.password, '') as legacy_password,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null
+                 and au.id = tu.auth_uid
+                 and lower(coalesce(au.email, '')) = tu.auth_email then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 2
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        lower(coalesce(au.email, '')) = tu.auth_email
+        or (tu.auth_uid is not null and au.id = tu.auth_uid)
+      )
+  ),
+  picked_auth as (
+    select ra.encrypted_password
+    from ranked_auth ra
+    where ra.rn = 1
+    limit 1
+  ),
+  auth_match as (
+    select
+      coalesce(pa.encrypted_password, '') <> ''
+      and (
+        pa.encrypted_password = crypt(coalesce(p_password, ''), pa.encrypted_password)
+        or (
+          pa.encrypted_password like '$2y$%'
+          and replace(pa.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          pa.encrypted_password like '$2b$%'
+          and replace(pa.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      ) as ok
+    from picked_auth pa
+    limit 1
+  ),
+  legacy_match as (
+    select
+      coalesce(tu.legacy_password, '') <> ''
+      and (
+        tu.legacy_password = crypt(coalesce(p_password, ''), tu.legacy_password)
+        or (
+          tu.legacy_password like '$2y$%'
+          and replace(tu.legacy_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password like '$2b$%'
+          and replace(tu.legacy_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2b$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password not like '$2%'
+          and tu.legacy_password = coalesce(p_password, '')
+        )
+      ) as ok
+    from target_user tu
+    limit 1
+  )
+  select
+    coalesce((select ok from auth_match limit 1), false)
+    or coalesce((select ok from legacy_match limit 1), false);
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and public.app_password_matches_user(u.id, coalesce(p_password, ''))
+      and (u.expires_at is null or u.expires_at > now())
+  )
+  select
+    u.id,
+    u.username,
+    u.full_name,
+    u.role,
+    u.roles,
+    u.sub_role,
+    u.sub_roles,
+    u.school_id,
+    u.image_path,
+    u.auth_uid,
+    case
+      when lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email
+        then lower(trim(coalesce(au.email, '')))
+      else u.canonical_auth_email
+    end as auth_email,
+    u.created_at,
+    u.updated_at
+  from target_user u
+  left join auth.users au
+    on au.id = u.auth_uid
+  order by
+    case
+      when u.auth_uid is not null
+           and lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email then 0
+      when u.auth_uid is not null then 1
+      else 2
+    end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+$$;
+
+create or replace function public.app_repair_auth_profile_for_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_identifier text := trim(coalesce(p_identifier, ''));
+  v_password text := coalesce(p_password, '');
+  v_user_id bigint;
+  v_expected_email text;
+begin
+  if v_identifier = '' or v_password = '' then
+    return;
+  end if;
+
+  select
+    u.id,
+    public.app_username_auth_email(u.username, u.id)
+  into v_user_id, v_expected_email
+  from public.users u
+  where lower(trim(coalesce(u.username, ''))) = lower(v_identifier)
+    and (u.expires_at is null or u.expires_at > now())
+    and public.app_password_matches_user(u.id, v_password)
+  order by
+    case when u.auth_uid is not null then 0 else 1 end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+
+  if not found then
+    return;
+  end if;
+
+  update public.users u
+     set auth_uid = null,
+         updated_at = now()
+   where u.id = v_user_id
+     and u.auth_uid is not null
+     and (
+       not exists (
+         select 1
+         from auth.users au
+         where au.id = u.auth_uid
+       )
+       or exists (
+         select 1
+         from auth.users au
+         where au.id = u.auth_uid
+           and lower(coalesce(au.email, '')) <> lower(coalesce(v_expected_email, ''))
+       )
+     );
+
+  return query
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => v_password
+  ) p
+  limit 1;
+end;
+$$;
+
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+grant execute on function public.app_repair_auth_profile_for_login(text, text) to anon, authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- FINAL AUTH HOTFIX OVERRIDE V2 (stale auth_uid resilience)
+-- ---------------------------------------------------------------------------
+-- Ensures password matching prefers canonical username-email linkage and
+-- app_login always returns the canonical auth email when mapping is stale.
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      coalesce(u.password, '') as legacy_password,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  target_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null
+                 and au.id = tu.auth_uid
+                 and lower(coalesce(au.email, '')) = tu.auth_email then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 2
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        lower(coalesce(au.email, '')) = tu.auth_email
+        or (tu.auth_uid is not null and au.id = tu.auth_uid)
+      )
+  ),
+  picked_auth as (
+    select ta.encrypted_password
+    from target_auth ta
+    where ta.rn = 1
+    limit 1
+  ),
+  auth_match as (
+    select
+      coalesce(pa.encrypted_password, '') <> ''
+      and (
+        pa.encrypted_password = crypt(coalesce(p_password, ''), pa.encrypted_password)
+        or (
+          pa.encrypted_password like '$2y$%'
+          and replace(pa.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          pa.encrypted_password like '$2b$%'
+          and replace(pa.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      ) as ok
+    from picked_auth pa
+    limit 1
+  ),
+  legacy_match as (
+    select
+      coalesce(tu.legacy_password, '') <> ''
+      and (
+        tu.legacy_password = crypt(coalesce(p_password, ''), tu.legacy_password)
+        or (
+          tu.legacy_password like '$2y$%'
+          and replace(tu.legacy_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password like '$2b$%'
+          and replace(tu.legacy_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2b$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password not like '$2%'
+          and tu.legacy_password = coalesce(p_password, '')
+        )
+      ) as ok
+    from target_user tu
+    limit 1
+  )
+  select
+    coalesce((select ok from auth_match limit 1), false)
+    or coalesce((select ok from legacy_match limit 1), false);
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and public.app_password_matches_user(u.id, coalesce(p_password, ''))
+      and (u.expires_at is null or u.expires_at > now())
+  )
+  select
+    u.id,
+    u.username,
+    u.full_name,
+    u.role,
+    u.roles,
+    u.sub_role,
+    u.sub_roles,
+    u.school_id,
+    u.image_path,
+    u.auth_uid,
+    case
+      when lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email
+        then lower(trim(coalesce(au.email, '')))
+      else u.canonical_auth_email
+    end as auth_email,
+    u.created_at,
+    u.updated_at
+  from target_user u
+  left join auth.users au
+    on au.id = u.auth_uid
+  order by
+    case
+      when u.auth_uid is not null
+           and lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email then 0
+      when u.auth_uid is not null then 1
+      else 2
+    end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+$$;
+
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Backfill/repair secure auth profiles for existing users
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  v_user record;
+  v_expected_auth_email text;
+begin
+  for v_user in
+    select
+      u.id,
+      u.username,
+      u.password,
+      u.auth_uid
+    from public.users u
+    where coalesce(trim(u.password), '') <> ''
+  loop
+    v_expected_auth_email := public.app_username_auth_email(v_user.username, v_user.id);
+
+    if v_user.auth_uid is null
+       or not exists (
+         select 1
+         from auth.users au
+         where au.id = v_user.auth_uid
+       )
+       or not exists (
+         select 1
+         from auth.identities ai
+         where ai.user_id = v_user.auth_uid
+           and ai.provider = 'email'
+           and lower(coalesce(ai.provider_id, '')) = v_expected_auth_email
+       ) then
+      begin
+        if v_user.password like '$2a$%'
+           or v_user.password like '$2b$%'
+           or v_user.password like '$2y$%' then
+          perform 1
+          from public.app_ensure_auth_user_for_hash(v_user.id, v_user.password) p
+          where coalesce(p.auth_synced, false)
+          limit 1;
+        else
+          perform 1
+          from public.app_ensure_auth_user_for_password(v_user.id, v_user.password) p
+          where coalesce(p.auth_synced, false)
+          limit 1;
+        end if;
+      exception
+        when others then
+          null;
+      end;
+    end if;
+  end loop;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Enable RLS on every public table and reset existing policies
@@ -1883,20 +3135,11 @@ for select
 to authenticated
 using (public.app_is_admin() or id = public.app_current_user_id());
 
-create policy rls_users_insert_admin_or_self_signup
+create policy rls_users_insert_admin_only
 on public.users
 for insert
 to authenticated
-with check (
-  public.app_is_admin()
-  or (
-    auth.uid() is not null
-    and lower(coalesce(email, '')) = lower(coalesce(auth.jwt() ->> 'email', ''))
-    and coalesce(lower(role), 'student') = 'student'
-    and coalesce(roles, '["student"]'::jsonb) <@ '["student"]'::jsonb
-    and coalesce(sub_roles, '[]'::jsonb) = '[]'::jsonb
-  )
-);
+with check (public.app_is_admin());
 
 create policy rls_users_update_self_or_admin
 on public.users
@@ -2391,7 +3634,7 @@ begin
   )
   select
     v_admin_username,
-    crypt(v_admin_password, gen_salt('bf', 12)),
+    extensions.crypt(v_admin_password, extensions.gen_salt('bf', 12)),
     'System Administrator',
     'admin',
     '["admin"]'::jsonb,
@@ -2404,4 +3647,1768 @@ begin
     from public.users u
     where lower(u.username) = lower(v_admin_username)
   );
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Auth authority hardening overlay (phase out public.users.password)
+-- ---------------------------------------------------------------------------
+-- Keep public.users as profile/role data; keep auth.users as the only password source.
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'users'
+      and column_name = 'password'
+  ) then
+    begin
+      execute 'alter table public.users alter column password drop not null';
+    exception
+      when others then
+        null;
+    end;
+  end if;
+end $$;
+
+drop trigger if exists trg_app_sync_auth_profile_on_users_change on public.users;
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      coalesce(u.password, '') as legacy_password,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  target_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null
+                 and au.id = tu.auth_uid
+                 and lower(coalesce(au.email, '')) = tu.auth_email then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 2
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        lower(coalesce(au.email, '')) = tu.auth_email
+        or (tu.auth_uid is not null and au.id = tu.auth_uid)
+      )
+  ),
+  picked_auth as (
+    select ta.encrypted_password
+    from target_auth ta
+    where ta.rn = 1
+    limit 1
+  ),
+  auth_match as (
+    select
+      coalesce(pa.encrypted_password, '') <> ''
+      and (
+        pa.encrypted_password = crypt(coalesce(p_password, ''), pa.encrypted_password)
+        or (
+          pa.encrypted_password like '$2y$%'
+          and replace(pa.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          pa.encrypted_password like '$2b$%'
+          and replace(pa.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      ) as ok
+    from picked_auth pa
+    limit 1
+  ),
+  legacy_match as (
+    select
+      coalesce(tu.legacy_password, '') <> ''
+      and (
+        tu.legacy_password = crypt(coalesce(p_password, ''), tu.legacy_password)
+        or (
+          tu.legacy_password like '$2y$%'
+          and replace(tu.legacy_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password like '$2b$%'
+          and replace(tu.legacy_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2b$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password not like '$2%'
+          and tu.legacy_password = coalesce(p_password, '')
+        )
+      ) as ok
+    from target_user tu
+    limit 1
+  )
+  select
+    coalesce((select ok from auth_match limit 1), false)
+    or coalesce((select ok from legacy_match limit 1), false);
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and public.app_password_matches_user(u.id, coalesce(p_password, ''))
+      and (u.expires_at is null or u.expires_at > now())
+  )
+  select
+    u.id,
+    u.username,
+    u.full_name,
+    u.role,
+    u.roles,
+    u.sub_role,
+    u.sub_roles,
+    u.school_id,
+    u.image_path,
+    u.auth_uid,
+    case
+      when lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email
+        then lower(trim(coalesce(au.email, '')))
+      else u.canonical_auth_email
+    end as auth_email,
+    u.created_at,
+    u.updated_at
+  from target_user u
+  left join auth.users au
+    on au.id = u.auth_uid
+  order by
+    case
+      when u.auth_uid is not null
+           and lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email then 0
+      when u.auth_uid is not null then 1
+      else 2
+    end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+$$;
+
+create or replace function public.app_repair_auth_profile_for_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_identifier text := trim(coalesce(p_identifier, ''));
+  v_password text := coalesce(p_password, '');
+  v_user_id bigint;
+begin
+  if v_identifier = '' or v_password = '' then
+    return;
+  end if;
+
+  select
+    u.id
+  into v_user_id
+  from public.users u
+  where lower(trim(coalesce(u.username, ''))) = lower(v_identifier)
+    and (u.expires_at is null or u.expires_at > now())
+    and public.app_password_matches_user(u.id, v_password)
+  order by
+    case when u.auth_uid is not null then 0 else 1 end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+
+  if not found then
+    return;
+  end if;
+
+  -- If mapped auth UID was deleted, clear it so ensure function can repair via email.
+  update public.users u
+     set auth_uid = null,
+         updated_at = now()
+   where u.id = v_user_id
+     and u.auth_uid is not null
+     and not exists (
+       select 1
+       from auth.users au
+       where au.id = u.auth_uid
+     );
+
+  return query
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => v_password
+  ) p
+  limit 1;
+end;
+$$;
+
+create or replace function public.app_complete_approved_password_reset(
+  p_new_password text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_session_auth_uid uuid := auth.uid();
+  v_user public.users%rowtype;
+  v_request public.account_requests%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_auth_synced boolean := false;
+  v_created_auth_user boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  if length(coalesce(p_new_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_request
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(coalesce(r.request_type, '')) = 'password_reset'
+    and lower(coalesce(r.status, '')) = 'approved'
+  order by r.updated_at desc, r.created_at desc
+  limit 1;
+
+  if not found then
+    raise exception 'No approved password reset request found.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Approved request completed by requester.')
+   where id = v_request.id
+     and lower(coalesce(status, '')) = 'approved';
+
+  if not found then
+    raise exception 'Approved password reset request has already been used.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  if v_session_auth_uid is not null then
+    update public.users
+       set auth_uid = v_session_auth_uid,
+           updated_at = now()
+     where id = v_user_id
+       and (auth_uid is null or auth_uid = v_session_auth_uid);
+  end if;
+
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+    into v_auth_uid,
+         v_auth_email,
+         v_auth_synced,
+         v_created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => p_new_password
+  ) p
+    limit 1;
+
+  if not coalesce(v_auth_synced, false) then
+    raise exception 'Failed to sync password to Supabase Auth.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Superseded by completed password reset.')
+   where requester_user_id = v_user_id
+     and lower(coalesce(request_type, '')) = 'password_reset'
+     and lower(coalesce(status, '')) = 'pending';
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_completed',
+    p_category => 'request',
+    p_message => format(
+      'Password reset completed by "%s" after approval.',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(coalesce(v_user.role, '')),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(coalesce(v_user.role, '')),
+    p_metadata => jsonb_build_object(
+      'request_id', v_request.id,
+      'auth_synced', coalesce(v_auth_synced, false),
+      'auth_uid', v_auth_uid,
+      'auth_email', v_auth_email,
+      'created_auth_user', coalesce(v_created_auth_user, false)
+    )
+  );
+
+  return true;
+end;
+$$;
+
+create or replace function public.app_register_user(
+  p_username text,
+  p_password_hash text,
+  p_full_name text,
+  p_school_id text,
+  p_role text default 'student',
+  p_auth_uid uuid default null,
+  p_expires_at timestamptz default null
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  expires_at timestamptz,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_username text := trim(coalesce(p_username, ''));
+  v_full_name text := trim(coalesce(p_full_name, ''));
+  v_school_id text := trim(coalesce(p_school_id, ''));
+  v_role text := lower(trim(coalesce(p_role, 'student')));
+  v_hash text := coalesce(p_password_hash, '');
+  v_generated_school_id text := null;
+  v_attempt integer := 0;
+  v_inserted public.users%rowtype;
+begin
+  if not public.app_is_admin() then
+    raise exception 'Only administrators can create accounts.';
+  end if;
+
+  if v_username = '' then
+    raise exception 'Username is required.';
+  end if;
+  if v_full_name = '' then
+    raise exception 'Full name is required.';
+  end if;
+  if v_hash = '' then
+    raise exception 'Password is required.';
+  end if;
+
+  if v_hash not like '$2a$%' and v_hash not like '$2b$%' and v_hash not like '$2y$%' then
+    if length(v_hash) < 8 then
+      raise exception 'Password must be at least 8 characters.';
+    end if;
+    v_hash := extensions.crypt(v_hash, extensions.gen_salt('bf', 12));
+  end if;
+
+  if v_role not in ('student', 'teacher', 'admin', 'nt') then
+    raise exception 'Invalid role.';
+  end if;
+
+  if exists (
+    select 1
+    from public.users u
+    where lower(u.username) = lower(v_username)
+  ) then
+    raise exception 'Username already exists.';
+  end if;
+
+  if v_school_id = '' then
+    loop
+      v_attempt := v_attempt + 1;
+      if v_attempt > 500 then
+        raise exception 'Unable to generate unique school ID.';
+      end if;
+
+      v_generated_school_id := format(
+        '%s - %s',
+        to_char(now(), 'YYYY'),
+        lpad((floor(random() * 10000)::int)::text, 4, '0')
+      );
+
+      exit when not exists (
+        select 1
+        from public.users u
+        where trim(coalesce(u.school_id, '')) = v_generated_school_id
+      );
+    end loop;
+
+    v_school_id := v_generated_school_id;
+  end if;
+
+  insert into public.users (
+    username,
+    full_name,
+    role,
+    roles,
+    sub_role,
+    sub_roles,
+    school_id,
+    image_path,
+    auth_uid,
+    expires_at
+  )
+  values (
+    v_username,
+    v_full_name,
+    v_role,
+    jsonb_build_array(v_role),
+    null,
+    '[]'::jsonb,
+    nullif(v_school_id, ''),
+    '/images/sample.jpg',
+    p_auth_uid,
+    p_expires_at
+  )
+  returning * into v_inserted;
+
+  perform 1
+  from public.app_ensure_auth_user_for_hash(
+    p_user_id => v_inserted.id,
+    p_password_hash => v_hash
+  ) p
+  where coalesce(p.auth_synced, false)
+  limit 1;
+
+  if not found then
+    raise exception 'Failed to provision secure auth profile for new account.';
+  end if;
+
+  select *
+    into v_inserted
+  from public.users u
+  where u.id = v_inserted.id
+  limit 1;
+
+  return query
+  select
+    v_inserted.id,
+    v_inserted.username,
+    v_inserted.full_name,
+    v_inserted.role,
+    v_inserted.roles,
+    v_inserted.sub_role,
+    v_inserted.sub_roles,
+    v_inserted.school_id,
+    v_inserted.image_path,
+    v_inserted.auth_uid,
+    v_inserted.expires_at,
+    v_inserted.created_at,
+    v_inserted.updated_at;
+end;
+$$;
+
+create or replace function public.app_admin_set_user_password(
+  p_user_id bigint,
+  p_new_password text
+)
+returns table (
+  id bigint,
+  auth_uid uuid,
+  auth_synced boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user public.users%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_auth_synced boolean := false;
+  v_created_auth_user boolean := false;
+begin
+  if not public.app_is_admin() then
+    raise exception 'Only administrators can reset passwords.';
+  end if;
+
+  if coalesce(p_user_id, 0) <= 0 then
+    raise exception 'Invalid user id.';
+  end if;
+
+  if length(coalesce(p_new_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = p_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User not found.';
+  end if;
+
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+    into v_auth_uid,
+         v_auth_email,
+         v_auth_synced,
+         v_created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => p_user_id,
+    p_password => p_new_password
+  ) p
+    limit 1;
+
+  if not coalesce(v_auth_synced, false) then
+    raise exception 'Failed to sync password to Supabase Auth.';
+  end if;
+
+  perform public.app_log_status_event(
+    p_action => 'admin_password_reset_synced',
+    p_category => 'account',
+    p_message => format(
+      'Admin synced secure auth password for "%s".',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => public.app_current_user_id(),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(coalesce(v_user.role, '')),
+    p_metadata => jsonb_build_object(
+      'auth_uid', v_auth_uid,
+      'auth_email', v_auth_email,
+      'created_auth_user', coalesce(v_created_auth_user, false),
+      'auth_synced', coalesce(v_auth_synced, false)
+    )
+  );
+
+  return query
+  select p_user_id, v_auth_uid, coalesce(v_auth_synced, false);
+end;
+$$;
+
+revoke execute on function public.app_log_status_event(text, text, text, bigint, text, text, bigint, text, text, jsonb) from anon;
+grant execute on function public.app_log_status_event(text, text, text, bigint, text, text, bigint, text, text, jsonb) to authenticated;
+
+revoke execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) from anon;
+grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- FINAL AUTH HOTFIX OVERRIDE (authoritative last definitions)
+-- ---------------------------------------------------------------------------
+-- Keeps this file self-healing even if earlier duplicate definitions remain.
+
+create or replace function public.app_ensure_auth_user_for_password(
+  p_user_id bigint,
+  p_password text
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user public.users%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_existing_auth_email text;
+  v_instance_id uuid := null;
+  v_created_auth_user boolean := false;
+  v_synced boolean := false;
+begin
+  if coalesce(p_user_id, 0) <= 0 then
+    raise exception 'Invalid user id.';
+  end if;
+
+  if length(coalesce(p_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = p_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User not found.';
+  end if;
+
+  v_auth_uid := v_user.auth_uid;
+  v_auth_email := public.app_username_auth_email(v_user.username, v_user.id);
+
+  begin
+    select i.id
+      into v_instance_id
+    from auth.instances i
+    order by i.id
+    limit 1;
+  exception
+    when undefined_table then
+      v_instance_id := null;
+  end;
+
+  if v_instance_id is null then
+    begin
+      select au.instance_id
+        into v_instance_id
+      from auth.users au
+      where au.instance_id is not null
+      order by au.created_at
+      limit 1;
+    exception
+      when undefined_column then
+        v_instance_id := null;
+    end;
+  end if;
+
+  if v_instance_id is null then
+    v_instance_id := '00000000-0000-0000-0000-000000000000'::uuid;
+  end if;
+
+  if v_auth_uid is not null then
+    select lower(coalesce(au.email, ''))
+      into v_existing_auth_email
+    from auth.users au
+    where au.id = v_auth_uid
+    limit 1;
+
+    if not found then
+      v_auth_uid := null;
+    elsif coalesce(v_existing_auth_email, '') <> lower(coalesce(v_auth_email, '')) then
+      -- Stale/mismatched linkage: relink using canonical username email.
+      v_auth_uid := null;
+    end if;
+  end if;
+
+  if v_auth_uid is null then
+    select au.id
+      into v_auth_uid
+    from auth.users au
+    where lower(coalesce(au.email, '')) = lower(coalesce(v_auth_email, ''))
+    order by au.created_at
+    limit 1;
+  end if;
+
+  if v_auth_uid is null then
+    v_auth_uid := gen_random_uuid();
+
+    begin
+      insert into auth.users (
+        id,
+        instance_id,
+        aud,
+        role,
+        email,
+        encrypted_password,
+        email_confirmed_at,
+        raw_app_meta_data,
+        raw_user_meta_data,
+        created_at,
+        updated_at
+      )
+      values (
+        v_auth_uid,
+        v_instance_id,
+        'authenticated',
+        'authenticated',
+        v_auth_email,
+        crypt(p_password, gen_salt('bf', 10)),
+        now(),
+        '{"provider":"email","providers":["email"]}'::jsonb,
+        '{}'::jsonb,
+        now(),
+        now()
+      );
+      v_created_auth_user := true;
+    exception
+      when unique_violation then
+        select au.id
+          into v_auth_uid
+        from auth.users au
+        where lower(coalesce(au.email, '')) = lower(coalesce(v_auth_email, ''))
+        order by au.created_at
+        limit 1;
+        if v_auth_uid is null then
+          raise;
+        end if;
+    end;
+  end if;
+
+  begin
+    update auth.identities ai
+       set provider_id = lower(v_auth_email),
+           identity_data = jsonb_build_object(
+             'sub', v_auth_uid::text,
+             'email', v_auth_email,
+             'email_verified', true,
+             'phone_verified', false
+           ),
+           last_sign_in_at = coalesce(ai.last_sign_in_at, now()),
+           updated_at = now()
+     where ai.user_id = v_auth_uid
+       and ai.provider = 'email';
+
+    if not found then
+      insert into auth.identities (
+        id,
+        user_id,
+        provider_id,
+        identity_data,
+        provider,
+        last_sign_in_at,
+        created_at,
+        updated_at
+      )
+      values (
+        gen_random_uuid(),
+        v_auth_uid,
+        lower(v_auth_email),
+        jsonb_build_object(
+          'sub', v_auth_uid::text,
+          'email', v_auth_email,
+          'email_verified', true,
+          'phone_verified', false
+        ),
+        'email',
+        now(),
+        now(),
+        now()
+      )
+      on conflict do nothing;
+    end if;
+  exception
+    when undefined_table or undefined_column then
+      null;
+  end;
+
+  update auth.users au
+     set instance_id = coalesce(v_instance_id, au.instance_id),
+         aud = 'authenticated',
+         role = 'authenticated',
+         encrypted_password = crypt(p_password, gen_salt('bf', 10)),
+         email = coalesce(nullif(v_auth_email, ''), au.email),
+         email_confirmed_at = coalesce(au.email_confirmed_at, now()),
+         updated_at = now()
+   where au.id = v_auth_uid;
+  v_synced := found;
+
+  if coalesce(v_synced, false) then
+    begin
+      execute 'update auth.users set deleted_at = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set banned_until = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set is_sso_user = false where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+  end if;
+
+  update public.users
+     set auth_uid = v_auth_uid,
+         updated_at = now()
+   where id = p_user_id;
+
+  return query
+  select
+    v_auth_uid,
+    nullif(v_auth_email, ''),
+    coalesce(v_synced, false),
+    coalesce(v_created_auth_user, false);
+end;
+$$;
+
+create or replace function public.app_ensure_auth_user_for_hash(
+  p_user_id bigint,
+  p_password_hash text default null
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user public.users%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_existing_auth_email text;
+  v_hash text := trim(coalesce(p_password_hash, ''));
+  v_hash_for_auth text;
+  v_instance_id uuid := null;
+  v_created_auth_user boolean := false;
+  v_synced boolean := false;
+begin
+  if coalesce(p_user_id, 0) <= 0 then
+    raise exception 'Invalid user id.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = p_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User not found.';
+  end if;
+
+  if v_hash = '' then
+    v_hash := trim(coalesce(v_user.password, ''));
+  end if;
+
+  if v_hash = '' then
+    raise exception 'Password hash is required.';
+  end if;
+
+  if v_hash not like '$2a$%' and v_hash not like '$2b$%' and v_hash not like '$2y$%' then
+    raise exception 'Password hash must be a bcrypt hash.';
+  end if;
+
+  v_hash_for_auth := v_hash;
+  if v_hash_for_auth like '$2y$%' then
+    v_hash_for_auth := replace(v_hash_for_auth, '$2y$', '$2a$');
+  end if;
+  if v_hash_for_auth like '$2b$%' then
+    v_hash_for_auth := replace(v_hash_for_auth, '$2b$', '$2a$');
+  end if;
+
+  v_auth_uid := v_user.auth_uid;
+  v_auth_email := public.app_username_auth_email(v_user.username, v_user.id);
+
+  begin
+    select i.id
+      into v_instance_id
+    from auth.instances i
+    order by i.id
+    limit 1;
+  exception
+    when undefined_table then
+      v_instance_id := null;
+  end;
+
+  if v_instance_id is null then
+    begin
+      select au.instance_id
+        into v_instance_id
+      from auth.users au
+      where au.instance_id is not null
+      order by au.created_at
+      limit 1;
+    exception
+      when undefined_column then
+        v_instance_id := null;
+    end;
+  end if;
+
+  if v_instance_id is null then
+    v_instance_id := '00000000-0000-0000-0000-000000000000'::uuid;
+  end if;
+
+  if v_auth_uid is not null then
+    select lower(coalesce(au.email, ''))
+      into v_existing_auth_email
+    from auth.users au
+    where au.id = v_auth_uid
+    limit 1;
+
+    if not found then
+      v_auth_uid := null;
+    elsif coalesce(v_existing_auth_email, '') <> lower(coalesce(v_auth_email, '')) then
+      v_auth_uid := null;
+    end if;
+  end if;
+
+  if v_auth_uid is null then
+    select au.id
+      into v_auth_uid
+    from auth.users au
+    where lower(coalesce(au.email, '')) = lower(coalesce(v_auth_email, ''))
+    order by au.created_at
+    limit 1;
+  end if;
+
+  if v_auth_uid is null then
+    v_auth_uid := gen_random_uuid();
+
+    begin
+      insert into auth.users (
+        id,
+        instance_id,
+        aud,
+        role,
+        email,
+        encrypted_password,
+        email_confirmed_at,
+        raw_app_meta_data,
+        raw_user_meta_data,
+        created_at,
+        updated_at
+      )
+      values (
+        v_auth_uid,
+        v_instance_id,
+        'authenticated',
+        'authenticated',
+        v_auth_email,
+        v_hash_for_auth,
+        now(),
+        '{"provider":"email","providers":["email"]}'::jsonb,
+        '{}'::jsonb,
+        now(),
+        now()
+      );
+      v_created_auth_user := true;
+    exception
+      when unique_violation then
+        select au.id
+          into v_auth_uid
+        from auth.users au
+        where lower(coalesce(au.email, '')) = lower(coalesce(v_auth_email, ''))
+        order by au.created_at
+        limit 1;
+        if v_auth_uid is null then
+          raise;
+        end if;
+    end;
+  end if;
+
+  begin
+    update auth.identities ai
+       set provider_id = lower(v_auth_email),
+           identity_data = jsonb_build_object(
+             'sub', v_auth_uid::text,
+             'email', v_auth_email,
+             'email_verified', true,
+             'phone_verified', false
+           ),
+           last_sign_in_at = coalesce(ai.last_sign_in_at, now()),
+           updated_at = now()
+     where ai.user_id = v_auth_uid
+       and ai.provider = 'email';
+
+    if not found then
+      insert into auth.identities (
+        id,
+        user_id,
+        provider_id,
+        identity_data,
+        provider,
+        last_sign_in_at,
+        created_at,
+        updated_at
+      )
+      values (
+        gen_random_uuid(),
+        v_auth_uid,
+        lower(v_auth_email),
+        jsonb_build_object(
+          'sub', v_auth_uid::text,
+          'email', v_auth_email,
+          'email_verified', true,
+          'phone_verified', false
+        ),
+        'email',
+        now(),
+        now(),
+        now()
+      )
+      on conflict do nothing;
+    end if;
+  exception
+    when undefined_table or undefined_column then
+      null;
+  end;
+
+  update auth.users au
+     set instance_id = coalesce(v_instance_id, au.instance_id),
+         aud = 'authenticated',
+         role = 'authenticated',
+         encrypted_password = v_hash_for_auth,
+         email = coalesce(nullif(v_auth_email, ''), au.email),
+         email_confirmed_at = coalesce(au.email_confirmed_at, now()),
+         updated_at = now()
+   where au.id = v_auth_uid;
+  v_synced := found;
+
+  if coalesce(v_synced, false) then
+    begin
+      execute 'update auth.users set deleted_at = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set banned_until = null where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+    begin
+      execute 'update auth.users set is_sso_user = false where id = $1' using v_auth_uid;
+    exception
+      when undefined_column then
+        null;
+    end;
+  end if;
+
+  update public.users
+     set auth_uid = v_auth_uid,
+         updated_at = now()
+   where id = p_user_id;
+
+  return query
+  select
+    v_auth_uid,
+    nullif(v_auth_email, ''),
+    coalesce(v_synced, false),
+    coalesce(v_created_auth_user, false);
+end;
+$$;
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      coalesce(u.password, '') as legacy_password,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null
+                 and au.id = tu.auth_uid
+                 and lower(coalesce(au.email, '')) = tu.auth_email then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 2
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        lower(coalesce(au.email, '')) = tu.auth_email
+        or (tu.auth_uid is not null and au.id = tu.auth_uid)
+      )
+  ),
+  picked_auth as (
+    select ra.encrypted_password
+    from ranked_auth ra
+    where ra.rn = 1
+    limit 1
+  ),
+  auth_match as (
+    select
+      coalesce(pa.encrypted_password, '') <> ''
+      and (
+        pa.encrypted_password = crypt(coalesce(p_password, ''), pa.encrypted_password)
+        or (
+          pa.encrypted_password like '$2y$%'
+          and replace(pa.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          pa.encrypted_password like '$2b$%'
+          and replace(pa.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(pa.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      ) as ok
+    from picked_auth pa
+    limit 1
+  ),
+  legacy_match as (
+    select
+      coalesce(tu.legacy_password, '') <> ''
+      and (
+        tu.legacy_password = crypt(coalesce(p_password, ''), tu.legacy_password)
+        or (
+          tu.legacy_password like '$2y$%'
+          and replace(tu.legacy_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password like '$2b$%'
+          and replace(tu.legacy_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(tu.legacy_password, '$2b$', '$2a$')
+              )
+        )
+        or (
+          tu.legacy_password not like '$2%'
+          and tu.legacy_password = coalesce(p_password, '')
+        )
+      ) as ok
+    from target_user tu
+    limit 1
+  )
+  select
+    coalesce((select ok from auth_match limit 1), false)
+    or coalesce((select ok from legacy_match limit 1), false);
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and public.app_password_matches_user(u.id, coalesce(p_password, ''))
+      and (u.expires_at is null or u.expires_at > now())
+  )
+  select
+    u.id,
+    u.username,
+    u.full_name,
+    u.role,
+    u.roles,
+    u.sub_role,
+    u.sub_roles,
+    u.school_id,
+    u.image_path,
+    u.auth_uid,
+    case
+      when lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email
+        then lower(trim(coalesce(au.email, '')))
+      else u.canonical_auth_email
+    end as auth_email,
+    u.created_at,
+    u.updated_at
+  from target_user u
+  left join auth.users au
+    on au.id = u.auth_uid
+  order by
+    case
+      when u.auth_uid is not null
+           and lower(trim(coalesce(au.email, ''))) = u.canonical_auth_email then 0
+      when u.auth_uid is not null then 1
+      else 2
+    end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+$$;
+
+create or replace function public.app_repair_auth_profile_for_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  auth_uid uuid,
+  auth_email text,
+  auth_synced boolean,
+  created_auth_user boolean
+)
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_identifier text := trim(coalesce(p_identifier, ''));
+  v_password text := coalesce(p_password, '');
+  v_user_id bigint;
+  v_expected_email text;
+begin
+  if v_identifier = '' or v_password = '' then
+    return;
+  end if;
+
+  select
+    u.id,
+    public.app_username_auth_email(u.username, u.id)
+  into v_user_id, v_expected_email
+  from public.users u
+  where lower(trim(coalesce(u.username, ''))) = lower(v_identifier)
+    and (u.expires_at is null or u.expires_at > now())
+    and public.app_password_matches_user(u.id, v_password)
+  order by
+    case when u.auth_uid is not null then 0 else 1 end,
+    coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+    u.id desc
+  limit 1;
+
+  if not found then
+    return;
+  end if;
+
+  update public.users u
+     set auth_uid = null,
+         updated_at = now()
+   where u.id = v_user_id
+     and u.auth_uid is not null
+     and (
+       not exists (
+         select 1
+         from auth.users au
+         where au.id = u.auth_uid
+       )
+       or exists (
+         select 1
+         from auth.users au
+         where au.id = u.auth_uid
+           and lower(coalesce(au.email, '')) <> lower(coalesce(v_expected_email, ''))
+       )
+     );
+
+  return query
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => v_password
+  ) p
+  limit 1;
+end;
+$$;
+
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+grant execute on function public.app_repair_auth_profile_for_login(text, text) to anon, authenticated;
+grant execute on function public.app_ensure_auth_user_for_password(bigint, text) to authenticated;
+grant execute on function public.app_ensure_auth_user_for_hash(bigint, text) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- FINAL AUTH-ONLY OVERRIDE V2 (must stay last)
+-- ---------------------------------------------------------------------------
+-- Auth authority is Supabase Auth only.
+-- public.users is profile/role storage only.
+
+create or replace function public.app_password_matches_user(
+  p_user_id bigint,
+  p_password text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.id,
+      u.auth_uid,
+      lower(public.app_username_auth_email(u.username, u.id)) as auth_email
+    from public.users u
+    where u.id = p_user_id
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 0
+            when lower(coalesce(au.email, '')) = tu.auth_email then 1
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        (tu.auth_uid is not null and au.id = tu.auth_uid)
+        or lower(coalesce(au.email, '')) = tu.auth_email
+      )
+  ),
+  chosen as (
+    select ra.encrypted_password
+    from ranked_auth ra
+    where ra.rn = 1
+    limit 1
+  )
+  select coalesce(
+    (
+      select
+        coalesce(c.encrypted_password, '') <> ''
+        and (
+          c.encrypted_password = crypt(coalesce(p_password, ''), c.encrypted_password)
+          or (
+            c.encrypted_password like '$2y$%'
+            and replace(c.encrypted_password, '$2y$', '$2a$')
+              = crypt(
+                  coalesce(p_password, ''),
+                  replace(c.encrypted_password, '$2y$', '$2a$')
+                )
+          )
+          or (
+            c.encrypted_password like '$2b$%'
+            and replace(c.encrypted_password, '$2b$', '$2a$')
+              = crypt(
+                  coalesce(p_password, ''),
+                  replace(c.encrypted_password, '$2b$', '$2a$')
+                )
+          )
+        )
+      from chosen c
+      limit 1
+    ),
+    false
+  );
+$$;
+
+create or replace function public.app_login(
+  p_identifier text,
+  p_password text
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  auth_email text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+security definer
+set search_path = public, auth, extensions
+as $$
+  with target_user as (
+    select
+      u.*,
+      lower(public.app_username_auth_email(u.username, u.id)) as canonical_auth_email
+    from public.users u
+    where lower(trim(coalesce(u.username, ''))) = lower(trim(coalesce(p_identifier, '')))
+      and (u.expires_at is null or u.expires_at > now())
+    order by
+      case when u.auth_uid is not null then 0 else 1 end,
+      coalesce(u.updated_at, u.created_at, to_timestamp(0)) desc,
+      u.id desc
+    limit 1
+  ),
+  ranked_auth as (
+    select
+      au.id as resolved_auth_uid,
+      lower(trim(coalesce(au.email, ''))) as resolved_auth_email,
+      au.encrypted_password,
+      row_number() over (
+        order by
+          case
+            when tu.auth_uid is not null and au.id = tu.auth_uid then 0
+            when lower(coalesce(au.email, '')) = tu.canonical_auth_email then 1
+            else 9
+          end,
+          au.created_at desc nulls last
+      ) as rn
+    from target_user tu
+    join auth.users au
+      on (
+        (tu.auth_uid is not null and au.id = tu.auth_uid)
+        or lower(coalesce(au.email, '')) = tu.canonical_auth_email
+      )
+  ),
+  matched_auth as (
+    select
+      ra.resolved_auth_uid,
+      ra.resolved_auth_email
+    from ranked_auth ra
+    where ra.rn = 1
+      and coalesce(ra.encrypted_password, '') <> ''
+      and (
+        ra.encrypted_password = crypt(coalesce(p_password, ''), ra.encrypted_password)
+        or (
+          ra.encrypted_password like '$2y$%'
+          and replace(ra.encrypted_password, '$2y$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(ra.encrypted_password, '$2y$', '$2a$')
+              )
+        )
+        or (
+          ra.encrypted_password like '$2b$%'
+          and replace(ra.encrypted_password, '$2b$', '$2a$')
+            = crypt(
+                coalesce(p_password, ''),
+                replace(ra.encrypted_password, '$2b$', '$2a$')
+              )
+        )
+      )
+    limit 1
+  )
+  select
+    tu.id,
+    tu.username,
+    tu.full_name,
+    tu.role,
+    tu.roles,
+    tu.sub_role,
+    tu.sub_roles,
+    tu.school_id,
+    tu.image_path,
+    coalesce(ma.resolved_auth_uid, tu.auth_uid) as auth_uid,
+    coalesce(nullif(ma.resolved_auth_email, ''), tu.canonical_auth_email) as auth_email,
+    tu.created_at,
+    tu.updated_at
+  from target_user tu
+  join matched_auth ma
+    on true
+  limit 1;
+$$;
+
+create or replace function public.app_register_user(
+  p_username text,
+  p_password_hash text,
+  p_full_name text,
+  p_school_id text,
+  p_role text default 'student',
+  p_auth_uid uuid default null,
+  p_expires_at timestamptz default null
+)
+returns table (
+  id bigint,
+  username text,
+  full_name text,
+  role text,
+  roles jsonb,
+  sub_role text,
+  sub_roles jsonb,
+  school_id text,
+  image_path text,
+  auth_uid uuid,
+  expires_at timestamptz,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_username text := trim(coalesce(p_username, ''));
+  v_full_name text := trim(coalesce(p_full_name, ''));
+  v_school_id text := trim(coalesce(p_school_id, ''));
+  v_role text := lower(trim(coalesce(p_role, 'student')));
+  v_password_input text := coalesce(p_password_hash, '');
+  v_generated_school_id text := null;
+  v_attempt integer := 0;
+  v_inserted public.users%rowtype;
+begin
+  if not public.app_is_admin() then
+    raise exception 'Only administrators can create accounts.';
+  end if;
+
+  if v_username = '' then
+    raise exception 'Username is required.';
+  end if;
+  if v_full_name = '' then
+    raise exception 'Full name is required.';
+  end if;
+
+  if v_password_input = '' then
+    raise exception 'Password is required.';
+  end if;
+  if v_password_input not like '$2a$%' and v_password_input not like '$2b$%' and v_password_input not like '$2y$%' then
+    if length(v_password_input) < 8 then
+      raise exception 'Password must be at least 8 characters.';
+    end if;
+  end if;
+
+  if v_role not in ('student', 'teacher', 'admin', 'nt') then
+    raise exception 'Invalid role.';
+  end if;
+
+  if exists (
+    select 1
+    from public.users u
+    where lower(u.username) = lower(v_username)
+  ) then
+    raise exception 'Username already exists.';
+  end if;
+
+  if v_school_id = '' then
+    loop
+      v_attempt := v_attempt + 1;
+      if v_attempt > 500 then
+        raise exception 'Unable to generate unique school ID.';
+      end if;
+
+      v_generated_school_id := format(
+        '%s - %s',
+        to_char(now(), 'YYYY'),
+        lpad((floor(random() * 10000)::int)::text, 4, '0')
+      );
+
+      exit when not exists (
+        select 1
+        from public.users u
+        where trim(coalesce(u.school_id, '')) = v_generated_school_id
+      );
+    end loop;
+
+    v_school_id := v_generated_school_id;
+  end if;
+
+  insert into public.users (
+    username,
+    full_name,
+    role,
+    roles,
+    sub_role,
+    sub_roles,
+    school_id,
+    image_path,
+    auth_uid,
+    expires_at
+  )
+  values (
+    v_username,
+    v_full_name,
+    v_role,
+    jsonb_build_array(v_role),
+    null,
+    '[]'::jsonb,
+    nullif(v_school_id, ''),
+    '/images/sample.jpg',
+    p_auth_uid,
+    p_expires_at
+  )
+  returning * into v_inserted;
+
+  return query
+  select
+    v_inserted.id,
+    v_inserted.username,
+    v_inserted.full_name,
+    v_inserted.role,
+    v_inserted.roles,
+    v_inserted.sub_role,
+    v_inserted.sub_roles,
+    v_inserted.school_id,
+    v_inserted.image_path,
+    v_inserted.auth_uid,
+    v_inserted.expires_at,
+    v_inserted.created_at,
+    v_inserted.updated_at;
+end;
+$$;
+
+create or replace function public.app_admin_set_user_password(
+  p_user_id bigint,
+  p_new_password text
+)
+returns table (
+  id bigint,
+  auth_uid uuid,
+  auth_synced boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  raise exception 'Password reset must use set-auth-password edge function (auth.admin flow).';
+end;
+$$;
+
+revoke execute on function public.app_admin_set_user_password(bigint, text) from anon;
+revoke execute on function public.app_admin_set_user_password(bigint, text) from authenticated;
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- AUTH-ONLY HARDENING GRANTS V3 (must stay last)
+-- ---------------------------------------------------------------------------
+revoke execute on function public.app_admin_set_user_password(bigint, text) from anon;
+revoke execute on function public.app_admin_set_user_password(bigint, text) from authenticated;
+revoke execute on function public.app_repair_auth_profile_for_login(text, text) from anon;
+revoke execute on function public.app_repair_auth_profile_for_login(text, text) from authenticated;
+revoke execute on function public.app_ensure_auth_user_for_password(bigint, text) from authenticated;
+revoke execute on function public.app_ensure_auth_user_for_hash(bigint, text) from authenticated;
+
+grant execute on function public.app_login(text, text) to anon, authenticated;
+grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
+grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
 end $$;
