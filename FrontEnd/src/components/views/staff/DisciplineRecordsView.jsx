@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import styled from "styled-components";
 import { BookOpenCheck, Filter, Search, ShieldAlert, X } from "lucide-react";
 import { AdminAPI } from "../../../services/api";
-import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../utils/constants";
+import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../Utils/constants";
 import Toast from "../../common/Toast";
 import PageSkeleton from "../../loaders/PageSkeleton";
 
@@ -541,3 +541,4 @@ const TimelineItem = styled.div`
 `;
 
 export default DisciplineRecordsView;
+

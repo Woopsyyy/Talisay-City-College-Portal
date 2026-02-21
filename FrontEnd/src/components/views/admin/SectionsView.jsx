@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import styled from 'styled-components';
 import { AdminAPI } from '../../../services/api';
-import { YEAR_LEVEL_OPTIONS, COURSE_MAJOR_CONFIG } from '../../../utils/constants';
+import { YEAR_LEVEL_OPTIONS, COURSE_MAJOR_CONFIG } from '../../../Utils/constants';
 import { Layers, PlusCircle, Edit2, Trash2, Save, X, LayoutGrid, AlertCircle, Calendar, XCircle, Building2, BookOpen } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
@@ -586,3 +586,4 @@ const CloseButton = styled.button`
 `;
 
 export default SectionsView;
+
