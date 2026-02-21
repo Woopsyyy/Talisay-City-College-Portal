@@ -32,7 +32,6 @@ jobs:
           cache: npm
           cache-dependency-path: FrontEnd/package-lock.json
 
-      # Cache frontend node_modules
       - name: Cache frontend node_modules
         uses: actions/cache@v3
         with:
@@ -95,15 +94,17 @@ jobs:
       # Success notification
       - name: Notify Discord on success
         if: ${{ success() && env.DISCORD_WEBHOOK_SUCCESS != '' }}
-        uses: Ilshidur/action-discord@master
+        uses: Ilshidur/action-discord@0.4.0
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
         with:
-          webhook: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
-          message: "✅ Frontend deployed to Vercel Production successfully! 🎉"
+          args: "✅ Frontend deployed to Vercel Production successfully! (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
 
       # Failure notification
       - name: Notify Discord on failure
         if: ${{ failure() && env.DISCORD_WEBHOOK_FAIL != '' }}
-        uses: Ilshidur/action-discord@master
+        uses: Ilshidur/action-discord@0.4.0
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
         with:
-          webhook: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
-          message: "❌ Deployment FAILED! Check logs: ${{ github.workflow }} run #${{ github.run_number }} (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
+          args: "❌ Deployment FAILED! Check logs: (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
