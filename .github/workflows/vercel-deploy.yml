@@ -95,7 +95,7 @@ jobs:
       # Success notification
       - name: Notify Discord on success
         if: ${{ success() && env.DISCORD_WEBHOOK_SUCCESS != '' }}
-        uses: Ilshidur/action-discord@v1
+        uses: Ilshidur/action-discord@master
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
           message: "✅ Frontend deployed to Vercel Production successfully! 🎉"
@@ -103,7 +103,7 @@ jobs:
       # Failure notification
       - name: Notify Discord on failure
         if: ${{ failure() && env.DISCORD_WEBHOOK_FAIL != '' }}
-        uses: Ilshidur/action-discord@v1
+        uses: Ilshidur/action-discord@master
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
           message: "❌ Deployment FAILED! Check logs: ${{ github.workflow }} run #${{ github.run_number }} (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
