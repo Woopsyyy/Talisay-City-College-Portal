@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import baseStyled from 'styled-components';
 const styled = baseStyled as any;
 import { AdminAPI } from '../../../services/api';
-import { COURSE_MAJOR_CONFIG, SEMESTER_OPTIONS, YEAR_LEVEL_OPTIONS } from '../../../Utils/constants';
-import { formatOrdinal } from '../../../Utils/formatting';
+import { COURSE_MAJOR_CONFIG, SEMESTER_OPTIONS, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
+import { formatOrdinal } from '../../../utils/formatting';
 import { BookOpen, PlusCircle, Trash2, Edit2, Search, Filter, Book, Hash, GraduationCap, Calendar, Clock, Save, XCircle, X } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
@@ -711,4 +711,5 @@ const ModalFooter = styled.div`
 `;
 
 export default SubjectsView;
+
 

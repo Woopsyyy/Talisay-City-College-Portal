@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import baseStyled from "styled-components";
 import { CreditCard, Filter, Search, Send } from "lucide-react";
 import { AdminAPI } from "../../../services/api";
-import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../Utils/constants";
+import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../utils/constants";
 import Toast from "../../common/Toast";
 import PageSkeleton from "../../loaders/PageSkeleton";
 const styled = baseStyled as any;
@@ -390,4 +390,5 @@ const StatusBadge = styled.span`
 `;
 
 export default TreasuryPaymentView;
+
 

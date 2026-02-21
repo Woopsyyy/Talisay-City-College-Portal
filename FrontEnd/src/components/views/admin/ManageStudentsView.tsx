@@ -3,7 +3,7 @@ import baseStyled from 'styled-components';
 const styled = baseStyled as any;
 import { AdminAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../Utils/constants';
+import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
 import { Search, UserPlus, Users, Layers, BookOpen, GraduationCap, X, Check, Save, Trash2, Filter, AlertCircle, Edit, ShieldAlert, CreditCard, UserCheck } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
@@ -1161,4 +1161,5 @@ const PageInfo = styled.span`
 `;
 
 export default ManageStudentsView;
+
 
