@@ -18,6 +18,9 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       DISCORD_WEBHOOK_SUCCESS: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
       DISCORD_WEBHOOK_FAIL: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
 
@@ -108,10 +111,6 @@ jobs:
 
       - name: Deploy to Vercel production
         run: vercel deploy --prebuilt --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
-
-      - name: Run Supabase migrations
-        if: env.SUPABASE_ACCESS_TOKEN != ''
-        run: npx supabase db push
 
       # Success notification
       - name: Notify Discord on success
