@@ -371,7 +371,7 @@ const ManageUsersView = () => {
                                         <tr key={user.id}>
                                             <td>
                                                 <UserProfile>
-                                                    <Avatar 
+                                                    <Avatar loading="lazy" 
                                                         src={avatarUrls[user.id] || "/images/sample.jpg"} 
                                                         onError={(e) => {
                                                             const image = e.currentTarget as HTMLImageElement;

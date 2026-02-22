@@ -231,7 +231,7 @@ const EvaluationView = () => {
                                         return (
                                             <TeacherItem key={teacher.id || index}>
                                                 <Rank>{index + 1}</Rank>
-                                                <Avatar 
+                                                <Avatar loading="lazy" 
                                                     src={avatarUrls[teacher.id] || "/images/sample.jpg"}
                                                     onError={(e) => { e.target.src = "/images/sample.jpg" }}
                                                 />

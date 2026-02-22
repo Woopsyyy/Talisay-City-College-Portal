@@ -41,7 +41,7 @@ const Sidebar = ({ currentUser, currentView, onViewChange }) => {
       <div className="sidebar-glass"></div>
       <div className="sidebar-top">
         <div className="sidebar-profile-tile">
-          <img
+          <img loading="lazy"
             id="sidebarUserImage"
             src={displayAvatarUrl}
             onError={(e) => {

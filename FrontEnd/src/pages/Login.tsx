@@ -45,10 +45,10 @@ const Login = () => {
 
   return (
     <>
-      <img src="/images/background.jpg" alt="Background" className="logo" />
+      <img loading="lazy" src="/images/background.jpg" alt="Background" className="logo" />
       <div className="login-card">
         <div className="login-header">
-          <img
+          <img loading="lazy"
             src="/images/tcc-logo.png"
             alt="Talisay City College logo"
             className="school-logo"

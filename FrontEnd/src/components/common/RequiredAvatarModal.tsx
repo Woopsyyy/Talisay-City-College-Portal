@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import baseStyled from "styled-components";
 import { Camera, Save, Upload } from "lucide-react";
+import imageCompression from "browser-image-compression";
 import { useAuth } from "../../context/AuthContext";
 import { AuthAPI } from "../../services/api";
 
@@ -11,6 +12,7 @@ const RequiredAvatarModal = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("/images/sample.jpg");
   const [saving, setSaving] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -45,7 +47,7 @@ const RequiredAvatarModal = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] || null;
     if (!file) return;
 
@@ -54,16 +56,34 @@ const RequiredAvatarModal = () => {
       return;
     }
 
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
+    try {
+      setCompressing(true);
+      setError("");
+      const options = {
+        maxSizeMB: 0.15, // Max 150KB
+        maxWidthOrHeight: 400, // Reasonable size for avatars
+        useWebWorker: true,
+        fileType: "image/jpeg",
+        initialQuality: 0.8
+      };
+      
+      const compressedFile = await imageCompression(file, options);
 
-    const objectUrl = URL.createObjectURL(file);
-    objectUrlRef.current = objectUrl;
-    setSelectedFile(file);
-    setPreviewUrl(objectUrl);
-    setError("");
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+
+      const objectUrl = URL.createObjectURL(compressedFile);
+      objectUrlRef.current = objectUrl;
+      setSelectedFile(compressedFile);
+      setPreviewUrl(objectUrl);
+    } catch (err) {
+      console.error("Compression error:", err);
+      setError("Failed to process image.");
+    } finally {
+      setCompressing(false);
+    }
   };
 
   const handleSave = async () => {
@@ -107,7 +127,7 @@ const RequiredAvatarModal = () => {
         </Description>
 
         <PreviewWrapper>
-          <PreviewImage
+          <PreviewImage loading="lazy"
             src={previewUrl}
             alt="Profile preview"
             onError={(event) => {

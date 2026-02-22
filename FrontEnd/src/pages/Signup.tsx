@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import imageCompression from 'browser-image-compression';
 import { AuthAPI } from '../services/api';
 import usePageStyle from '../hooks/usePageStyle';
 
@@ -72,13 +73,25 @@ const Signup = () => {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setProfileImage(file);
-      const reader = new FileReader();
-      reader.onload = (ev) => setPreviewUrl((ev.target?.result as string) || null);
-      reader.readAsDataURL(file);
+      try {
+        const options = {
+          maxSizeMB: 0.15,
+          maxWidthOrHeight: 400,
+          useWebWorker: true,
+          fileType: "image/jpeg",
+          initialQuality: 0.8
+        };
+        const compressedFile = await imageCompression(file, options);
+        setProfileImage(compressedFile);
+        const reader = new FileReader();
+        reader.onload = (ev) => setPreviewUrl((ev.target?.result as string) || null);
+        reader.readAsDataURL(compressedFile);
+      } catch (err) {
+        console.error("Compression err:", err);
+      }
     }
   };
 

@@ -261,7 +261,7 @@ const GradesView = ({ currentUser }) => {
                         <GraduationCap size={24} /> Study Load Management
                     </SectionTitle>
                     <HeaderLogo>
-                        <img
+                        <img loading="lazy"
                             src="/images/tcc-logo.png"
                             alt="TCC Logo"
                             onError={(e) => {
@@ -275,7 +275,7 @@ const GradesView = ({ currentUser }) => {
                 <PrintContainer id="study-load-printable">
                     <PrintHeader>
                         <LogoSection>
-                            <img
+                            <img loading="lazy"
                                 src="/images/tcc-logo.png"
                                 alt="TCC Logo"
                                 onError={(e) => {

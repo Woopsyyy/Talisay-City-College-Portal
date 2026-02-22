@@ -3,6 +3,7 @@ import baseStyled from 'styled-components';
 import { AuthAPI, StudentAPI, getAvatarUrl } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 import { User, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle, KeyRound } from 'lucide-react';
+import imageCompression from 'browser-image-compression';
 const styled = baseStyled as any;
 
 type SettingsMessage = {
@@ -58,12 +59,35 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
         picker?.click();
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files[0];
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
         if (file) {
-            const reader = new FileReader();
-            reader.onload = (evt) => setPreviewUrl((evt.target?.result as string) || "images/sample.jpg");
-            reader.readAsDataURL(file);
+            try {
+                const options = {
+                    maxSizeMB: 0.15,
+                    maxWidthOrHeight: 400,
+                    useWebWorker: true,
+                    fileType: "image/jpeg",
+                    initialQuality: 0.8
+                };
+                const compressedFile = await imageCompression(file, options);
+                
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(new File([compressedFile], compressedFile.name, {
+                    type: compressedFile.type,
+                    lastModified: Date.now(),
+                }));
+                e.target.files = dataTransfer.files;
+
+                const reader = new FileReader();
+                reader.onload = (evt) => setPreviewUrl((evt.target?.result as string) || "images/sample.jpg");
+                reader.readAsDataURL(compressedFile);
+            } catch (err) {
+                console.error("Compression err:", err);
+                const reader = new FileReader();
+                reader.onload = (evt) => setPreviewUrl((evt.target?.result as string) || "images/sample.jpg");
+                reader.readAsDataURL(file);
+            }
         }
     };
 
@@ -227,7 +251,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                         </CardHeader>
                         <CardBody $center>
                             <AvatarWrapper onClick={openFilePicker}>
-                                <Avatar
+                                <Avatar loading="lazy"
                                     src={previewUrl}
                                     onError={(e) => {
                                         const image = e.currentTarget as HTMLImageElement;

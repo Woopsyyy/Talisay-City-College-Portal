@@ -425,7 +425,7 @@ const EvaluationView = () => {
                                 return (
                                 <TeacherCard key={teacher.id}>
                                     <AvatarContainer>
-                                        <AvatarImg 
+                                        <AvatarImg loading="lazy" 
                                             src={avatarUrl} 
                                             onError={(e) => { e.target.src = "/images/sample.jpg" }}
                                             alt={teacher.name}

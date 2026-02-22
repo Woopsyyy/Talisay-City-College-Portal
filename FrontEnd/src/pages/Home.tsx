@@ -172,7 +172,7 @@ const Home = () => {
     <DashboardContainer>
       <Sidebar>
         <SidebarHeader>
-          <Avatar
+          <Avatar loading="lazy"
             src={avatarUrl}
             onError={(e) => {
               const image = e.currentTarget as HTMLImageElement;

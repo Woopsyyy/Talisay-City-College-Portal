@@ -297,9 +297,9 @@ const GradeSystemView = () => {
                                   return (
                                       <StudentCard key={studentGroup.displayName}>
                                           <StudentHeader>
-                                              <Avatar>
+                                              <Avatar loading="lazy">
                                                   {studentGroup.imagePath ? 
-                                                      <img
+                                                      <img loading="lazy"
                                                         src={studentGroup.imagePath}
                                                         alt={studentGroup.displayName}
                                                         onError={(e) => {

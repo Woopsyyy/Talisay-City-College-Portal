@@ -108,7 +108,7 @@ const TeacherInformationView = () => {
                     {filteredTeachers.map((teacher) => (
                         <Card key={teacher.id}>
                             <CardHeader>
-                                <Avatar
+                                <Avatar loading="lazy"
                                     src={teacher.avatar_url || '/images/sample.jpg'}
                                     alt={teacher.name || 'Teacher'}
                                     onError={(e) => {
