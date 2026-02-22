@@ -276,6 +276,15 @@ const PaymentRecordsView = () => {
                             {event.action?.replace(/_/g, " ") || "payment"}
                           </strong>
                           <p>{event.message || "-"}</p>
+                          {event?.metadata?.paid_amount != null ? (
+                            <p>Paid: PHP {formatMoney(event.metadata.paid_amount)}</p>
+                          ) : null}
+                          {event?.metadata?.reason ? <p>Reason: {event.metadata.reason}</p> : null}
+                          {event?.metadata?.remaining_amount_lacking != null ? (
+                            <p>
+                              Remaining: PHP {formatMoney(event.metadata.remaining_amount_lacking)}
+                            </p>
+                          ) : null}
                         </div>
                         <small>{formatDateTime(event.created_at)}</small>
                       </TimelineItem>

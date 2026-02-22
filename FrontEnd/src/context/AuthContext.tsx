@@ -18,6 +18,7 @@ type AuthContextValue = {
   user: AuthUser | null;
   loading: boolean;
   avatarUrl: string;
+  avatarRequired: boolean;
   activeRole: string | null;
   activeSubRole: string | null;
   switchRole: (role: string) => void;
@@ -29,6 +30,18 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+const isDefaultProfileImage = (userData: AuthUser | null) => {
+  const imagePath = String(userData?.image_path || "")
+    .trim()
+    .toLowerCase();
+
+  return (
+    !imagePath ||
+    imagePath === "images/sample.jpg" ||
+    imagePath === "/images/sample.jpg"
+  );
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -57,6 +70,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
       return '/images/sample.jpg';
     }
   });
+  const [avatarRequired, setAvatarRequired] = useState<boolean>(() => isDefaultProfileImage(user));
 
   const [activeRole, setActiveRole] = useState<string | null>(() => {
     return localStorage.getItem('tcc_active_role') || null;
@@ -69,9 +83,12 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
   const updateAvatar = useCallback(async (userData: AuthUser | null) => {
     if (!userData) {
       setAvatarUrl('/images/sample.jpg');
+      setAvatarRequired(false);
       localStorage.removeItem('tcc_avatar');
       return;
     }
+    setAvatarRequired(isDefaultProfileImage(userData));
+
     if (userData.avatar_url) {
       setAvatarUrl(userData.avatar_url);
       localStorage.setItem('tcc_avatar', userData.avatar_url);
@@ -151,6 +168,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
         localStorage.removeItem('tcc_avatar');
         localStorage.removeItem('tcc_active_role');
         localStorage.removeItem('tcc_active_sub_role');
+        setAvatarRequired(false);
       } catch (_) {}
     });
     return () => {
@@ -178,6 +196,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
       setAvatarUrl('/images/sample.jpg');
       setActiveRole(null);
       setActiveSubRole(null);
+      setAvatarRequired(false);
       localStorage.removeItem('tcc_user');
       localStorage.removeItem('tcc_avatar');
       localStorage.removeItem('tcc_active_role');
@@ -189,6 +208,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     user,
     loading,
     avatarUrl,
+    avatarRequired,
     activeRole,
     activeSubRole,
     switchRole,

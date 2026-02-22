@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   UserCog,
+  Users,
 } from "lucide-react";
 
 export type SidebarRoleKey =
@@ -66,6 +67,7 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
     icon: Briefcase,
     navItems: [
       { id: "study_load", label: "Study Load", path: "/nt/dashboard/study_load", icon: ClipboardList },
+      { id: "manage_students", label: "Manage Students", path: "/nt/dashboard/manage_students", icon: Users },
       { id: "teacher_scheduling", label: "Teacher Scheduling", path: "/nt/dashboard/teacher_scheduling", icon: CalendarCheck },
       { id: "subjects", label: "Subjects", path: "/nt/dashboard/subjects", icon: BookOpen },
       { id: "sections", label: "Sections", path: "/nt/dashboard/sections", icon: Layers },

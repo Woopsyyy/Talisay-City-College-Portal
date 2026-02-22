@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { AuthAPI, getAvatarUrl } from '../../../services/api';
+import { AuthAPI, StudentAPI, getAvatarUrl } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { User, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle } from 'lucide-react';
+import { User, Camera, Save, ShieldCheck, CheckCircle, AlertTriangle, KeyRound } from 'lucide-react';
 const styled = baseStyled as any;
 
 type SettingsMessage = {
@@ -12,9 +12,16 @@ type SettingsMessage = {
 
 const SettingsView = ({ currentUser }: { currentUser: any }) => {
     const [loading, setLoading] = useState(false);
+    const [requestLoading, setRequestLoading] = useState(false);
+    const [requestSubmitting, setRequestSubmitting] = useState(false);
+    const [resetSubmitting, setResetSubmitting] = useState(false);
     const [message, setMessage] = useState<SettingsMessage>(null);
     const [previewUrl, setPreviewUrl] = useState("images/sample.jpg");
     const { checkAuth } = useAuth();
+    const [latestRequest, setLatestRequest] = useState(null);
+    const [passwordForm, setPasswordForm] = useState({ password: "", confirm: "" });
+    const [approvalConsumed, setApprovalConsumed] = useState(false);
+    const [consumedRequestId, setConsumedRequestId] = useState<number | null>(null);
     
     
     const [formData, setFormData] = useState({
@@ -60,6 +67,45 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
         }
     };
 
+    const loadResetRequests = async () => {
+        try {
+            setRequestLoading(true);
+            const rows = await StudentAPI.getMyAccountRequests(20);
+            const activeRequest = Array.isArray(rows)
+                ? rows.find((row) => {
+                    const requestType = String(row?.request_type || '').trim().toLowerCase();
+                    const status = String(row?.status || '').trim().toLowerCase();
+                    return requestType === 'password_reset' && (status === 'pending' || status === 'approved');
+                })
+                : null;
+            setLatestRequest(activeRequest || null);
+            if (activeRequest) {
+                const activeId = Number(activeRequest?.id || 0);
+                if (consumedRequestId && activeId === consumedRequestId) {
+                    setApprovalConsumed(true);
+                } else {
+                    setApprovalConsumed(false);
+                }
+            } else {
+                setApprovalConsumed(false);
+            }
+        } catch (error: any) {
+            setLatestRequest(null);
+            setMessage({
+                type: 'danger',
+                text: error?.message || 'Failed to load password reset requests.',
+            });
+        } finally {
+            setRequestLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (currentUser?.id) {
+            loadResetRequests();
+        }
+    }, [currentUser?.id, consumedRequestId]);
+
     const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         setMessage(null);
@@ -88,6 +134,73 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
             setMessage({ type: 'danger', text: err?.message || 'An error occurred' });
         } finally {
             setLoading(false);
+        }
+    };
+
+    const requestStatus = String(latestRequest?.status || '').toLowerCase();
+    const canRequestReset =
+        !requestLoading && requestStatus !== 'pending' && requestStatus !== 'approved';
+    const canCompleteReset = requestStatus === 'approved' && !approvalConsumed;
+
+    const handleRequestPasswordReset = async () => {
+        try {
+            setMessage(null);
+            setRequestSubmitting(true);
+            const result = await StudentAPI.requestPasswordReset();
+            await loadResetRequests();
+            setMessage({
+                type: 'success',
+                text: result?.message || 'Password reset request submitted. Wait for admin approval.',
+            });
+        } catch (error: any) {
+            setMessage({
+                type: 'danger',
+                text: error?.message || 'Failed to submit password reset request.',
+            });
+        } finally {
+            setRequestSubmitting(false);
+        }
+    };
+
+    const handleApprovedReset = async (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        const password = String(passwordForm.password || '');
+        const confirm = String(passwordForm.confirm || '');
+
+        if (password.length < 8) {
+            setMessage({ type: 'danger', text: 'Password must be at least 8 characters.' });
+            return;
+        }
+        if (password !== confirm) {
+            setMessage({ type: 'danger', text: 'Password confirmation does not match.' });
+            return;
+        }
+
+        try {
+            setMessage(null);
+            setResetSubmitting(true);
+            const synced = await StudentAPI.completeApprovedPasswordReset(password);
+            if (!synced) {
+                throw new Error('Password was not synced to secure auth. Please contact admin.');
+            }
+            const requestId = Number(latestRequest?.id || 0);
+            setPasswordForm({ password: "", confirm: "" });
+            setApprovalConsumed(true);
+            setConsumedRequestId(requestId > 0 ? requestId : null);
+            setLatestRequest(null);
+            await loadResetRequests();
+            setMessage({
+                type: 'success',
+                text: 'Password updated successfully. Approval consumed. Request again next time you need another reset.',
+            });
+        } catch (error: any) {
+            await loadResetRequests();
+            setMessage({
+                type: 'danger',
+                text: error?.message || 'Failed to reset password.',
+            });
+        } finally {
+            setResetSubmitting(false);
         }
     };
 
@@ -186,11 +299,57 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                             </CardHeader>
                             <CardBody>
                                 <FormGroup>
-                                    <Label>Security Status</Label>
-                                    <StatusPill>
-                                        Password creation and reset are managed by administrators.
-                                    </StatusPill>
+                                    <Label>Password Reset Request</Label>
+                                    <RequestStatus $status={requestStatus || 'none'}>
+                                        <span className="dot" />
+                                        {requestLoading
+                                            ? 'Checking request status...'
+                                            : requestStatus === 'approved'
+                                                ? 'Approved - you can reset your password now.'
+                                                : requestStatus === 'pending'
+                                                    ? 'Pending admin approval.'
+                                                    : 'No active request.'}
+                                    </RequestStatus>
+                                    <Button
+                                        type="button"
+                                        $secondary
+                                        disabled={!canRequestReset || requestSubmitting}
+                                        onClick={handleRequestPasswordReset}
+                                    >
+                                        <KeyRound size={18} />
+                                        {requestSubmitting ? 'Submitting Request...' : 'Request Password Reset'}
+                                    </Button>
+                                    <p className="hint">
+                                        Submit a request first. Once approved by admin, you can set a new password below.
+                                    </p>
                                 </FormGroup>
+
+                                {canCompleteReset && (
+                                    <ResetForm onSubmit={handleApprovedReset}>
+                                        <FormGroup>
+                                            <Label>New Password</Label>
+                                            <Input
+                                                type="password"
+                                                value={passwordForm.password}
+                                                onChange={e => setPasswordForm({ ...passwordForm, password: e.target.value })}
+                                                required
+                                            />
+                                        </FormGroup>
+                                        <FormGroup>
+                                            <Label>Confirm Password</Label>
+                                            <Input
+                                                type="password"
+                                                value={passwordForm.confirm}
+                                                onChange={e => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                                                required
+                                            />
+                                        </FormGroup>
+                                        <Button type="submit" disabled={resetSubmitting}>
+                                            <Save size={18} />
+                                            {resetSubmitting ? 'Resetting Password...' : 'Reset Password'}
+                                        </Button>
+                                    </ResetForm>
+                                )}
                             </CardBody>
                         </Card>
                     </MainSettings>
@@ -307,7 +466,7 @@ const Select = styled.select`
   &:focus { outline: none; border-color: var(--accent-primary); }
 `;
 
-const StatusPill = styled.div`
+const RequestStatus = styled.div`
   display: flex;
   align-items: center;
   gap: 8px;
@@ -318,6 +477,32 @@ const StatusPill = styled.div`
   background: var(--bg-primary);
   color: var(--text-primary);
   font-weight: 600;
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: ${({ $status }) =>
+      $status === 'approved'
+        ? '#10b981'
+        : $status === 'pending'
+          ? '#f59e0b'
+          : $status === 'rejected'
+            ? '#ef4444'
+            : $status === 'completed'
+              ? '#3b82f6'
+              : '#9ca3af'};
+  }
+`;
+
+const ResetForm = styled.form`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
 `;
 
 const Actions = styled.div`

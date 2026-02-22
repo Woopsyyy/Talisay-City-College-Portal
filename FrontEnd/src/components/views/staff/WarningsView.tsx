@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import baseStyled from "styled-components";
-import { AlertTriangle, Filter, Search, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Filter, Gavel, Search, ShieldAlert, X } from "lucide-react";
 import { AdminAPI } from "../../../services/api";
 import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../utils/constants";
 import Toast from "../../common/Toast";
@@ -12,6 +12,9 @@ const WarningsView = () => {
   const [submitting, setSubmitting] = useState(false);
   const [records, setRecords] = useState([]);
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [activeModal, setActiveModal] = useState<"warning" | "sanction" | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
   const [filters, setFilters] = useState({
     query: "",
     school_year: "",
@@ -22,6 +25,10 @@ const WarningsView = () => {
   const [form, setForm] = useState({
     offense_level: "minor",
     description: "",
+  });
+  const [sanctionForm, setSanctionForm] = useState({
+    days: "",
+    reason: "",
   });
   const [toast, setToast] = useState({ show: false, message: "", type: "success" });
 
@@ -68,6 +75,22 @@ const WarningsView = () => {
     });
   }, [records, filters.query]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / itemsPerPage));
+  const paginatedRecords = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return filteredRecords.slice(start, start + itemsPerPage);
+  }, [filteredRecords, currentPage]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters.query, filters.department, filters.year, filters.section, filters.school_year]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
   const sectionOptions = useMemo(
     () =>
       Array.from(
@@ -86,17 +109,36 @@ const WarningsView = () => {
       return;
     }
     setSelectedRecord(record);
+    setActiveModal("warning");
     setForm({
       offense_level: "minor",
       description: "",
     });
   };
 
-  const closeWarningModal = () => {
+  const openSanctionModal = (record) => {
+    if (!record?.assignment_id) {
+      showToast("This student has no active assignment to update.", "error");
+      return;
+    }
+    setSelectedRecord(record);
+    setActiveModal("sanction");
+    setSanctionForm({
+      days: "",
+      reason: "",
+    });
+  };
+
+  const closeModal = () => {
     setSelectedRecord(null);
+    setActiveModal(null);
     setForm({
       offense_level: "minor",
       description: "",
+    });
+    setSanctionForm({
+      days: "",
+      reason: "",
     });
   };
 
@@ -118,17 +160,48 @@ const WarningsView = () => {
 
       if (result?.sanction_applied) {
         showToast(
-          `Warning recorded. Auto-sanction applied (${result.sanction_level || "minor"} offense).`,
+          `Warning recorded. Auto-sanction applied (${result.sanction_days || 0} days).`,
           "warning",
         );
       } else {
         showToast("Warning recorded successfully.");
       }
 
-      closeWarningModal();
+      closeModal();
       await loadRecords(filters);
     } catch (error) {
       showToast(error.message || "Failed to record warning.", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitSanction = async (event) => {
+    event.preventDefault();
+    if (!selectedRecord?.assignment_id) return;
+
+    const days = Number(sanctionForm.days);
+    if (!Number.isFinite(days) || days <= 0) {
+      showToast("Sanction days must be at least 1.", "error");
+      return;
+    }
+    if (!String(sanctionForm.reason || "").trim()) {
+      showToast("Sanction reason is required.", "error");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await AdminAPI.issueStudentSanction(selectedRecord.assignment_id, {
+        days,
+        reason: sanctionForm.reason,
+        school_year: filters.school_year || selectedRecord.school_year || null,
+      });
+      showToast("Sanction applied successfully.", "warning");
+      closeModal();
+      await loadRecords(filters);
+    } catch (error) {
+      showToast(error.message || "Failed to apply sanction.", "error");
     } finally {
       setSubmitting(false);
     }
@@ -142,7 +215,9 @@ const WarningsView = () => {
             <AlertTriangle size={30} />
             Student Warnings
           </h2>
-          <p>Issue warnings with required details. Every 3 warnings auto-applies a sanction.</p>
+          <p>
+            Minor: auto-sanction at 3 warnings (3 days). Major: immediate sanction (7 days).
+          </p>
         </div>
       </Header>
 
@@ -236,7 +311,7 @@ const WarningsView = () => {
                     <td colSpan={6}>No student records found.</td>
                   </tr>
                 ) : (
-                  filteredRecords.map((row) => (
+                  paginatedRecords.map((row) => (
                     <tr key={`${row.user_id}-${row.assignment_id || "none"}`}>
                       <td>
                         <strong>{row.full_name || row.username || `Student #${row.user_id}`}</strong>
@@ -251,10 +326,16 @@ const WarningsView = () => {
                         <CountBadge $danger>{row.sanction_count || 0}</CountBadge>
                       </td>
                       <td>
-                        <WarnButton type="button" onClick={() => openWarningModal(row)}>
-                          <ShieldAlert size={15} />
-                          Issue Warning
-                        </WarnButton>
+                        <ActionsGroup>
+                          <WarnButton type="button" onClick={() => openWarningModal(row)}>
+                            <ShieldAlert size={15} />
+                            Issue Warning
+                          </WarnButton>
+                          <SanctionButton type="button" onClick={() => openSanctionModal(row)}>
+                            <Gavel size={15} />
+                            Sanction
+                          </SanctionButton>
+                        </ActionsGroup>
                       </td>
                     </tr>
                   ))
@@ -263,54 +344,112 @@ const WarningsView = () => {
             </Table>
           </TableWrapper>
         )}
+
+        {totalPages > 1 && (
+          <PaginationRow>
+            <PageButton
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+            >
+              Previous
+            </PageButton>
+            <PageText>
+              Page {currentPage} of {totalPages}
+            </PageText>
+            <PageButton
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+            >
+              Next
+            </PageButton>
+          </PaginationRow>
+        )}
       </Card>
 
-      {selectedRecord && (
-        <ModalOverlay onClick={closeWarningModal}>
+      {selectedRecord && activeModal && (
+        <ModalOverlay onClick={closeModal}>
           <ModalContent onClick={(event) => event.stopPropagation()}>
             <ModalHeader>
-              <h3>Issue Warning</h3>
-              <CloseButton type="button" onClick={closeWarningModal}>
+              <h3>{activeModal === "warning" ? "Issue Warning" : "Apply Sanction"}</h3>
+              <CloseButton type="button" onClick={closeModal}>
                 <X size={18} />
               </CloseButton>
             </ModalHeader>
-            <form onSubmit={submitWarning}>
+            <form onSubmit={activeModal === "warning" ? submitWarning : submitSanction}>
               <ModalBody>
                 <p>
                   Student:{" "}
                   <strong>{selectedRecord.full_name || selectedRecord.username}</strong>
                 </p>
-                <FormGroup>
-                  <label>Offense Level</label>
-                  <Select
-                    value={form.offense_level}
-                    onChange={(event) =>
-                      setForm((prev) => ({ ...prev, offense_level: event.target.value }))
-                    }
-                  >
-                    <option value="minor">Minor Offense</option>
-                    <option value="major">Major Offense</option>
-                  </Select>
-                </FormGroup>
-                <FormGroup>
-                  <label>Description</label>
-                  <TextArea
-                    rows={4}
-                    required
-                    placeholder="Enter why this warning is being issued."
-                    value={form.description}
-                    onChange={(event) =>
-                      setForm((prev) => ({ ...prev, description: event.target.value }))
-                    }
-                  />
-                </FormGroup>
+                {activeModal === "warning" ? (
+                  <>
+                    <FormGroup>
+                      <label>Offense Level</label>
+                      <Select
+                        value={form.offense_level}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, offense_level: event.target.value }))
+                        }
+                      >
+                        <option value="minor">Minor Offense</option>
+                        <option value="major">Major Offense</option>
+                      </Select>
+                    </FormGroup>
+                    <FormGroup>
+                      <label>Description</label>
+                      <TextArea
+                        rows={4}
+                        required
+                        placeholder="Enter why this warning is being issued."
+                        value={form.description}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, description: event.target.value }))
+                        }
+                      />
+                    </FormGroup>
+                  </>
+                ) : (
+                  <>
+                    <FormGroup>
+                      <label>Sanction Days</label>
+                      <Input
+                        type="number"
+                        min={1}
+                        required
+                        placeholder="Enter sanction days"
+                        value={sanctionForm.days}
+                        onChange={(event) =>
+                          setSanctionForm((prev) => ({ ...prev, days: event.target.value }))
+                        }
+                      />
+                    </FormGroup>
+                    <FormGroup>
+                      <label>Reason</label>
+                      <TextArea
+                        rows={4}
+                        required
+                        placeholder="Enter why this sanction is being applied."
+                        value={sanctionForm.reason}
+                        onChange={(event) =>
+                          setSanctionForm((prev) => ({ ...prev, reason: event.target.value }))
+                        }
+                      />
+                    </FormGroup>
+                  </>
+                )}
               </ModalBody>
               <ModalFooter>
-                <SecondaryButton type="button" onClick={closeWarningModal}>
+                <SecondaryButton type="button" onClick={closeModal}>
                   Cancel
                 </SecondaryButton>
                 <PrimaryButton type="submit" disabled={submitting}>
-                  {submitting ? "Saving..." : "Save Warning"}
+                  {submitting
+                    ? "Saving..."
+                    : activeModal === "warning"
+                      ? "Save Warning"
+                      : "Apply Sanction"}
                 </PrimaryButton>
               </ModalFooter>
             </form>
@@ -382,6 +521,8 @@ const FilterInput = styled.input`
   background: var(--bg-primary);
   color: var(--text-primary);
 `;
+
+const Input = styled(FilterInput)``;
 
 const Select = styled.select`
   width: 100%;
@@ -455,6 +596,48 @@ const WarnButton = styled.button`
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
+`;
+
+const SanctionButton = styled(WarnButton)`
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.08);
+`;
+
+const ActionsGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const PaginationRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding-top: 1rem;
+`;
+
+const PageButton = styled.button`
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 0.45rem 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+`;
+
+const PageText = styled.span`
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.88rem;
 `;
 
 const ModalOverlay = styled.div`

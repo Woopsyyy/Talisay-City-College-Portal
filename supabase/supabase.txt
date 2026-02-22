@@ -1258,7 +1258,7 @@ begin
     raise exception 'Failed to sync password to Supabase Auth.';
   end if;
 
-  -- Close any leftover pending reset requests for this user after success.
+  -- Close any leftover pending/approved reset requests for this user after success.
   update public.account_requests
      set status = 'completed',
          resolved_by_user_id = v_user_id,
@@ -1267,7 +1267,7 @@ begin
          note = coalesce(note, 'Superseded by completed password reset.')
    where requester_user_id = v_user_id
      and lower(coalesce(request_type, '')) = 'password_reset'
-     and lower(coalesce(status, '')) = 'pending';
+     and lower(coalesce(status, '')) in ('pending', 'approved');
 
   perform public.app_log_status_event(
     p_action => 'password_reset_completed',
@@ -2226,6 +2226,512 @@ grant execute on function public.app_admin_set_user_password(bigint, text) to au
 grant execute on function public.app_public_stats() to anon, authenticated;
 
 -- Ensure PostgREST sees the latest RPC signatures immediately.
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- PASSWORD RESET REQUEST ONE-TIME ENFORCEMENT V5 (authoritative tail)
+-- ---------------------------------------------------------------------------
+create or replace function public.app_request_password_reset(
+  p_note text default null
+)
+returns table (
+  id bigint,
+  request_type text,
+  status text,
+  created_at timestamptz,
+  message text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_user public.users%rowtype;
+  v_existing public.account_requests%rowtype;
+  v_note text := nullif(trim(coalesce(p_note, '')), '');
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  select *
+    into v_existing
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(trim(coalesce(r.request_type, ''))) = 'password_reset'
+    and lower(trim(coalesce(r.status, ''))) in ('pending', 'approved')
+  order by
+    case
+      when lower(trim(coalesce(r.status, ''))) = 'approved' then 0
+      else 1
+    end,
+    coalesce(r.updated_at, r.created_at, to_timestamp(0)) desc,
+    r.id desc
+  limit 1;
+
+  if found then
+    return query
+    select
+      v_existing.id,
+      v_existing.request_type,
+      v_existing.status,
+      v_existing.created_at,
+      case
+        when lower(trim(coalesce(v_existing.status, ''))) = 'approved'
+          then 'Your password reset request is already approved. Please reset your password now.'::text
+        else 'A pending password reset request already exists.'::text
+      end;
+    return;
+  end if;
+
+  insert into public.account_requests (
+    request_type,
+    status,
+    requester_user_id,
+    requester_username,
+    requester_full_name,
+    requester_role,
+    note
+  )
+  values (
+    'password_reset',
+    'pending',
+    v_user.id,
+    v_user.username,
+    v_user.full_name,
+    lower(trim(coalesce(v_user.role, ''))),
+    v_note
+  )
+  returning * into v_existing;
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_request_submitted',
+    p_category => 'request',
+    p_message => format(
+      'Password reset request submitted by "%s".',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(trim(coalesce(v_user.role, ''))),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(trim(coalesce(v_user.role, ''))),
+    p_metadata => jsonb_build_object(
+      'request_id', v_existing.id,
+      'request_type', v_existing.request_type
+    )
+  );
+
+  return query
+  select
+    v_existing.id,
+    v_existing.request_type,
+    v_existing.status,
+    v_existing.created_at,
+    'Password reset request submitted.'::text;
+end;
+$$;
+
+create or replace function public.app_complete_approved_password_reset(
+  p_new_password text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_session_auth_uid uuid := auth.uid();
+  v_user public.users%rowtype;
+  v_request public.account_requests%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_auth_synced boolean := false;
+  v_created_auth_user boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  if length(coalesce(p_new_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_request
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(trim(coalesce(r.request_type, ''))) = 'password_reset'
+    and lower(trim(coalesce(r.status, ''))) = 'approved'
+  order by coalesce(r.updated_at, r.created_at, to_timestamp(0)) desc, r.id desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception 'No approved password reset request found.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Approved request completed by requester.')
+   where id = v_request.id
+     and lower(trim(coalesce(status, ''))) = 'approved';
+
+  if not found then
+    raise exception 'Approved password reset request has already been used.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  if v_session_auth_uid is not null then
+    update public.users
+       set auth_uid = v_session_auth_uid,
+           updated_at = now()
+     where id = v_user_id
+       and (auth_uid is null or auth_uid = v_session_auth_uid);
+  end if;
+
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+    into v_auth_uid,
+         v_auth_email,
+         v_auth_synced,
+         v_created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => p_new_password
+  ) p
+  limit 1;
+
+  if not coalesce(v_auth_synced, false) then
+    raise exception 'Failed to sync password to Supabase Auth.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Superseded by completed password reset.')
+   where requester_user_id = v_user_id
+     and lower(trim(coalesce(request_type, ''))) = 'password_reset'
+     and lower(trim(coalesce(status, ''))) in ('pending', 'approved');
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_completed',
+    p_category => 'request',
+    p_message => format(
+      'Password reset completed by "%s" after approval.',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(trim(coalesce(v_user.role, ''))),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(trim(coalesce(v_user.role, ''))),
+    p_metadata => jsonb_build_object(
+      'request_id', v_request.id,
+      'auth_synced', coalesce(v_auth_synced, false),
+      'auth_uid', v_auth_uid,
+      'auth_email', v_auth_email,
+      'created_auth_user', coalesce(v_created_auth_user, false)
+    )
+  );
+
+  return true;
+end;
+$$;
+
+grant execute on function public.app_request_password_reset(text) to authenticated;
+grant execute on function public.app_complete_approved_password_reset(text) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- PASSWORD RESET REQUEST ONE-TIME ENFORCEMENT V4 (must stay last)
+-- ---------------------------------------------------------------------------
+create or replace function public.app_request_password_reset(
+  p_note text default null
+)
+returns table (
+  id bigint,
+  request_type text,
+  status text,
+  created_at timestamptz,
+  message text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_user public.users%rowtype;
+  v_existing public.account_requests%rowtype;
+  v_note text := nullif(trim(coalesce(p_note, '')), '');
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  select *
+    into v_existing
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(trim(coalesce(r.request_type, ''))) = 'password_reset'
+    and lower(trim(coalesce(r.status, ''))) in ('pending', 'approved')
+  order by
+    case
+      when lower(trim(coalesce(r.status, ''))) = 'approved' then 0
+      else 1
+    end,
+    coalesce(r.updated_at, r.created_at, to_timestamp(0)) desc,
+    r.id desc
+  limit 1;
+
+  if found then
+    return query
+    select
+      v_existing.id,
+      v_existing.request_type,
+      v_existing.status,
+      v_existing.created_at,
+      case
+        when lower(trim(coalesce(v_existing.status, ''))) = 'approved'
+          then 'Your password reset request is already approved. Please reset your password now.'::text
+        else 'A pending password reset request already exists.'::text
+      end;
+    return;
+  end if;
+
+  insert into public.account_requests (
+    request_type,
+    status,
+    requester_user_id,
+    requester_username,
+    requester_full_name,
+    requester_role,
+    note
+  )
+  values (
+    'password_reset',
+    'pending',
+    v_user.id,
+    v_user.username,
+    v_user.full_name,
+    lower(trim(coalesce(v_user.role, ''))),
+    v_note
+  )
+  returning * into v_existing;
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_request_submitted',
+    p_category => 'request',
+    p_message => format(
+      'Password reset request submitted by "%s".',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(trim(coalesce(v_user.role, ''))),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(trim(coalesce(v_user.role, ''))),
+    p_metadata => jsonb_build_object(
+      'request_id', v_existing.id,
+      'request_type', v_existing.request_type
+    )
+  );
+
+  return query
+  select
+    v_existing.id,
+    v_existing.request_type,
+    v_existing.status,
+    v_existing.created_at,
+    'Password reset request submitted.'::text;
+end;
+$$;
+
+create or replace function public.app_complete_approved_password_reset(
+  p_new_password text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_session_auth_uid uuid := auth.uid();
+  v_user public.users%rowtype;
+  v_request public.account_requests%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_auth_synced boolean := false;
+  v_created_auth_user boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  if length(coalesce(p_new_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_request
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(trim(coalesce(r.request_type, ''))) = 'password_reset'
+    and lower(trim(coalesce(r.status, ''))) = 'approved'
+  order by coalesce(r.updated_at, r.created_at, to_timestamp(0)) desc, r.id desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception 'No approved password reset request found.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Approved request completed by requester.')
+   where id = v_request.id
+     and lower(trim(coalesce(status, ''))) = 'approved';
+
+  if not found then
+    raise exception 'Approved password reset request has already been used.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  if v_session_auth_uid is not null then
+    update public.users
+       set auth_uid = v_session_auth_uid,
+           updated_at = now()
+     where id = v_user_id
+       and (auth_uid is null or auth_uid = v_session_auth_uid);
+  end if;
+
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+    into v_auth_uid,
+         v_auth_email,
+         v_auth_synced,
+         v_created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => p_new_password
+  ) p
+  limit 1;
+
+  if not coalesce(v_auth_synced, false) then
+    raise exception 'Failed to sync password to Supabase Auth.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Superseded by completed password reset.')
+   where requester_user_id = v_user_id
+     and lower(trim(coalesce(request_type, ''))) = 'password_reset'
+     and lower(trim(coalesce(status, ''))) in ('pending', 'approved');
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_completed',
+    p_category => 'request',
+    p_message => format(
+      'Password reset completed by "%s" after approval.',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(trim(coalesce(v_user.role, ''))),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(trim(coalesce(v_user.role, ''))),
+    p_metadata => jsonb_build_object(
+      'request_id', v_request.id,
+      'auth_synced', coalesce(v_auth_synced, false),
+      'auth_uid', v_auth_uid,
+      'auth_email', v_auth_email,
+      'created_auth_user', coalesce(v_created_auth_user, false)
+    )
+  );
+
+  return true;
+end;
+$$;
+
+grant execute on function public.app_request_password_reset(text) to authenticated;
+grant execute on function public.app_complete_approved_password_reset(text) to authenticated;
+
 do $$
 begin
   perform pg_notify('pgrst', 'reload schema');
@@ -4009,7 +4515,7 @@ begin
          note = coalesce(note, 'Superseded by completed password reset.')
    where requester_user_id = v_user_id
      and lower(coalesce(request_type, '')) = 'password_reset'
-     and lower(coalesce(status, '')) = 'pending';
+     and lower(coalesce(status, '')) in ('pending', 'approved');
 
   perform public.app_log_status_event(
     p_action => 'password_reset_completed',
@@ -5404,6 +5910,145 @@ revoke execute on function public.app_ensure_auth_user_for_hash(bigint, text) fr
 grant execute on function public.app_login(text, text) to anon, authenticated;
 grant execute on function public.app_password_matches_user(bigint, text) to authenticated;
 grant execute on function public.app_register_user(text, text, text, text, text, uuid, timestamptz) to authenticated;
+
+do $$
+begin
+  perform pg_notify('pgrst', 'reload schema');
+exception
+  when undefined_function then
+    null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- PASSWORD RESET COMPLETE ONE-TIME ENFORCEMENT V6 (final tail)
+-- ---------------------------------------------------------------------------
+create or replace function public.app_complete_approved_password_reset(
+  p_new_password text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth, extensions
+as $$
+declare
+  v_user_id bigint := public.app_current_user_id();
+  v_session_auth_uid uuid := auth.uid();
+  v_user public.users%rowtype;
+  v_request public.account_requests%rowtype;
+  v_auth_uid uuid;
+  v_auth_email text;
+  v_auth_synced boolean := false;
+  v_created_auth_user boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.';
+  end if;
+
+  if length(coalesce(p_new_password, '')) < 8 then
+    raise exception 'Password must be at least 8 characters.';
+  end if;
+
+  select *
+    into v_request
+  from public.account_requests r
+  where r.requester_user_id = v_user_id
+    and lower(trim(coalesce(r.request_type, ''))) = 'password_reset'
+    and lower(trim(coalesce(r.status, ''))) = 'approved'
+  order by coalesce(r.updated_at, r.created_at, to_timestamp(0)) desc, r.id desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception 'No approved password reset request found.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Approved request completed by requester.')
+   where id = v_request.id
+     and lower(trim(coalesce(status, ''))) = 'approved';
+
+  if not found then
+    raise exception 'Approved password reset request has already been used.';
+  end if;
+
+  select *
+    into v_user
+  from public.users u
+  where u.id = v_user_id
+  limit 1;
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  if v_session_auth_uid is not null then
+    update public.users
+       set auth_uid = v_session_auth_uid,
+           updated_at = now()
+     where id = v_user_id
+       and (auth_uid is null or auth_uid = v_session_auth_uid);
+  end if;
+
+  select
+    p.auth_uid,
+    p.auth_email,
+    p.auth_synced,
+    p.created_auth_user
+    into v_auth_uid,
+         v_auth_email,
+         v_auth_synced,
+         v_created_auth_user
+  from public.app_ensure_auth_user_for_password(
+    p_user_id => v_user_id,
+    p_password => p_new_password
+  ) p
+  limit 1;
+
+  if not coalesce(v_auth_synced, false) then
+    raise exception 'Failed to sync password to Supabase Auth.';
+  end if;
+
+  update public.account_requests
+     set status = 'completed',
+         resolved_by_user_id = v_user_id,
+         resolved_at = now(),
+         updated_at = now(),
+         note = coalesce(note, 'Superseded by completed password reset.')
+   where requester_user_id = v_user_id
+     and lower(trim(coalesce(request_type, ''))) = 'password_reset'
+     and lower(trim(coalesce(status, ''))) in ('pending', 'approved');
+
+  perform public.app_log_status_event(
+    p_action => 'password_reset_completed',
+    p_category => 'request',
+    p_message => format(
+      'Password reset completed by "%s" after approval.',
+      coalesce(v_user.full_name, v_user.username, v_user.id::text)
+    ),
+    p_actor_user_id => v_user.id,
+    p_actor_username => v_user.username,
+    p_actor_role => lower(trim(coalesce(v_user.role, ''))),
+    p_target_user_id => v_user.id,
+    p_target_username => v_user.username,
+    p_target_role => lower(trim(coalesce(v_user.role, ''))),
+    p_metadata => jsonb_build_object(
+      'request_id', v_request.id,
+      'auth_synced', coalesce(v_auth_synced, false),
+      'auth_uid', v_auth_uid,
+      'auth_email', v_auth_email,
+      'created_auth_user', coalesce(v_created_auth_user, false)
+    )
+  );
+
+  return true;
+end;
+$$;
+
+grant execute on function public.app_complete_approved_password_reset(text) to authenticated;
 
 do $$
 begin

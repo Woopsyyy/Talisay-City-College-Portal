@@ -21,6 +21,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
     const [latestRequest, setLatestRequest] = useState(null);
     const [passwordForm, setPasswordForm] = useState({ password: "", confirm: "" });
     const [approvalConsumed, setApprovalConsumed] = useState(false);
+    const [consumedRequestId, setConsumedRequestId] = useState<number | null>(null);
 
     useEffect(() => {
         if (currentUser) {
@@ -57,12 +58,20 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
             const rows = await StudentAPI.getMyAccountRequests(20);
             const activeRequest = Array.isArray(rows)
                 ? rows.find((row) => {
-                    const status = String(row?.status || '').toLowerCase();
-                    return status === 'pending' || status === 'approved';
+                    const requestType = String(row?.request_type || '').trim().toLowerCase();
+                    const status = String(row?.status || '').trim().toLowerCase();
+                    return requestType === 'password_reset' && (status === 'pending' || status === 'approved');
                 })
                 : null;
             setLatestRequest(activeRequest || null);
             if (activeRequest) {
+                const activeId = Number(activeRequest?.id || 0);
+                if (consumedRequestId && activeId === consumedRequestId) {
+                    setApprovalConsumed(true);
+                } else {
+                    setApprovalConsumed(false);
+                }
+            } else {
                 setApprovalConsumed(false);
             }
         } catch (error: any) {
@@ -80,7 +89,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
         if (currentUser?.id) {
             loadResetRequests();
         }
-    }, [currentUser?.id]);
+    }, [currentUser?.id, consumedRequestId]);
 
     const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -158,8 +167,10 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
             if (!synced) {
                 throw new Error('Password was not synced to secure auth. Please contact admin.');
             }
+            const requestId = Number(latestRequest?.id || 0);
             setPasswordForm({ password: "", confirm: "" });
             setApprovalConsumed(true);
+            setConsumedRequestId(requestId > 0 ? requestId : null);
             setLatestRequest(null);
             await loadResetRequests();
             setMessage({

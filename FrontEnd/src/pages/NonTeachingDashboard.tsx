@@ -17,6 +17,7 @@ import {
   ShieldAlert,
   CreditCard,
   UserCheck,
+  Users,
 } from "lucide-react";
 import Loader from "../components/Loader";
 import ClockCard from "../components/common/ClockCard";
@@ -31,6 +32,7 @@ const SubjectsView = lazy(() => import("../components/views/admin/SubjectsView")
 const StudyLoadView = lazy(() => import("../components/views/admin/StudyLoadView"));
 const TeacherManagementView = lazy(() => import("../components/views/admin/TeacherManagementView"));
 const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
+const ManageStudentsView = lazy(() => import("../components/views/admin/ManageStudentsView"));
 const StaffSanctionsView = lazy(() => import("../components/views/staff/SanctionsView"));
 const StaffPaymentsView = lazy(() => import("../components/views/staff/PaymentsView"));
 const StaffWarningsView = lazy(() => import("../components/views/staff/WarningsView"));
@@ -137,6 +139,7 @@ const NonTeachingDashboard = () => {
   const ntNavItems = [
     { id: "study_load", icon: ClipboardList, label: "Study Load" },
     { id: "irregular_study_load", icon: UserCheck, label: "Irregular Study Load" },
+    { id: "manage_students", icon: Users, label: "Manage Students" },
     { id: "teacher_scheduling", icon: CalendarCheck, label: "Teacher Scheduling" },
     { id: "subjects", icon: BookOpen, label: "Subjects" },
     { id: "sections", icon: Layers, label: "Sections" },
@@ -180,6 +183,10 @@ const NonTeachingDashboard = () => {
     study_load: {
       title: "Study Load",
       copy: "Assign subject loads to sections based on course and year level requirements.",
+    },
+    manage_students: {
+      title: "Manage Students",
+      copy: "Assign and update section, year, department, major, and gender.",
     },
     irregular_study_load: {
       title: "Irregular Study Load",
@@ -237,6 +244,15 @@ const NonTeachingDashboard = () => {
         <Routes>
           {!isOsasMode && !isTreasuryMode && (
             <>
+              <Route
+                path="manage_students"
+                element={
+                  <ManageStudentsView
+                    mode="nt"
+                    onOpenIrregularStudyLoad={() => navigate("/nt/dashboard/irregular_study_load")}
+                  />
+                }
+              />
               <Route path="study_load" element={<StudyLoadView />} />
               <Route path="irregular_study_load" element={<IrregularStudyLoadView />} />
               <Route path="teacher_scheduling" element={<TeacherManagementView />} />

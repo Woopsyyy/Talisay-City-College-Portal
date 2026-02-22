@@ -12,6 +12,7 @@ import PageSkeleton from "./components/loaders/PageSkeleton";
 import { ThemeProvider } from "./context/ThemeContext";
 import { AuthProvider } from "./context/AuthContext";
 import { LoadingProvider } from "./context/LoadingContext";
+import RequiredAvatarModal from "./components/common/RequiredAvatarModal";
 import "./App.css";
 
 // Lazy load pages
@@ -68,6 +69,7 @@ function App() {
           <Router>
             <AppRoutes />
             <GlobalLoader />
+            <RequiredAvatarModal />
           </Router>
         </ThemeProvider>
       </AuthProvider>

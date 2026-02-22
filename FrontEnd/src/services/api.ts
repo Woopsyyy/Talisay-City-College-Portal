@@ -512,6 +512,14 @@ const parseNumber = (value, fallback = null) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
+const parsePositiveInteger = (value, fallback = null) => {
+  const parsed = parseNumber(value, fallback);
+  if (parsed == null || !Number.isFinite(Number(parsed))) return fallback;
+  const normalized = Math.floor(Number(parsed));
+  if (normalized <= 0) return fallback;
+  return normalized;
+};
+
 const toSmallintFlag = (value, fallback = 0) => {
   const normalizedFallback = Number(fallback) === 1 ? 1 : 0;
   if (value == null) return normalizedFallback;
@@ -813,7 +821,23 @@ const listStorageFilesRecursive = async (bucket, rootPrefix = "") => {
 const fetchUsersByIds = async (ids) => {
   const unique = Array.from(new Set((ids || []).filter(Boolean)));
   if (!unique.length) return new Map();
-  const { data, error } = await supabase.from("users").select(USER_SAFE_SELECT).in("id", unique);
+
+  let data: any[] | null = null;
+  let error: any = null;
+
+  const primary = await supabase
+    .from("users")
+    .select(`${USER_SAFE_SELECT},gender`)
+    .in("id", unique);
+  data = primary.data as any[] | null;
+  error = primary.error;
+
+  if (error && isMissingColumnError(error, "gender")) {
+    const fallback = await supabase.from("users").select(USER_SAFE_SELECT).in("id", unique);
+    data = fallback.data as any[] | null;
+    error = fallback.error;
+  }
+
   if (error) throw formatSupabaseError(error);
   const map = new Map();
   (data || []).forEach((row) => map.set(row.id, normalizeUser(row)));
@@ -947,6 +971,25 @@ const safeUserUpdate = async (userId: number, payload: LooseRecord): Promise<any
   }
 
   throw new Error("No valid user columns to update.");
+};
+
+const safeSyncUserGender = async (userId: number, gender: unknown): Promise<void> => {
+  const normalizedUserId = Number(userId);
+  const normalizedGender = String(gender || "").trim();
+  if (!Number.isFinite(normalizedUserId) || normalizedUserId <= 0) return;
+  if (!normalizedGender) return;
+
+  try {
+    await safeUserUpdate(normalizedUserId, {
+      gender: normalizedGender,
+      updated_at: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    if (isPermissionDeniedError(error) || isMissingColumnError(error, "gender")) {
+      return;
+    }
+    throw error;
+  }
 };
 
 export const getAvatarUrl = async (_userId, imagePath) => {
@@ -1328,9 +1371,20 @@ export const AuthAPI = {
 
         if (password) {
           const rawPassword = String(password);
-          const { error: authPasswordError } = await supabase.auth.updateUser({ password: rawPassword });
+          const isAdminUser = normalizeRole(currentUser?.role) === "admin";
+          if (!isAdminUser) {
+            throw new Error(
+              "Direct password change is disabled. Submit a password reset request and wait for approval.",
+            );
+          }
+          const { error: authPasswordError } = await supabase.auth.updateUser({
+            password: rawPassword,
+          });
           if (authPasswordError) {
-            throw formatSupabaseError(authPasswordError, "Failed to update auth password.");
+            throw formatSupabaseError(
+              authPasswordError,
+              "Failed to update auth password.",
+            );
           }
         }
 
@@ -1620,6 +1674,7 @@ const mapUserAssignmentRows = async (rows) => {
       username: user?.username || "",
       full_name: user?.full_name || user?.username || "",
       school_id: user?.school_id || "",
+      gender: user?.gender || "",
       image_path: user?.image_path || DEFAULT_AVATAR,
       year,
       year_level: year,
@@ -1813,7 +1868,8 @@ const matchesAssignmentFilters = (assignment: LooseRecord, filters: LooseRecord 
   const targetYear = String(filters?.year || filters?.year_level || "").trim().toLowerCase();
   const targetSection = String(filters?.section || "").trim().toLowerCase();
   const targetDepartment = String(filters?.department || "").trim().toLowerCase();
-  const targetSchoolYear = normalizeSchoolYearValue(filters?.school_year || "");
+  const schoolYearInput = String(filters?.school_year || "").trim();
+  const targetSchoolYear = schoolYearInput ? normalizeSchoolYearValue(schoolYearInput) : "";
 
   if (targetYear) {
     const assignmentYear = String(assignment?.year || assignment?.year_level || "")
@@ -1837,7 +1893,10 @@ const matchesAssignmentFilters = (assignment: LooseRecord, filters: LooseRecord 
   }
 
   if (targetSchoolYear) {
-    const assignmentSchoolYear = normalizeSchoolYearValue(assignment?.school_year || "");
+    const assignmentSchoolYearRaw = String(assignment?.school_year || "").trim();
+    const assignmentSchoolYear = assignmentSchoolYearRaw
+      ? normalizeSchoolYearValue(assignmentSchoolYearRaw)
+      : "";
     if (assignmentSchoolYear && assignmentSchoolYear !== targetSchoolYear) return false;
   }
 
@@ -3021,9 +3080,15 @@ export const AdminAPI = {
         p_user_id: assignmentRow.user_id,
         p_limit: 5000,
       });
-      const warningCount = (previousEvents || []).filter((event) =>
+      const warningEvents = (previousEvents || []).filter((event) =>
         String(event?.action || "").includes("warning"),
-      ).length + 1;
+      );
+      const warningCount = warningEvents.length + 1;
+      const priorMinorWarningCount = warningEvents.filter((event) => {
+        const level = normalizeOffenseLevel(event?.metadata?.offense_level, "");
+        return !level || level === "minor";
+      }).length;
+      const minorWarningCount = offenseLevel === "major" ? priorMinorWarningCount : priorMinorWarningCount + 1;
       const previousSanctions = (previousEvents || []).filter((event) =>
         String(event?.action || "").includes("sanction"),
       ).length;
@@ -3038,6 +3103,7 @@ export const AdminAPI = {
         metadata: {
           assignment_id: assignmentId,
           warning_count: warningCount,
+          minor_warning_count: minorWarningCount,
           description,
           offense_level: offenseLevel,
           school_year: schoolYear,
@@ -3049,11 +3115,14 @@ export const AdminAPI = {
 
       let sanctionApplied = false;
       let sanctionReason = "";
-      const shouldAutoSanction = warningCount > 0 && warningCount % 3 === 0;
+      let sanctionDays = 0;
+      const isMajorOffense = offenseLevel === "major";
+      const shouldAutoSanction =
+        isMajorOffense || (minorWarningCount > 0 && minorWarningCount % 3 === 0);
       if (shouldAutoSanction) {
         sanctionApplied = true;
-        const sanctionLabel = offenseLevel === "major" ? "Major offense" : "Minor offense";
-        sanctionReason = `${sanctionLabel} sanction: ${description}`;
+        sanctionDays = isMajorOffense ? 7 : 3;
+        sanctionReason = `${sanctionDays} days: ${description}`;
 
         const { error: sanctionUpdateError } = await supabase
           .from("user_assignments")
@@ -3071,14 +3140,18 @@ export const AdminAPI = {
           target_user_id: assignmentRow.user_id,
           target_username: targetUser?.username || null,
           target_role: targetUser?.role || "student",
-          message: `Auto-sanction applied to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}" after 3 warnings (${offenseLevel}).`,
+          message: isMajorOffense
+            ? `Major offense sanction applied immediately (${sanctionDays} days) to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}".`
+            : `Minor offense reached 3 warnings. Auto-sanction applied (${sanctionDays} days) to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}".`,
           metadata: {
             assignment_id: assignmentId,
             warning_count: warningCount,
+            minor_warning_count: minorWarningCount,
             sanction_count: previousSanctions + 1,
             sanction_level: offenseLevel,
+            sanction_days: sanctionDays,
             sanction_reason: sanctionReason,
-            source: "auto_after_three_warnings",
+            source: isMajorOffense ? "auto_major_immediate" : "auto_minor_three_warnings",
             school_year: schoolYear,
             section: sectionName,
             year_level: yearLevel,
@@ -3092,7 +3165,81 @@ export const AdminAPI = {
         warning_count: warningCount,
         sanction_applied: sanctionApplied,
         sanction_level: sanctionApplied ? offenseLevel : null,
+        sanction_days: sanctionApplied ? sanctionDays : null,
         sanction_reason: sanctionReason || null,
+      };
+    }),
+
+  issueStudentSanction: async (assignmentInput: any, payload: LooseRecord = {}) =>
+    withApi(async () => {
+      const assignmentId =
+        parseNumber(assignmentInput?.id, null) ?? parseNumber(assignmentInput, null);
+      if (!assignmentId) throw new Error("Invalid student assignment.");
+
+      const sanctionDays = parsePositiveInteger(payload?.days, null);
+      if (!sanctionDays) throw new Error("Sanction days must be at least 1.");
+
+      const reason = String(payload?.reason || payload?.description || "").trim();
+      if (!reason) throw new Error("Sanction reason is required.");
+
+      const offenseLevel = normalizeOffenseLevel(payload?.offense_level || payload?.level, "");
+
+      const { data: assignmentRow, error: assignmentError } = await supabase
+        .from("user_assignments")
+        .select("*")
+        .eq("id", assignmentId)
+        .limit(1)
+        .maybeSingle();
+      if (assignmentError) throw formatSupabaseError(assignmentError);
+      if (!assignmentRow?.user_id) throw new Error("Student assignment not found.");
+
+      const targetUser = await fetchUserLogSnapshot(assignmentRow.user_id).catch(() => null);
+      const schoolYear = normalizeSchoolYearValue(
+        payload?.school_year || assignmentRow?.school_year || currentSchoolYear(),
+      );
+      const sectionName = String(assignmentRow?.section || payload?.section || "").trim();
+      const yearLevel = normalizeYearLevel(
+        payload?.year_level || assignmentRow?.year_level || assignmentRow?.grade_level || "",
+      );
+      const department = String(payload?.department || assignmentRow?.department || "").trim();
+      const sanctionReason = `${sanctionDays} days: ${reason}`;
+
+      const { error: sanctionUpdateError } = await supabase
+        .from("user_assignments")
+        .update({
+          sanctions: 1,
+          sanction_reason: sanctionReason,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", assignmentId);
+      if (sanctionUpdateError) throw formatSupabaseError(sanctionUpdateError);
+
+      await logStatusEvent({
+        action: "student_sanction_applied",
+        category: "discipline",
+        target_user_id: assignmentRow.user_id,
+        target_username: targetUser?.username || null,
+        target_role: targetUser?.role || "student",
+        message: `Manual sanction applied (${sanctionDays} days) to "${targetUser?.full_name || targetUser?.username || assignmentRow.user_id}": ${reason}`,
+        metadata: {
+          assignment_id: assignmentId,
+          sanction_level: offenseLevel || null,
+          sanction_days: sanctionDays,
+          sanction_reason: sanctionReason,
+          source: "manual_sanction",
+          school_year: schoolYear,
+          section: sectionName,
+          year_level: yearLevel,
+          department,
+        },
+      });
+
+      return {
+        success: true,
+        sanction_applied: true,
+        sanction_days: sanctionDays,
+        sanction_level: offenseLevel || null,
+        sanction_reason: sanctionReason,
       };
     }),
 
@@ -3103,11 +3250,21 @@ export const AdminAPI = {
         throw new Error("Payment amount must be greater than 0.");
       }
 
+      const deadlineInput = String(payload?.deadline || payload?.payment_deadline || "").trim();
+      let normalizedDeadline: string | null = null;
+      if (deadlineInput) {
+        const deadlineDate = new Date(deadlineInput);
+        if (Number.isNaN(deadlineDate.getTime())) {
+          throw new Error("Deadline must be a valid date.");
+        }
+        normalizedDeadline = deadlineDate.toISOString().slice(0, 10);
+      }
+
       const filters = {
         department: String(payload?.department || "").trim(),
         year: String(payload?.year || payload?.year_level || "").trim(),
         section: String(payload?.section || "").trim(),
-        school_year: normalizeSchoolYearValue(payload?.school_year || currentSchoolYear()),
+        school_year: String(payload?.school_year || "").trim(),
       };
 
       if (!filters.department && !filters.year && !filters.section) {
@@ -3149,7 +3306,10 @@ export const AdminAPI = {
               assignment_id: assignment.id,
               amount,
               reason,
-              school_year: filters.school_year,
+              deadline: normalizedDeadline,
+              school_year: filters.school_year
+                ? normalizeSchoolYearValue(filters.school_year)
+                : null,
               department: assignment.department || filters.department || null,
               year_level: assignment.year_level || assignment.year || filters.year || null,
               section: assignment.section || filters.section || null,
@@ -3165,6 +3325,97 @@ export const AdminAPI = {
       };
     }),
 
+  recordStudentPayment: async (assignmentInput: any, payload: LooseRecord = {}) =>
+    withApi(async () => {
+      const assignmentId =
+        parseNumber(assignmentInput?.id, null) ?? parseNumber(assignmentInput, null);
+      if (!assignmentId) throw new Error("Invalid student assignment.");
+
+      const paidAmount = parseNumber(payload?.amount, null);
+      if (!Number.isFinite(paidAmount) || Number(paidAmount) <= 0) {
+        throw new Error("Paid amount must be greater than 0.");
+      }
+
+      const paymentReason = String(payload?.reason || payload?.description || "").trim();
+      if (!paymentReason) throw new Error("Payment reason is required.");
+
+      const { data: assignmentRow, error: assignmentError } = await supabase
+        .from("user_assignments")
+        .select("*")
+        .eq("id", assignmentId)
+        .limit(1)
+        .maybeSingle();
+      if (assignmentError) throw formatSupabaseError(assignmentError);
+      if (!assignmentRow?.user_id) throw new Error("Student assignment not found.");
+
+      const previousAmount = parseNumber(assignmentRow.amount_lacking, 0) || 0;
+      if (previousAmount <= 0) {
+        throw new Error("This student has no pending amount to pay.");
+      }
+
+      const normalizedPaidAmount = Math.min(previousAmount, Number(paidAmount));
+      const remainingAmount = Math.max(0, Number((previousAmount - normalizedPaidAmount).toFixed(2)));
+      const nextPaymentStatus = remainingAmount > 0 ? "owing" : "paid";
+      const nowIso = new Date().toISOString();
+
+      const { data: updatedAssignment, error: updateError } = await supabase
+        .from("user_assignments")
+        .update({
+          payment: nextPaymentStatus,
+          amount_lacking: remainingAmount,
+          updated_at: nowIso,
+        })
+        .eq("id", assignmentId)
+        .select("*")
+        .single();
+      if (updateError) throw formatSupabaseError(updateError);
+
+      const targetUser = await fetchUserLogSnapshot(updatedAssignment.user_id).catch(() => null);
+      const schoolYear = normalizeSchoolYearValue(
+        payload?.school_year || updatedAssignment?.school_year || currentSchoolYear(),
+      );
+      const sectionName = String(updatedAssignment?.section || assignmentRow?.section || "").trim();
+      const yearLevel = normalizeYearLevel(
+        updatedAssignment?.year_level || assignmentRow?.year_level || "",
+      );
+      const department = String(
+        updatedAssignment?.department || assignmentRow?.department || "",
+      ).trim();
+
+      await logStatusEvent({
+        action: remainingAmount > 0 ? "payment_partial_received" : "payment_settled",
+        category: "payment",
+        target_user_id: updatedAssignment.user_id,
+        target_username: targetUser?.username || null,
+        target_role: targetUser?.role || "student",
+        message: remainingAmount > 0
+          ? `Payment received from "${targetUser?.full_name || targetUser?.username || updatedAssignment.user_id}": PHP ${normalizedPaidAmount.toFixed(2)} for ${paymentReason}. Remaining balance: PHP ${remainingAmount.toFixed(2)}.`
+          : `Payment settled for "${targetUser?.full_name || targetUser?.username || updatedAssignment.user_id}": PHP ${normalizedPaidAmount.toFixed(2)} for ${paymentReason}.`,
+        metadata: {
+          assignment_id: assignmentId,
+          paid_amount: normalizedPaidAmount,
+          reason: paymentReason,
+          previous_amount_lacking: previousAmount,
+          remaining_amount_lacking: remainingAmount,
+          payment_status_after: nextPaymentStatus,
+          school_year: schoolYear,
+          section: sectionName,
+          year_level: yearLevel,
+          department,
+          source: "treasury_paid_button",
+        },
+      });
+
+      const mapped = await mapUserAssignmentRows([updatedAssignment]);
+      return {
+        success: true,
+        assignment: mapped[0] || updatedAssignment,
+        paid_amount: normalizedPaidAmount,
+        remaining_amount_lacking: remainingAmount,
+        payment_status: nextPaymentStatus,
+      };
+    }),
+
   getPaymentRecords: async (filters: LooseRecord = {}) =>
     withApi(async () => {
       const allAssignments = await AdminAPI.getUserAssignments();
@@ -3172,7 +3423,8 @@ export const AdminAPI = {
         matchesAssignmentFilters(assignment, filters),
       );
 
-      const schoolYear = normalizeSchoolYearValue(filters?.school_year || currentSchoolYear());
+      const schoolYearInput = String(filters?.school_year || "").trim();
+      const schoolYear = schoolYearInput ? normalizeSchoolYearValue(schoolYearInput) : "";
       const events = await fetchScopedRecordEvents("app_get_payment_records", {
         p_school_year: schoolYear || null,
         p_department: String(filters?.department || "").trim() || null,
@@ -3195,9 +3447,15 @@ export const AdminAPI = {
           year_level: assignment.year_level || assignment.year || "",
           section: assignment.section || assignment.section_name || "",
           department: assignment.department || "",
-          school_year: normalizeSchoolYearValue(assignment.school_year || schoolYear),
+          school_year: assignment.school_year
+            ? normalizeSchoolYearValue(assignment.school_year)
+            : schoolYear || null,
           payment_status: assignment.payment || "paid",
           amount_lacking: parseNumber(assignment.amount_lacking, 0) || 0,
+          deadline: String(
+            assignment.payment_deadline || assignment.deadline || assignment.due_date || "",
+          ).trim(),
+          warning_issued: false,
           receipt_count: 0,
           last_payment_at: null,
           receipts: [],
@@ -3218,9 +3476,13 @@ export const AdminAPI = {
             year_level: String(event?.metadata?.year_level || "").trim(),
             section: String(event?.metadata?.section || "").trim(),
             department: String(event?.metadata?.department || "").trim(),
-            school_year: normalizeSchoolYearValue(event?.metadata?.school_year || schoolYear),
+            school_year: event?.metadata?.school_year
+              ? normalizeSchoolYearValue(event.metadata.school_year)
+              : schoolYear || null,
             payment_status: "paid",
             amount_lacking: 0,
+            deadline: "",
+            warning_issued: false,
             receipt_count: 0,
             last_payment_at: null,
             receipts: [],
@@ -3234,10 +3496,36 @@ export const AdminAPI = {
           summary.last_payment_at = event.created_at || summary.last_payment_at;
         }
 
-        const amountFromEvent = parseNumber(event?.metadata?.amount, null);
-        if (amountFromEvent != null && amountFromEvent >= 0) {
-          summary.amount_lacking = amountFromEvent;
-          summary.payment_status = amountFromEvent > 0 ? "owing" : "paid";
+        const eventDeadline = String(
+          event?.metadata?.deadline || event?.metadata?.payment_deadline || "",
+        ).trim();
+        if (eventDeadline) {
+          summary.deadline = eventDeadline;
+        }
+
+        const eventAction = String(event?.action || "")
+          .trim()
+          .toLowerCase();
+        const amountAfterUpdate =
+          parseNumber(event?.metadata?.remaining_amount_lacking, null) ??
+          parseNumber(event?.metadata?.next_amount_lacking, null) ??
+          parseNumber(event?.metadata?.amount_lacking, null);
+        const assignedAmount = parseNumber(event?.metadata?.amount, null);
+
+        if (amountAfterUpdate != null && amountAfterUpdate >= 0) {
+          summary.amount_lacking = amountAfterUpdate;
+          summary.payment_status = amountAfterUpdate > 0 ? "owing" : "paid";
+        } else if (
+          eventAction === "payment_lacking_assigned" &&
+          assignedAmount != null &&
+          assignedAmount >= 0
+        ) {
+          summary.amount_lacking = assignedAmount;
+          summary.payment_status = assignedAmount > 0 ? "owing" : "paid";
+        }
+
+        if (eventAction === "payment_deadline_warning_issued") {
+          summary.warning_issued = true;
         }
       });
 
@@ -3268,6 +3556,67 @@ export const AdminAPI = {
         };
       }
       return row;
+    }),
+
+  warnOverduePayments: async (rows: any[] = []) =>
+    withApi(async () => {
+      const now = new Date();
+      let warnedCount = 0;
+
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const paymentStatus = String(row?.payment_status || row?.payment || "")
+          .trim()
+          .toLowerCase();
+        if (paymentStatus !== "owing") continue;
+
+        const deadlineRaw = String(row?.deadline || row?.payment_deadline || "").trim();
+        if (!deadlineRaw) continue;
+        const deadlineDate = new Date(deadlineRaw);
+        if (Number.isNaN(deadlineDate.getTime())) continue;
+
+        const normalizedDeadline = deadlineDate.toISOString().slice(0, 10);
+        const deadlineCutoff = new Date(`${normalizedDeadline}T23:59:59.999`);
+        if (Number.isNaN(deadlineCutoff.getTime()) || now <= deadlineCutoff) continue;
+
+        const assignmentId = parseNumber(row?.assignment_id, null);
+        const targetUserId = parseNumber(row?.user_id, null);
+        if (!targetUserId) continue;
+
+        const existingWarning = (Array.isArray(row?.receipts) ? row.receipts : []).some((event) => {
+          const action = String(event?.action || "")
+            .trim()
+            .toLowerCase();
+          if (action !== "payment_deadline_warning_issued") return false;
+
+          const eventAssignmentId = parseNumber(event?.metadata?.assignment_id, null);
+          const eventDeadline = String(event?.metadata?.deadline || "").trim();
+          if (eventDeadline && eventDeadline !== normalizedDeadline) return false;
+          if (assignmentId && eventAssignmentId && assignmentId !== eventAssignmentId) return false;
+          return true;
+        });
+        if (existingWarning) continue;
+
+        await logStatusEvent({
+          action: "payment_deadline_warning_issued",
+          category: "payment",
+          target_user_id: targetUserId,
+          target_username: row?.username || null,
+          target_role: "student",
+          message: `Payment deadline reached for "${row?.full_name || row?.username || targetUserId}". Please settle outstanding balance.`,
+          metadata: {
+            assignment_id: assignmentId,
+            deadline: normalizedDeadline,
+            amount_lacking: parseNumber(row?.amount_lacking, 0) || 0,
+            department: row?.department || null,
+            year_level: row?.year_level || row?.year || null,
+            section: row?.section || null,
+            source: "treasury_overdue_check",
+          },
+        });
+        warnedCount += 1;
+      }
+
+      return { warned_count: warnedCount };
     }),
 
   createUserAssignment: async (payload) =>
@@ -3325,6 +3674,9 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      await safeSyncUserGender(userId, payload?.gender);
+
       const mapped = await mapUserAssignmentRows([data]);
       return mapped[0] || data;
     }),
@@ -3396,6 +3748,8 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      await safeSyncUserGender(data?.user_id || previousAssignment?.user_id, payload?.gender);
 
       const previousStatus = normalizeStudentStatusValue(previousAssignment?.student_status).toLowerCase();
       const nextStatus = normalizeStudentStatusValue(data?.student_status).toLowerCase();

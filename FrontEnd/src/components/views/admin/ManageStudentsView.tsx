@@ -4,11 +4,12 @@ const styled = baseStyled as any;
 import { AdminAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
-import { Search, UserPlus, Users, Layers, BookOpen, GraduationCap, X, Check, Save, Trash2, Filter, AlertCircle, Edit, ShieldAlert, CreditCard, UserCheck } from 'lucide-react';
+import { Search, UserPlus, Users, Layers, BookOpen, GraduationCap, X, Check, Save, Trash2, Filter, AlertCircle, Edit, ShieldAlert, CreditCard, UserCheck, RefreshCw, MapPin, Clock3, Eraser } from 'lucide-react';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import SkeletonLoader from '../../loaders/SkeletonLoader';
 
+const NO_SECTION_FILTER_VALUE = '__NO_SECTION__';
 
 const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) => {
     const { user: authUser } = useAuth();
@@ -20,6 +21,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
     const isDeanOrNt = mode === 'dean' || mode === 'nt';
     const isDefault = !mode || mode === 'admin';
     const isAdmin = isActualAdmin && isDefault;
+    const showAcademicFields = isDefault || isDeanOrNt;
     
     // Determine what to show
     const showPayments = (isDefault && isActualAdmin) || isTreasury;
@@ -51,6 +53,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         section: '',
         department: '',
         major: '',
+        gender: '',
         lacking_payment: 'no', 
         amount_lacking: '',
         has_sanction: 'no',    
@@ -68,6 +71,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         section: '',
         department: '',
         major: '',
+        gender: '',
         lacking_payment: 'all', // 'all' | 'paid' | 'lacking'
         has_sanctions: 'all'    // 'all' | 'with' | 'without'
     });
@@ -125,6 +129,17 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
 
              if (name === 'lacking_payment' && value === 'no') {
                  newData.amount_lacking = ''; 
+             }
+
+             if (name === 'department') {
+                 if (!value) {
+                     newData.major = '';
+                 } else {
+                     const allowedMajors = COURSE_MAJOR_CONFIG[value] || [];
+                     if (!allowedMajors.includes(newData.major)) {
+                         newData.major = '';
+                     }
+                 }
              }
              
              if (name === 'has_sanction' && value === 'yes') {
@@ -195,6 +210,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
             section: assignment.section || '',
             department: assignment.department || '',
             major: assignment.major || '',
+            gender: assignment.gender || '',
             lacking_payment: assignment.payment === 'owing' ? 'yes' : 'no',
             amount_lacking: assignment.amount_lacking || '',
             has_sanction: assignment.sanctions || assignment.sanctions === 1 ? 'yes' : 'no',
@@ -204,14 +220,24 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         setIsAssignmentModalOpen(true);
     };
 
+    const parseSanctionReason = (rawReason = '') => {
+        const cleanReason = String(rawReason || '').trim();
+        const daysMatch = cleanReason.match(/(\d+)\s*days?/i);
+        const days = daysMatch ? Number(daysMatch[1]) : 0;
+        const reason = cleanReason.replace(/^\d+\s*days?:\s*/i, '').trim();
+        return {
+            days,
+            reason,
+            hasDays: days > 0
+        };
+    };
+
     const handleViewSanction = (assignment) => {
         const existingReason = assignment.sanction_reason || '';
-        const daysMatch = existingReason.match(/(\d+)\s*days?/i);
-        const days = daysMatch ? daysMatch[1] : '';
-        const reason = existingReason.replace(/^\d+\s*days?:\s*/i, '').trim();
+        const parsed = parseSanctionReason(existingReason);
         
         setAssignForm(prev => ({ ...prev, id: assignment.id, sanction_reason: existingReason }));
-        setSanctionDetails({ days, reason });
+        setSanctionDetails({ days: parsed.days ? String(parsed.days) : '', reason: parsed.reason });
         setIsSanctionModalOpen(true);
     };
 
@@ -225,6 +251,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
             section: '',
             department: '',
             major: '',
+            gender: '',
             lacking_payment: 'no',
             amount_lacking: '',
             has_sanction: 'no',
@@ -251,6 +278,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                 section: assignForm.section,
                 department: assignForm.department,
                 major: assignForm.major,
+                gender: assignForm.gender || null,
                 payment: assignForm.lacking_payment === 'yes' ? 'owing' : 'paid',
                 amount_lacking: assignForm.lacking_payment === 'yes' ? assignForm.amount_lacking : null,
                 sanctions: assignForm.has_sanction === 'yes',
@@ -275,13 +303,28 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         }
     };
 
-     const handleFilterChange = (e) => {
+    const handleFilterChange = (e) => {
         const { name, value } = e.target;
         setFilters(prev => ({
             ...prev,
-            [name]: value
+            [name]: value,
+            ...(name === 'department' ? { major: '' } : {})
         }));
         setCurrentPage(1); // Reset to page 1 on filter change
+    };
+
+    const handleResetFilters = () => {
+        setFilters({
+            query: '',
+            year: '',
+            section: '',
+            department: '',
+            major: '',
+            gender: '',
+            lacking_payment: 'all',
+            has_sanctions: 'all'
+        });
+        setCurrentPage(1);
     };
 
     const handleDelete = (id) => {
@@ -343,6 +386,35 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         }
     };
 
+    const handleReduceSanctionDays = async (assignment) => {
+        const parsed = parseSanctionReason(assignment?.sanction_reason || '');
+        if (!assignment?.id || !parsed.hasDays) {
+            showToast('No sanction days to reduce for this student.', 'error');
+            return;
+        }
+
+        const nextDays = parsed.days - 1;
+        if (nextDays <= 0) {
+            await handleClearSanction(assignment.id);
+            return;
+        }
+
+        const nextReason = `${nextDays} days: ${parsed.reason || 'Sanction active'}`;
+        try {
+            setLoading(true);
+            await AdminAPI.updateUserAssignment(assignment.id, {
+                sanctions: true,
+                sanction_reason: nextReason
+            });
+            showToast('Sanction days reduced.');
+            fetchData();
+        } catch (err) {
+            showToast(`Error reducing sanction days: ${err.message}`, 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleMarkPaid = async (assignmentId) => {
         try {
             setLoading(true);
@@ -373,11 +445,46 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         }
     };
 
-    const availableSections = useMemo(() => [...new Set(sections.map(s => s.section_name))].sort(), [sections]);
+    const getSectionName = (assignment) => String(assignment?.section || assignment?.section_name || '').trim();
+    const hasSection = (assignment) => Boolean(getSectionName(assignment));
+
+    const availableSections = useMemo(
+        () =>
+            [...new Set(sections.map((s) => String(s.section_name || '').trim()).filter(Boolean))].sort(),
+        [sections]
+    );
     const availableDepartments = useMemo(() => Object.keys(COURSE_MAJOR_CONFIG), []);
+    const availableGenders = useMemo(
+        () =>
+            Array.from(
+                new Set(
+                    (assignments || [])
+                        .map((assignment) => String(assignment?.gender || '').trim())
+                        .filter(Boolean),
+                ),
+            ).sort((a, b) => a.localeCompare(b)),
+        [assignments],
+    );
     const filterMajorsOptions = useMemo(
         () => (filters.department ? COURSE_MAJOR_CONFIG[filters.department] : []),
         [filters.department]
+    );
+
+    const assignmentsWithoutSectionCount = useMemo(
+        () => assignments.filter((assignment) => !hasSection(assignment)).length,
+        [assignments]
+    );
+    const assignmentsWithSectionCount = useMemo(
+        () => assignments.filter((assignment) => hasSection(assignment)).length,
+        [assignments]
+    );
+    const assignmentsWithOwingCount = useMemo(
+        () => assignments.filter((assignment) => assignment?.payment === 'owing').length,
+        [assignments]
+    );
+    const assignmentsWithSanctionCount = useMemo(
+        () => assignments.filter((assignment) => assignment?.sanctions === true || assignment?.sanctions === 1).length,
+        [assignments]
     );
     
     const getYearFromLevel = (level) => {
@@ -386,23 +493,47 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         return match ? match[1] : level;
     };
 
-    const modalSections = sections
-        .slice()
-        .sort((a, b) => a.section_name.localeCompare(b.section_name));
+    const modalSections = useMemo(
+        () =>
+            sections
+                .slice()
+                .sort((a, b) => a.section_name.localeCompare(b.section_name)),
+        [sections],
+    );
+
+    const modalMajorOptions = useMemo(
+        () => (assignForm.department ? COURSE_MAJOR_CONFIG[assignForm.department] || [] : []),
+        [assignForm.department],
+    );
+
+    const modalSectionsByScope = useMemo(() => {
+        return modalSections.filter((section) => {
+            const sectionYear = getYearFromLevel(section.grade_level);
+            const sectionDepartment = section.course || section.department || '';
+            if (assignForm.year && String(sectionYear) !== String(assignForm.year)) return false;
+            if (assignForm.department && String(sectionDepartment) !== String(assignForm.department)) return false;
+            return true;
+        });
+    }, [modalSections, assignForm.year, assignForm.department]);
 
      const filteredAssignments = useMemo(() => assignments.filter(a => {
         if (filters.query) {
             const q = filters.query.toLowerCase();
             const matchName = a.username?.toLowerCase().includes(q) || a.full_name?.toLowerCase().includes(q);
-            const matchSection = a.section?.toLowerCase().includes(q);
+            const sectionName = getSectionName(a);
+            const matchSection = sectionName.toLowerCase().includes(q);
             const matchDept = a.department?.toLowerCase().includes(q);
             const matchMajor = a.major?.toLowerCase().includes(q);
-            if (!(matchName || matchSection || matchDept || matchMajor)) return false;
+            const matchGender = String(a.gender || '').toLowerCase().includes(q);
+            if (!(matchName || matchSection || matchDept || matchMajor || matchGender)) return false;
         }
         if (filters.year && String(a.year) !== String(filters.year)) return false;
-        if (filters.section && a.section !== filters.section) return false;
+        const currentSection = getSectionName(a);
+        if (filters.section === NO_SECTION_FILTER_VALUE && currentSection) return false;
+        if (filters.section && filters.section !== NO_SECTION_FILTER_VALUE && currentSection !== filters.section) return false;
         if (filters.department && a.department !== filters.department) return false;
         if (filters.major && a.major !== filters.major) return false;
+        if (filters.gender && String(a.gender || '').toLowerCase() !== String(filters.gender || '').toLowerCase()) return false;
         
         // Detailed Payment Filter
         if (filters.lacking_payment === 'lacking' && a.payment !== 'owing') return false;
@@ -452,8 +583,50 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                 />
             )}
 
+            <StatsGrid>
+                <StatCard>
+                    <StatIcon><Users size={20} /></StatIcon>
+                    <div>
+                        <StatValue>{assignments.length}</StatValue>
+                        <StatLabel>Total Tracked Students</StatLabel>
+                    </div>
+                </StatCard>
+                <StatCard>
+                    <StatIcon><Layers size={20} /></StatIcon>
+                    <div>
+                        <StatValue>{assignmentsWithSectionCount}</StatValue>
+                        <StatLabel>With Section</StatLabel>
+                    </div>
+                </StatCard>
+                <StatCard className="warn">
+                    <StatIcon><MapPin size={20} /></StatIcon>
+                    <div>
+                        <StatValue>{assignmentsWithoutSectionCount}</StatValue>
+                        <StatLabel>No Section Assigned</StatLabel>
+                    </div>
+                </StatCard>
+                {showPayments && (
+                    <StatCard className="danger">
+                        <StatIcon><CreditCard size={20} /></StatIcon>
+                        <div>
+                            <StatValue>{assignmentsWithOwingCount}</StatValue>
+                            <StatLabel>With Balance</StatLabel>
+                        </div>
+                    </StatCard>
+                )}
+                {showSanctions && (
+                    <StatCard className="danger">
+                        <StatIcon><ShieldAlert size={20} /></StatIcon>
+                        <div>
+                            <StatValue>{assignmentsWithSanctionCount}</StatValue>
+                            <StatLabel>With Sanctions</StatLabel>
+                        </div>
+                    </StatCard>
+                )}
+            </StatsGrid>
+
             <div className="row g-4 mb-5">
-                {isActualAdmin && isDefault && (
+                {(isActualAdmin && isDefault) || isDeanOrNt ? (
                     <div className="col-12">
                         <Card style={{ overflow: 'visible' }}>
                             <CardHeader>
@@ -493,49 +666,93 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                             </CardBody>
                         </Card>
                     </div>
-                )}
+                ) : null}
 
                 <div className="col-12">
                     <Card>
                         <CardHeader>
-                            <FilterIconWrapper><Filter size={20} /></FilterIconWrapper>
-                            <h3>Filter Records</h3>
+                            <CardHeaderTitle>
+                                <FilterIconWrapper><Filter size={20} /></FilterIconWrapper>
+                                <h3>Filter Records</h3>
+                            </CardHeaderTitle>
+                            <HeaderActions>
+                                <FilterHint>{filteredAssignments.length} result{filteredAssignments.length === 1 ? '' : 's'}</FilterHint>
+                                <OutlineButton type="button" onClick={handleResetFilters} title="Reset all filters">
+                                    <RefreshCw size={15} />
+                                    Reset
+                                </OutlineButton>
+                            </HeaderActions>
                         </CardHeader>
                         <CardBody className="p-4">
                             <div className="row g-3">
                                 <div className="col-md-12">
+                                    <FieldLabel>
+                                        <Search size={14} />
+                                        Search
+                                    </FieldLabel>
                                      <Input
                                         type="text"
                                         name="query"
-                                        placeholder="Search by full name, section, department, or major..."
+                                        placeholder="Search by full name, section, department, major, or gender..."
                                         value={filters.query}
                                         onChange={handleFilterChange}
                                     />
                                 </div>
                                 <div className="col-md-3">
+                                    <FieldLabel>
+                                        <GraduationCap size={14} />
+                                        Year
+                                    </FieldLabel>
                                     <Select name="year" value={filters.year} onChange={handleFilterChange}>
                                         <option value="">All Years</option>
                                         {YEAR_LEVEL_OPTIONS.map(y => <option key={y} value={y}>{y} Year</option>)}
                                     </Select>
                                 </div>
                                 <div className="col-md-3">
+                                    <FieldLabel>
+                                        <MapPin size={14} />
+                                        Section
+                                    </FieldLabel>
                                     <Select name="section" value={filters.section} onChange={handleFilterChange}>
                                         <option value="">All Sections</option>
+                                        <option value={NO_SECTION_FILTER_VALUE}>No Section Assigned</option>
                                         {availableSections.map(s => <option key={s} value={s}>{s}</option>)}
                                     </Select>
                                 </div>
-                                {!isDeanOrNt && (
+                                {showAcademicFields && (
                                     <>
                                         <div className="col-md-3">
+                                            <FieldLabel>
+                                                <BookOpen size={14} />
+                                                Department
+                                            </FieldLabel>
                                             <Select name="department" value={filters.department} onChange={handleFilterChange}>
                                                 <option value="">All Departments</option>
                                                 {availableDepartments.map(d => <option key={d} value={d}>{d}</option>)}
                                             </Select>
                                         </div>
                                         <div className="col-md-3">
+                                            <FieldLabel>
+                                                <Layers size={14} />
+                                                Major
+                                            </FieldLabel>
                                             <Select name="major" value={filters.major} onChange={handleFilterChange}>
                                                 <option value="">All Majors</option>
                                                 {filterMajorsOptions.map(m => <option key={m} value={m}>{m}</option>)}
+                                            </Select>
+                                        </div>
+                                        <div className="col-md-3">
+                                            <FieldLabel>
+                                                <UserCheck size={14} />
+                                                Gender
+                                            </FieldLabel>
+                                            <Select name="gender" value={filters.gender} onChange={handleFilterChange}>
+                                                <option value="">All Genders</option>
+                                                {availableGenders.map((gender) => (
+                                                    <option key={gender} value={gender}>
+                                                        {gender}
+                                                    </option>
+                                                ))}
                                             </Select>
                                         </div>
                                     </>
@@ -543,7 +760,10 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                  <div className="col-12 d-flex gap-4 pt-2">
                                     {showPayments && (
                                         <div style={{ flex: 1 }}>
-                                            <FormLabel>Payment Filter</FormLabel>
+                                            <FieldLabel>
+                                                <CreditCard size={14} />
+                                                Payment Filter
+                                            </FieldLabel>
                                             <Select name="lacking_payment" value={filters.lacking_payment} onChange={handleFilterChange}>
                                                 <option value="all">All Financial Status</option>
                                                 <option value="paid">Paid (No debt)</option>
@@ -553,7 +773,10 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                     )}
                                     {showSanctions && (
                                         <div style={{ flex: 1 }}>
-                                            <FormLabel>Sanction Filter</FormLabel>
+                                            <FieldLabel>
+                                                <ShieldAlert size={14} />
+                                                Sanction Filter
+                                            </FieldLabel>
                                             <Select name="has_sanctions" value={filters.has_sanctions} onChange={handleFilterChange}>
                                                 <option value="all">All Disciplines</option>
                                                 <option value="with">Sanctioned Students</option>
@@ -570,39 +793,71 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                 <div className="col-12">
                      <Card>
                         <CardHeader>
-                            <h3>User Assignments ({filteredAssignments.length})</h3>
+                            <CardHeaderTitle>
+                                <FilterIconWrapper><Users size={18} /></FilterIconWrapper>
+                                <h3>User Assignments ({filteredAssignments.length})</h3>
+                            </CardHeaderTitle>
                         </CardHeader>
                         <div className="table-responsive">
                              <Table>
                                 <thead>
                                     <tr>
-                                        <th>Full Name</th>
+                                        <th>
+                                            <HeaderCellLabel>
+                                                <Users size={14} />
+                                                Full Name
+                                            </HeaderCellLabel>
+                                        </th>
                                         {isActualAdmin && isDefault && <th>Brief Role</th>}
-                                        <th>Year</th>
-                                        <th>Section</th>
+                                        <th>
+                                            <HeaderCellLabel>
+                                                <GraduationCap size={14} />
+                                                Year
+                                            </HeaderCellLabel>
+                                        </th>
+                                        <th>
+                                            <HeaderCellLabel>
+                                                <MapPin size={14} />
+                                                Section
+                                            </HeaderCellLabel>
+                                        </th>
+                                        {showAcademicFields && <th>Department</th>}
+                                        {showAcademicFields && <th>Major</th>}
+                                        {showAcademicFields && <th>Gender</th>}
                                         {isDeanOrNt && <th>Status</th>}
-                                        {!isDeanOrNt && <th>Department</th>}
                                         {isTreasury && <th>Payment</th>}
-                                        {isOsas && <th>Sanctions</th>}
+                                        {isOsas && (
+                                            <th>
+                                                <HeaderCellLabel>
+                                                    <ShieldAlert size={14} />
+                                                    Sanctions
+                                                </HeaderCellLabel>
+                                            </th>
+                                        )}
                                         {isDefault && isActualAdmin && (
                                             <>
                                                 <th>Status</th>
                                             </>
                                         )}
-                                        <th className="text-end">Actions</th>
+                                        <th className="text-end">
+                                            <HeaderCellLabel className="justify-end">
+                                                <Filter size={14} />
+                                                Actions
+                                            </HeaderCellLabel>
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                      {loading && !isAssignmentModalOpen ? (
                                         <tr>
-                                            <td colSpan={10} className="p-4">
+                                            <td colSpan={14} className="p-4">
                                                 <SkeletonLoader />
                                                 <SkeletonLoader />
                                             </td>
                                         </tr>
                                     ) : paginatedAssignments.length === 0 ? (
                                         <tr>
-                                            <td colSpan={10} className="text-center py-5 text-muted">
+                                            <td colSpan={14} className="text-center py-5 text-muted">
                                                 <AlertCircle className="mb-2" size={32} style={{ opacity: 0.5 }} />
                                                 <div>No assignments found.</div>
                                             </td>
@@ -610,7 +865,17 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                     ) : (
                                         paginatedAssignments.map(a => (
                                             <tr key={a.id}>
-                                                <td className="fw-bold">{a.username || a.full_name || "N/A"}</td>
+                                                <td>
+                                                    <StudentCell>
+                                                        <StudentIcon>
+                                                            <Users size={14} />
+                                                        </StudentIcon>
+                                                        <div>
+                                                            <strong>{a.username || a.full_name || "N/A"}</strong>
+                                                            {a.school_id ? <SmallMuted>{a.school_id}</SmallMuted> : null}
+                                                        </div>
+                                                    </StudentCell>
+                                                </td>
                                                 {isDefault && isActualAdmin && (
                                                     <td>
                                                         <span className={`badge ${a.user_role === 'admin' ? 'bg-danger' : a.user_role === 'teacher' ? 'bg-info' : 'bg-success'}`}>
@@ -619,9 +884,17 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                     </td>
                                                 )}
                                                 <td>{a.year}</td>
-                                                <td>{a.section}</td>
+                                                <td>
+                                                    {getSectionName(a) ? (
+                                                        getSectionName(a)
+                                                    ) : (
+                                                        <StatusBadge className="neutral">No section</StatusBadge>
+                                                    )}
+                                                </td>
+                                                {showAcademicFields && <td>{a.department || '-'}</td>}
+                                                {showAcademicFields && <td>{a.major || '-'}</td>}
+                                                {showAcademicFields && <td>{a.gender || '-'}</td>}
                                                 {isDeanOrNt && <td>{a.student_status || 'Regular'}</td>}
-                                                {!isDeanOrNt && <td>{a.department}</td>}
                                                 {showPayments && (
                                                     <td>
                                                         {a.payment === 'owing' ? <StatusBadge className="warning">₱{a.amount_lacking || '0'}</StatusBadge> : <span className="text-success small">Paid</span>}
@@ -629,7 +902,16 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                 )}
                                                 {showSanctions && (
                                                     <td>
-                                                        {(a.sanctions === 1 || a.sanctions === true) ? <StatusBadge className="danger">Sanctioned</StatusBadge> : <span className="text-muted small">None</span>}
+                                                        {(a.sanctions === 1 || a.sanctions === true) ? (
+                                                            <>
+                                                                <StatusBadge className="danger">Sanctioned</StatusBadge>
+                                                                {parseSanctionReason(a.sanction_reason || '').hasDays ? (
+                                                                    <SmallMuted>{parseSanctionReason(a.sanction_reason || '').days} day(s)</SmallMuted>
+                                                                ) : null}
+                                                            </>
+                                                        ) : (
+                                                            <span className="text-muted small">None</span>
+                                                        )}
                                                     </td>
                                                 )}
                                                 {isDefault && isActualAdmin && (
@@ -638,14 +920,30 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                     </>
                                                 )}
                                                 <td className="text-end">
-                                                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                                                        {isOsas && filters.has_sanctions === 'without' ? (
-                                                            <Button style={{ padding: '6px 12px', height: 'auto', fontSize: '0.8rem' }} onClick={() => {
-                                                                setAssignForm(prev => ({ ...prev, id: a.id, full_name: a.full_name, has_sanction: 'yes' }));
-                                                                setIsSanctionModalOpen(true);
-                                                            }}>
-                                                                <ShieldAlert size={14} /> Add Sanction
-                                                            </Button>
+                                                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                                                        {isOsas ? (
+                                                            <>
+                                                                <OutlineButton
+                                                                    type="button"
+                                                                    style={{ color: '#f59e0b', borderColor: '#f59e0b' }}
+                                                                    disabled={!(a.sanctions === 1 || a.sanctions === true)}
+                                                                    onClick={() => handleReduceSanctionDays(a)}
+                                                                    title="Reduce sanction by one day"
+                                                                >
+                                                                    <Clock3 size={14} />
+                                                                    Reduce Day
+                                                                </OutlineButton>
+                                                                <OutlineButton
+                                                                    type="button"
+                                                                    style={{ color: '#10b981', borderColor: '#10b981' }}
+                                                                    disabled={!(a.sanctions === 1 || a.sanctions === true)}
+                                                                    onClick={() => handleClearSanction(a.id)}
+                                                                    title="Clear sanction"
+                                                                >
+                                                                    <Eraser size={14} />
+                                                                    Clear
+                                                                </OutlineButton>
+                                                            </>
                                                         ) : isTreasury && filters.lacking_payment === 'paid' ? (
                                                             <Button style={{ padding: '6px 12px', height: 'auto', fontSize: '0.8rem', background: '#f59e0b' }} onClick={() => {
                                                                 setAssignForm(prev => ({ ...prev, id: a.id, full_name: a.full_name, lacking_payment: 'yes' }));
@@ -656,10 +954,6 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                         ) : isTreasury && filters.lacking_payment === 'lacking' ? (
                                                             <Button style={{ padding: '6px 12px', height: 'auto', fontSize: '0.8rem', background: '#10b981' }} onClick={() => handleMarkPaid(a.id)}>
                                                                 <UserCheck size={14} /> Mark Paid
-                                                            </Button>
-                                                        ) : isOsas && filters.has_sanctions === 'with' ? (
-                                                            <Button style={{ padding: '6px 12px', height: 'auto', fontSize: '0.8rem', background: '#10b981' }} onClick={() => handleClearSanction(a.id)}>
-                                                                <Check size={14} /> Clear Sanction
                                                             </Button>
                                                         ) : (
                                                             <>
@@ -729,8 +1023,40 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                 </div>
 
                                 <div className="row g-3">
-                                    {(isDefault || isDeanOrNt) && (
+                                    {showAcademicFields && (
                                         <>
+                                            <div className="col-md-6">
+                                                <FormLabel>Year</FormLabel>
+                                                <Select
+                                                    name="year"
+                                                    value={assignForm.year}
+                                                    onChange={handleAssignInputChange}
+                                                    required
+                                                >
+                                                    <option value="">Select Year</option>
+                                                    {YEAR_LEVEL_OPTIONS.map((year) => (
+                                                        <option key={year} value={String(year)}>
+                                                            {year} Year
+                                                        </option>
+                                                    ))}
+                                                </Select>
+                                            </div>
+                                            <div className="col-md-6">
+                                                <FormLabel>Department</FormLabel>
+                                                <Select
+                                                    name="department"
+                                                    value={assignForm.department}
+                                                    onChange={handleAssignInputChange}
+                                                    required
+                                                >
+                                                    <option value="">Select Department</option>
+                                                    {availableDepartments.map((department) => (
+                                                        <option key={department} value={department}>
+                                                            {department}
+                                                        </option>
+                                                    ))}
+                                                </Select>
+                                            </div>
                                             <div className="col-12">
                                                 <FormLabel>Section</FormLabel>
                                                 <Select
@@ -740,11 +1066,40 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                     required
                                                 >
                                                     <option value="">Select Section</option>
-                                                    {modalSections.map(s => (
+                                                    {modalSectionsByScope.map(s => (
                                                         <option key={s.id} value={s.section_name}>
                                                             {s.section_name} ({getYearFromLevel(s.grade_level)} - {s.course || s.department || 'Gen'})
                                                         </option>
                                                     ))}
+                                                </Select>
+                                            </div>
+                                            <div className="col-md-6">
+                                                <FormLabel>Major</FormLabel>
+                                                <Select
+                                                    name="major"
+                                                    value={assignForm.major}
+                                                    onChange={handleAssignInputChange}
+                                                    disabled={!assignForm.department}
+                                                >
+                                                    <option value="">Select Major</option>
+                                                    {modalMajorOptions.map((major) => (
+                                                        <option key={major} value={major}>
+                                                            {major}
+                                                        </option>
+                                                    ))}
+                                                </Select>
+                                            </div>
+                                            <div className="col-md-6">
+                                                <FormLabel>Gender</FormLabel>
+                                                <Select
+                                                    name="gender"
+                                                    value={assignForm.gender}
+                                                    onChange={handleAssignInputChange}
+                                                >
+                                                    <option value="">Select Gender</option>
+                                                    <option value="Male">Male</option>
+                                                    <option value="Female">Female</option>
+                                                    <option value="Other">Other</option>
                                                 </Select>
                                             </div>
                                             <div className="col-12">
@@ -871,7 +1226,15 @@ const HeaderSection = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 2rem;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+  padding: 1.4rem 1.6rem;
+  border-radius: 18px;
+  border: 1px solid var(--border-color);
+  background:
+    radial-gradient(120% 100% at 0% 0%, rgba(59, 130, 246, 0.16) 0%, rgba(59, 130, 246, 0.02) 42%, transparent 72%),
+    var(--bg-secondary);
   
   h2 {
     font-size: 2rem;
@@ -884,11 +1247,73 @@ const HeaderSection = styled.div`
     svg { color: var(--accent-primary); }
   }
   p { color: var(--text-secondary); font-size: 1.1rem; }
+
+  @media (max-width: 768px) {
+    padding: 1rem;
+    h2 {
+      font-size: 1.35rem;
+    }
+    p {
+      font-size: 0.95rem;
+    }
+  }
+`;
+
+const StatsGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 1rem;
+`;
+
+const StatCard = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
+
+  &.warn {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: linear-gradient(145deg, rgba(245, 158, 11, 0.08), transparent 70%), var(--bg-secondary);
+  }
+
+  &.danger {
+    border-color: rgba(239, 68, 68, 0.35);
+    background: linear-gradient(145deg, rgba(239, 68, 68, 0.07), transparent 70%), var(--bg-secondary);
+  }
+`;
+
+const StatIcon = styled.div`
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-primary);
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+`;
+
+const StatValue = styled.div`
+  color: var(--text-primary);
+  font-weight: 800;
+  font-size: 1.25rem;
+  line-height: 1.2;
+`;
+
+const StatLabel = styled.div`
+  font-size: 0.82rem;
+  color: var(--text-secondary);
 `;
 
 const Card = styled.div`
   background: var(--bg-secondary);
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid var(--border-color);
   box-shadow: var(--shadow-md);
   overflow: hidden;
@@ -896,14 +1321,40 @@ const Card = styled.div`
 
 const CardHeader = styled.div`
   padding: 1.25rem 1.5rem;
-  background: var(--bg-tertiary);
+  background: linear-gradient(180deg, var(--bg-tertiary) 0%, rgba(127, 127, 127, 0.04) 100%);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  border-radius: 16px 16px 0 0;
+  border-radius: 18px 18px 0 0;
   h3 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); margin: 0; }
   svg { color: var(--text-secondary); }
+
+  @media (max-width: 768px) {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+`;
+
+const CardHeaderTitle = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+`;
+
+const HeaderActions = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+`;
+
+const FilterHint = styled.span`
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
 `;
 
 const CardBody = styled.div`
@@ -916,6 +1367,15 @@ const FormLabel = styled.label`
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 0.5rem;
+`;
+
+const FieldLabel = styled(FormLabel)`
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    margin-bottom: 0.35rem;
+    svg { color: var(--accent-primary); }
 `;
 
 const SearchInputWrapper = styled.div`
@@ -1012,13 +1472,22 @@ const Button = styled.button`
 const OutlineButton = styled.button`
     background: transparent;
     border: 1px solid var(--border-color);
-    padding: 6px;
+    padding: 7px 12px;
     border-radius: 6px;
     color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.2s;
-    display: flex; align-items: center; justify-content: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
     &:hover { background: var(--bg-tertiary); border-color: var(--accent-primary); }
+    &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
 `;
 
 const FilterIconWrapper = styled.div`
@@ -1031,6 +1500,16 @@ const FilterIconWrapper = styled.div`
     border-radius: 6px;
     border: 1px solid var(--border-color);
     color: var(--text-tertiary);
+`;
+
+const HeaderCellLabel = styled.span`
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    &.justify-end {
+        justify-content: flex-end;
+    }
 `;
 
 const Table = styled.table`
@@ -1054,6 +1533,30 @@ const Table = styled.table`
     tr:last-child td { border-bottom: none; }
 `;
 
+const StudentCell = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 10px;
+`;
+
+const StudentIcon = styled.span`
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-primary);
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.22);
+`;
+
+const SmallMuted = styled.div`
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    margin-top: 2px;
+`;
+
 const StatusBadge = styled.span`
     padding: 4px 8px;
     border-radius: 6px;
@@ -1061,6 +1564,7 @@ const StatusBadge = styled.span`
     font-weight: 600;
     &.warning { background: rgba(245, 158, 11, 0.15); color: #d97706; }
     &.danger { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+    &.neutral { background: rgba(59, 130, 246, 0.12); color: var(--accent-primary); }
 `;
 
 
