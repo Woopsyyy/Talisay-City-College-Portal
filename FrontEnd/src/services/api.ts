@@ -2792,6 +2792,55 @@ export const AdminAPI = {
 
   getDashboardStats: async () =>
     withApi(async () => {
+      const decodeBase64Url = (value: string) => {
+        const normalized = String(value || "")
+          .replace(/-/g, "+")
+          .replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        return atob(padded);
+      };
+
+      const parseJwtPayload = (token: string) => {
+        const raw = String(token || "").trim();
+        const parts = raw.split(".");
+        if (parts.length !== 3) return null;
+        try {
+          const decoded = decodeBase64Url(parts[1]);
+          const parsed = JSON.parse(decoded);
+          return parsed && typeof parsed === "object" ? parsed : null;
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const shouldUseEdgeFunctionToken = (token: string) => {
+        const payload = parseJwtPayload(token);
+        if (!payload) return false;
+
+        const role = String(payload?.role || "")
+          .trim()
+          .toLowerCase();
+        if (!payload?.sub || role === "anon") return false;
+
+        const expValue = Number(payload?.exp);
+        if (Number.isFinite(expValue) && expValue * 1000 <= Date.now() + 5000) {
+          return false;
+        }
+
+        const expectedIssPrefix = String(import.meta.env.VITE_SUPABASE_URL || "")
+          .replace(/\/+$/, "")
+          .toLowerCase();
+        const tokenIssuer = String(payload?.iss || "")
+          .trim()
+          .toLowerCase()
+          .replace(/\/+$/, "");
+        if (expectedIssPrefix && tokenIssuer && tokenIssuer !== `${expectedIssPrefix}/auth/v1`) {
+          return false;
+        }
+
+        return true;
+      };
+
       const getDashboardStatsFromEdgeCache = async () => {
         const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
         if (sessionError) {
@@ -2801,6 +2850,9 @@ export const AdminAPI = {
         const accessToken = sessionData?.session?.access_token;
         if (!accessToken) {
           throw new Error("No active authenticated session.");
+        }
+        if (!shouldUseEdgeFunctionToken(accessToken)) {
+          throw new Error("Skipping edge cache call: invalid or stale auth token.");
         }
 
         const { data, error } = await supabase.functions.invoke("cached-dashboard-stats", {
