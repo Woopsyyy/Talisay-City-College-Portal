@@ -2792,6 +2792,94 @@ export const AdminAPI = {
 
   getDashboardStats: async () =>
     withApi(async () => {
+      const getDashboardStatsFromEdgeCache = async () => {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          throw formatSupabaseError(sessionError, "Failed to load auth session for dashboard cache.");
+        }
+
+        const accessToken = sessionData?.session?.access_token;
+        if (!accessToken) {
+          throw new Error("No active authenticated session.");
+        }
+
+        const { data, error } = await supabase.functions.invoke("cached-dashboard-stats", {
+          body: {},
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+
+        if (error) {
+          let errorMessage =
+            error?.message ||
+            (typeof data?.error === "string" ? data.error : "") ||
+            "Edge function error";
+
+          const context = (error as { context?: { json?: () => Promise<unknown> } })?.context;
+          if (context?.json) {
+            const body = await context.json().catch(() => null) as
+              | { error?: unknown; message?: unknown }
+              | null;
+            const detailed =
+              (typeof body?.error === "string" && body.error.trim()) ||
+              (typeof body?.message === "string" && body.message.trim()) ||
+              "";
+            if (detailed) errorMessage = detailed;
+          }
+
+          throw new Error(errorMessage);
+        }
+
+        const payload =
+          data && typeof data === "object" && data.stats && typeof data.stats === "object"
+            ? data.stats
+            : data;
+
+        if (!payload || typeof payload !== "object") {
+          throw new Error("Invalid dashboard stats payload from edge cache.");
+        }
+
+        return payload;
+      };
+
+      const cachedStats = await getDashboardStatsFromEdgeCache().catch((error) => {
+        console.warn(
+          "cached-dashboard-stats invoke failed; falling back to direct dashboard queries:",
+          error?.message || error,
+        );
+        return null;
+      });
+
+      if (cachedStats && typeof cachedStats.users !== "undefined") {
+        const cachedBuildings = Array.isArray(cachedStats.buildings)
+          ? cachedStats.buildings
+              .map((row) => (row && typeof row === "object" ? mapBuilding(row) : null))
+              .filter(Boolean)
+          : [];
+
+        const cachedAnnouncements = Array.isArray(cachedStats.recent_announcements)
+          ? cachedStats.recent_announcements
+              .map((row) => (row && typeof row === "object" ? mapAnnouncement(row) : null))
+              .filter(Boolean)
+          : [];
+
+        return {
+          users: Number(cachedStats.users || 0),
+          subjects: Number(cachedStats.subjects || 0),
+          sections: Number(cachedStats.sections || 0),
+          schedules: Number(cachedStats.schedules || 0),
+          announcements: Number(cachedStats.announcements || 0),
+          study_load: Number(cachedStats.study_load || 0),
+          students: Number(cachedStats.students || 0),
+          teachers: Number(cachedStats.teachers || 0),
+          admins: Number(cachedStats.admins || 0),
+          non_teaching: Number(cachedStats.non_teaching || 0),
+          buildings: cachedBuildings,
+          recent_announcements: cachedAnnouncements,
+        };
+      }
+
       const [
         usersCount,
         subjectsCount,
