@@ -75,6 +75,7 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
       { id: "buildings", label: "Buildings", path: "/nt/dashboard/buildings", icon: Building2 },
       { id: "announcements", label: "Announcements", path: "/nt/dashboard/announcements", icon: Megaphone },
       { id: "projects", label: "Projects", path: "/nt/dashboard/projects", icon: FolderKanban },
+      { id: "evaluation", label: "Evaluation", path: "/nt/dashboard/evaluation", icon: ClipboardCheck },
     ],
   },
   {
@@ -108,6 +109,7 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
     navItems: [
       { id: "announcements", label: "Announcements", path: "/nt/dashboard/announcements", icon: Megaphone },
       { id: "projects", label: "Projects", path: "/nt/dashboard/projects", icon: FolderKanban },
+      { id: "evaluation", label: "Evaluation", path: "/nt/dashboard/evaluation", icon: ClipboardCheck },
       { id: "warning", label: "Warnings", path: "/nt/dashboard/warning", icon: ShieldAlert },
       { id: "sanction", label: "Sanctions", path: "/nt/dashboard/sanction", icon: ShieldAlert },
       { id: "record", label: "Records", path: "/nt/dashboard/record", icon: BookOpen },
@@ -120,6 +122,7 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
     navItems: [
       { id: "announcements", label: "Announcements", path: "/nt/dashboard/announcements", icon: Megaphone },
       { id: "projects", label: "Projects", path: "/nt/dashboard/projects", icon: FolderKanban },
+      { id: "evaluation", label: "Evaluation", path: "/nt/dashboard/evaluation", icon: ClipboardCheck },
       { id: "payment", label: "Payments", path: "/nt/dashboard/payment", icon: CreditCard },
       { id: "record", label: "Records", path: "/nt/dashboard/record", icon: BookOpen },
     ],

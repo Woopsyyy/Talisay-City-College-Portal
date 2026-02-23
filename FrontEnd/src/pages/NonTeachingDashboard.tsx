@@ -6,6 +6,7 @@ import {
   Building2,
   Layers,
   BookOpen,
+  ClipboardCheck,
   ClipboardList,
   CalendarCheck,
   Megaphone,
@@ -42,6 +43,7 @@ const StaffTreasuryPaymentView = lazy(() => import("../components/views/staff/Tr
 const StaffPaymentRecordsView = lazy(() => import("../components/views/staff/PaymentRecordsView"));
 const AnnouncementsView = lazy(() => import("../components/views/admin/AnnouncementsView"));
 const ProjectsView = lazy(() => import("../components/views/admin/ProjectsView"));
+const EvaluationManagementView = lazy(() => import("../components/views/admin/EvaluationView"));
 const styled = baseStyled as any;
 
 const NonTeachingDashboard = () => {
@@ -152,11 +154,13 @@ const NonTeachingDashboard = () => {
     { id: "buildings", icon: Building2, label: "Buildings" },
     { id: "announcements", icon: Megaphone, label: "Announcement" },
     { id: "projects", icon: FolderKanban, label: "Project" },
+    { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
   ];
 
   const osasNavItems = [
     { id: "announcements", icon: Megaphone, label: "Announcement" },
     { id: "projects", icon: FolderKanban, label: "Project" },
+    { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
     { id: "warning", icon: AlertTriangle, label: "Warning" },
     { id: "sanction", icon: ShieldAlert, label: "Sanction" },
     { id: "record", icon: BookOpen, label: "Record" },
@@ -165,6 +169,7 @@ const NonTeachingDashboard = () => {
   const treasuryNavItems = [
     { id: "announcements", icon: Megaphone, label: "Announcement" },
     { id: "projects", icon: FolderKanban, label: "Project" },
+    { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
     { id: "payment", icon: CreditCard, label: "Payment" },
     { id: "record", icon: ReceiptText, label: "Record" },
   ];
@@ -222,6 +227,10 @@ const NonTeachingDashboard = () => {
       title: "Projects",
       copy: "Track ongoing projects, budgets, and progress updates.",
     },
+    evaluation: {
+      title: "Evaluation Management",
+      copy: "Enable or disable teacher evaluations and update the evaluation template.",
+    },
     warning: {
       title: "Warning",
       copy: "Issue student warnings with required descriptions and offense level.",
@@ -263,6 +272,7 @@ const NonTeachingDashboard = () => {
               <Route path="buildings" element={<FacilitiesView />} />
               <Route path="announcements" element={<AnnouncementsView />} />
               <Route path="projects" element={<ProjectsView />} />
+              <Route path="evaluation" element={<EvaluationManagementView />} />
               <Route path="sanctions" element={<StaffSanctionsView />} />
               <Route path="payments" element={<StaffPaymentsView />} />
             </>
@@ -272,6 +282,7 @@ const NonTeachingDashboard = () => {
             <>
               <Route path="announcements" element={<AnnouncementsView />} />
               <Route path="projects" element={<ProjectsView />} />
+              <Route path="evaluation" element={<EvaluationManagementView />} />
               <Route path="warning" element={<StaffWarningsView />} />
               <Route path="sanction" element={<StaffSanctionsView />} />
               <Route path="record" element={<StaffDisciplineRecordsView />} />
@@ -285,6 +296,7 @@ const NonTeachingDashboard = () => {
             <>
               <Route path="announcements" element={<AnnouncementsView />} />
               <Route path="projects" element={<ProjectsView />} />
+              <Route path="evaluation" element={<EvaluationManagementView />} />
               <Route path="payment" element={<StaffTreasuryPaymentView />} />
               <Route path="record" element={<StaffPaymentRecordsView />} />
               <Route path="settings" element={<Navigate to="/home/settings" replace />} />

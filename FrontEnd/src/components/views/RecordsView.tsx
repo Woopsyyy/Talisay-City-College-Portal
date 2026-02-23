@@ -390,6 +390,11 @@ const IconBox = styled.div`
   display: flex; align-items: center; justify-content: center;
   color: var(--accent-primary);
   flex-shrink: 0;
+
+  svg {
+    color: inherit;
+    stroke-width: 2.2;
+  }
 `;
 
 const InfoMeta = styled.div`
@@ -415,7 +420,8 @@ const FinancialItem = styled.div`
   border: 1px solid ${props => props.$status === 'warning' ? 'rgba(234, 179, 8, 0.3)' : props.$status === 'danger' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'};
   
   ${IconBox} {
-    background: white;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(0, 0, 0, 0.08);
     color: ${props => props.$status === 'warning' ? '#ca8a04' : props.$status === 'danger' ? '#ef4444' : '#16a34a'};
   }
 `;

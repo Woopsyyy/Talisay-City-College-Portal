@@ -6659,6 +6659,7 @@ export const StudentAPI = {
         section_id: sectionId,
         section_full_name: sectionName,
         section_code: sectionName,
+        school_id: user?.school_id || currentUser?.school_id || null,
         section_course: department,
         department,
         major,
@@ -6669,7 +6670,12 @@ export const StudentAPI = {
         student_status: assignment.student_status || "Regular",
         semester: assignment.semester || "1st Semester",
         school_year: section?.school_year || assignment.school_year || currentSchoolYear(),
-        gender: user?.gender || currentUser?.gender || null,
+        gender:
+          assignment?.gender ||
+          user?.gender ||
+          currentUser?.gender ||
+          currentUser?.sex ||
+          null,
         building: roomInfo.building,
         floor: roomInfo.floor,
         room: roomInfo.room,

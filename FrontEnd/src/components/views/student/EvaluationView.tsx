@@ -595,7 +595,10 @@ const Label = styled.label`
 `;
 
 const RangeContainer = styled.div`
-  background: var(--bg-primary); padding: 1.5rem; border-radius: 12px;
+  background: var(--bg-primary);
+  padding: 1.5rem;
+  border-radius: 12px;
+  overflow: hidden;
 `;
 
 const RangeLabels = styled.div`
@@ -603,18 +606,39 @@ const RangeLabels = styled.div`
 `;
 
 const RangeOptions = styled.div`
-  display: flex; justify-content: space-between; gap: 4px; overflow-x: auto;
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
 `;
 
 const RangeLabel = styled.label`
-  cursor: pointer; position: relative;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  min-width: 0;
+
   input { position: absolute; opacity: 0; }
   .box { 
-    width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; 
-    border-radius: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); font-weight: 600;
+    width: min(100%, 40px);
+    height: 40px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    font-weight: 600;
     transition: all 0.2s;
   }
-  input:checked + .box { background: var(--accent-primary); color: white; border-color: var(--accent-primary); transform: scale(1.1); }
+
+  input:checked + .box {
+    background: var(--accent-primary);
+    color: white;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.35);
+  }
 `;
 
 const RadioGroup = styled.div`
