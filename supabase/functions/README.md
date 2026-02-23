@@ -62,6 +62,7 @@ supabase functions deploy cached-dashboard-stats
 
 Optional:
 - `DASHBOARD_STATS_CACHE_TTL_SECONDS` (default: `60`, range: `10` to `3600`)
+- `DASHBOARD_STATS_REDIS_BYPASS_SECONDS` (default: `300`, range: `30` to `3600`)
 
 ### Request
 

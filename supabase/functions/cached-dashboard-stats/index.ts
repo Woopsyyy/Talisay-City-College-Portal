@@ -54,7 +54,14 @@ const DEFAULT_CACHE_TTL_SECONDS = (() => {
   return Math.min(3600, Math.max(10, Math.trunc(envValue)));
 })();
 
+const REDIS_BYPASS_SECONDS = (() => {
+  const envValue = Number(Deno.env.get("DASHBOARD_STATS_REDIS_BYPASS_SECONDS"));
+  if (!Number.isFinite(envValue)) return 300;
+  return Math.min(3600, Math.max(30, Math.trunc(envValue)));
+})();
+
 const DASHBOARD_CACHE_KEY = "tcc:dashboard:stats:v1";
+let redisBypassUntilEpochMs = 0;
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
@@ -271,8 +278,61 @@ const isDashboardStatsPayload = (value: unknown): value is DashboardStatsPayload
   return typeof data.users === "number" && Array.isArray(data.buildings);
 };
 
+const getErrorText = (error: unknown): string => {
+  if (!error) return "";
+  if (typeof error === "string") return error.toLowerCase();
+
+  const candidate = error as {
+    message?: unknown;
+    details?: unknown;
+    code?: unknown;
+    cause?: { message?: unknown } | unknown;
+  };
+
+  const parts = [candidate.message, candidate.details, candidate.code, candidate.cause]
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object") {
+        const message = (part as { message?: unknown }).message;
+        if (typeof message === "string") return message;
+        try {
+          return JSON.stringify(part);
+        } catch (_) {
+          return "";
+        }
+      }
+      return "";
+    })
+    .filter(Boolean);
+
+  return parts.join(" ").toLowerCase();
+};
+
+const isRedisCapacityError = (error: unknown): boolean => {
+  const text = getErrorText(error);
+  if (!text) return false;
+
+  return (
+    text.includes("oom command not allowed") ||
+    text.includes("maxmemory") ||
+    text.includes("memory limit") ||
+    text.includes("storage limit") ||
+    text.includes("database is full") ||
+    text.includes("quota exceeded") ||
+    text.includes("insufficient storage") ||
+    text.includes("request limit exceeded") ||
+    text.includes("plan limit")
+  );
+};
+
+const shouldBypassRedis = (): boolean => redisBypassUntilEpochMs > Date.now();
+
+const markRedisBypass = () => {
+  redisBypassUntilEpochMs = Date.now() + REDIS_BYPASS_SECONDS * 1000;
+};
+
 const readCachedStats = async (): Promise<DashboardStatsPayload | null> => {
-  if (!redis) return null;
+  if (!redis || shouldBypassRedis()) return null;
 
   try {
     const raw = await redis.get<string | LooseRecord>(DASHBOARD_CACHE_KEY);
@@ -284,16 +344,23 @@ const readCachedStats = async (): Promise<DashboardStatsPayload | null> => {
     }
 
     return isDashboardStatsPayload(raw) ? raw : null;
-  } catch (_) {
+  } catch (error) {
+    if (isRedisCapacityError(error)) {
+      markRedisBypass();
+    }
     return null;
   }
 };
 
 const writeCachedStats = async (payload: DashboardStatsPayload, ttlSeconds: number) => {
-  if (!redis) return;
+  if (!redis || shouldBypassRedis()) return;
   try {
     await redis.set(DASHBOARD_CACHE_KEY, JSON.stringify(payload), { ex: ttlSeconds });
-  } catch (_) {
+  } catch (error) {
+    if (isRedisCapacityError(error)) {
+      markRedisBypass();
+      return;
+    }
     // cache write is best effort only
   }
 };
