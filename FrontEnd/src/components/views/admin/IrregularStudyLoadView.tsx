@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import baseStyled from "styled-components";
 import {
   BookOpen,
+  CircleX,
+  ChevronLeft,
+  ChevronRight,
   FilterX,
   Layers,
   PlusCircle,
@@ -28,13 +31,15 @@ const semesterLabel = (value: unknown) => {
 };
 
 const IrregularStudyLoadView = () => {
+  const STUDENTS_PER_PAGE = 10;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [students, setStudents] = useState<any[]>([]);
   const [subjects, setSubjects] = useState<any[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const [studentLoad, setStudentLoad] = useState<any[]>([]);
-  const [subjectCode, setSubjectCode] = useState("");
   const [toast, setToast] = useState({ show: false, message: "", type: "success" });
 
   const [studentSearch, setStudentSearch] = useState("");
@@ -87,6 +92,16 @@ const IrregularStudyLoadView = () => {
       })
       .sort((a, b) => text(a.full_name || a.username).localeCompare(text(b.full_name || b.username)));
   }, [students, studentSearch, sectionFilter, yearFilter, departmentFilter]);
+
+  const totalStudentPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredStudents.length / STUDENTS_PER_PAGE)),
+    [filteredStudents.length],
+  );
+
+  const pagedStudents = useMemo(() => {
+    const start = (currentPage - 1) * STUDENTS_PER_PAGE;
+    return filteredStudents.slice(start, start + STUDENTS_PER_PAGE);
+  }, [filteredStudents, currentPage]);
 
   const assignedCodes = useMemo(
     () => new Set(studentLoad.map((row) => lower(row.subject_code)).filter(Boolean)),
@@ -169,13 +184,13 @@ const IrregularStudyLoadView = () => {
       setStudents(mappedStudents);
       setSubjects(Array.isArray(subjectRows) ? subjectRows : []);
 
-      const nextSelectedId =
-        mappedStudents.find((row) => Number(row.user_id) === Number(selectedStudentId))?.user_id ||
-        mappedStudents[0]?.user_id ||
-        null;
+      const preservedSelectedId =
+        mappedStudents.find((row) => Number(row.user_id) === Number(selectedStudentId))?.user_id || null;
 
-      setSelectedStudentId(nextSelectedId ? Number(nextSelectedId) : null);
-      await loadStudentCustomLoad(nextSelectedId ? Number(nextSelectedId) : null);
+      const nextSelectedId = preservedSelectedId ? Number(preservedSelectedId) : null;
+      setSelectedStudentId(nextSelectedId);
+      setIsEditorOpen(Boolean(nextSelectedId) && isEditorOpen);
+      await loadStudentCustomLoad(nextSelectedId);
     } catch (error: any) {
       setStudents([]);
       setSubjects([]);
@@ -191,20 +206,39 @@ const IrregularStudyLoadView = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [studentSearch, sectionFilter, yearFilter, departmentFilter]);
+
+  useEffect(() => {
+    if (currentPage > totalStudentPages) {
+      setCurrentPage(totalStudentPages);
+    }
+  }, [currentPage, totalStudentPages]);
+
   const handleSelectStudent = async (studentId: number) => {
     setSelectedStudentId(studentId);
-    setSubjectCode("");
+    setIsEditorOpen(true);
     setLoadSearch("");
     setLoadSemesterFilter("all");
     await loadStudentCustomLoad(studentId);
   };
 
-  const handleAddSubject = async () => {
+  const handleCloseEditor = () => {
+    setIsEditorOpen(false);
+    setSelectedStudentId(null);
+    setStudentLoad([]);
+    setLoadSearch("");
+    setLoadSemesterFilter("all");
+  };
+
+  const handleAddSubject = async (subjectCode: string) => {
     if (!selectedStudentId) {
       showToast("Please select an irregular student first.", "error");
       return;
     }
-    if (!subjectCode) {
+    const normalizedCode = text(subjectCode);
+    if (!normalizedCode) {
       showToast("Please select a subject.", "error");
       return;
     }
@@ -213,10 +247,9 @@ const IrregularStudyLoadView = () => {
       setSaving(true);
       await AdminAPI.addStudentCustomStudyLoad({
         student_id: selectedStudentId,
-        subject_code: subjectCode,
+        subject_code: normalizedCode,
       });
       await loadStudentCustomLoad(selectedStudentId);
-      setSubjectCode("");
       showToast("Custom study load subject added.");
     } catch (error: any) {
       showToast(error?.message || "Failed to add subject.", "error");
@@ -271,7 +304,7 @@ const IrregularStudyLoadView = () => {
         />
       ) : null}
 
-      <ContentGrid>
+      <ContentGrid $showEditor={Boolean(isEditorOpen && selectedStudent)}>
         <Panel>
           <PanelHeader>
             <h3><UserCheck size={17} /> Irregular Students</h3>
@@ -317,7 +350,7 @@ const IrregularStudyLoadView = () => {
             <EmptyState>No students match current filters.</EmptyState>
           ) : (
             <StudentList>
-              {filteredStudents.map((student) => {
+              {pagedStudents.map((student) => {
                 const isActive = Number(student.user_id) === Number(selectedStudentId);
                 return (
                   <StudentItem
@@ -337,105 +370,131 @@ const IrregularStudyLoadView = () => {
               })}
             </StudentList>
           )}
-        </Panel>
 
-        <Panel>
-          <PanelHeader>
-            <h3><Layers size={17} /> {selectedStudent ? text(selectedStudent.full_name || selectedStudent.username) : "Custom Study Load"}</h3>
-          </PanelHeader>
-
-          {!selectedStudent ? (
-            <EmptyState>Select an irregular student to manage custom study load.</EmptyState>
-          ) : (
-            <>
-              <SubToolbar>
-                <SearchBox>
-                  <Search size={14} />
-                  <input
-                    value={subjectSearch}
-                    onChange={(event) => setSubjectSearch(event.target.value)}
-                    placeholder="Filter subjects to add..."
-                  />
-                </SearchBox>
-                <Select value={subjectSemesterFilter} onChange={(event) => setSubjectSemesterFilter(event.target.value)}>
-                  <option value="all">All Semesters</option>
-                  {subjectSemesterOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-                </Select>
-              </SubToolbar>
-
-              <AssignRow>
-                <Select
-                  value={subjectCode}
-                  onChange={(event) => setSubjectCode(event.target.value)}
-                  disabled={saving || filteredSubjectOptions.length === 0}
-                >
-                  <option value="">{filteredSubjectOptions.length ? "Select subject to add" : "No available subjects"}</option>
-                  {filteredSubjectOptions.map((subject) => (
-                    <option key={`${subject.id}-${subject.subject_code}`} value={text(subject.subject_code)}>
-                      {text(subject.subject_code)} - {text(subject.subject_name || subject.title)}
-                    </option>
-                  ))}
-                </Select>
-                <PrimaryButton type="button" onClick={handleAddSubject} disabled={saving || !subjectCode}>
-                  <PlusCircle size={15} /> Add
-                </PrimaryButton>
-              </AssignRow>
-              <Hint><SlidersHorizontal size={13} /> {filteredSubjectOptions.length} subject(s) available to add.</Hint>
-
-              <SubToolbar>
-                <SearchBox>
-                  <Search size={14} />
-                  <input
-                    value={loadSearch}
-                    onChange={(event) => setLoadSearch(event.target.value)}
-                    placeholder="Search current custom load..."
-                  />
-                </SearchBox>
-                <Select value={loadSemesterFilter} onChange={(event) => setLoadSemesterFilter(event.target.value)}>
-                  <option value="all">All Semesters</option>
-                  {loadSemesterOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-                </Select>
-              </SubToolbar>
-
-              <TableWrapper>
-                <Table>
-                  <thead>
-                    <tr>
-                      <th>Subject</th>
-                      <th>Semester</th>
-                      <th>Units</th>
-                      <th>School Year</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredStudentLoad.length === 0 ? (
-                      <tr><td colSpan={5}>No custom subjects match current filters.</td></tr>
-                    ) : (
-                      filteredStudentLoad.map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            <strong>{text(row.subject_code)}</strong>
-                            <div>{text(row.subject_title)}</div>
-                          </td>
-                          <td><SemesterPill>{semesterLabel(row.semester) || "-"}</SemesterPill></td>
-                          <td>{row.units ?? "-"}</td>
-                          <td>{text(row.school_year) || "-"}</td>
-                          <td>
-                            <DangerButton type="button" onClick={() => handleRemoveSubject(Number(row.id))} disabled={saving}>
-                              <Trash2 size={14} /> Remove
-                            </DangerButton>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </Table>
-              </TableWrapper>
-            </>
-          )}
+          {filteredStudents.length > 0 ? (
+            <PaginationBar>
+              <PageButton
+                type="button"
+                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                disabled={currentPage <= 1}
+              >
+                <ChevronLeft size={14} /> Prev
+              </PageButton>
+              <PageInfo>
+                Page {currentPage} of {totalStudentPages}
+              </PageInfo>
+              <PageButton
+                type="button"
+                onClick={() => setCurrentPage((prev) => Math.min(totalStudentPages, prev + 1))}
+                disabled={currentPage >= totalStudentPages}
+              >
+                Next <ChevronRight size={14} />
+              </PageButton>
+            </PaginationBar>
+          ) : null}
         </Panel>
       </ContentGrid>
+
+      {isEditorOpen && selectedStudent ? (
+        <ModalBackdrop onClick={handleCloseEditor}>
+          <ModalPanel $open={true} onClick={(event) => event.stopPropagation()}>
+            <PanelHeader>
+              <h3><Layers size={17} /> {text(selectedStudent.full_name || selectedStudent.username)}</h3>
+              <CloseButton type="button" onClick={handleCloseEditor}>
+                <CircleX size={16} /> Close
+              </CloseButton>
+            </PanelHeader>
+
+            <SubToolbar>
+              <SearchBox>
+                <Search size={14} />
+                <input
+                  value={subjectSearch}
+                  onChange={(event) => setSubjectSearch(event.target.value)}
+                  placeholder="Search subject code/title..."
+                />
+              </SearchBox>
+              <Select value={subjectSemesterFilter} onChange={(event) => setSubjectSemesterFilter(event.target.value)}>
+                <option value="all">All Semesters</option>
+                {subjectSemesterOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+              </Select>
+            </SubToolbar>
+
+            <SubjectResults>
+              {filteredSubjectOptions.slice(0, 10).map((subject) => (
+                <SubjectResultItem key={`${subject.id}-${subject.subject_code}`}>
+                  <SubjectMeta>
+                    <strong>{text(subject.subject_code)}</strong>
+                    <span>{text(subject.subject_name || subject.title)}</span>
+                  </SubjectMeta>
+                  <PrimaryButton
+                    type="button"
+                    onClick={() => handleAddSubject(text(subject.subject_code))}
+                    disabled={saving}
+                  >
+                    <PlusCircle size={15} /> Add
+                  </PrimaryButton>
+                </SubjectResultItem>
+              ))}
+              {filteredSubjectOptions.length === 0 ? (
+                <EmptyState>No available subjects match your search.</EmptyState>
+              ) : null}
+            </SubjectResults>
+            <Hint><SlidersHorizontal size={13} /> {filteredSubjectOptions.length} subject(s) available to add.</Hint>
+
+            <SubToolbar>
+              <SearchBox>
+                <Search size={14} />
+                <input
+                  value={loadSearch}
+                  onChange={(event) => setLoadSearch(event.target.value)}
+                  placeholder="Search current custom load..."
+                />
+              </SearchBox>
+              <Select value={loadSemesterFilter} onChange={(event) => setLoadSemesterFilter(event.target.value)}>
+                <option value="all">All Semesters</option>
+                {loadSemesterOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+              </Select>
+            </SubToolbar>
+
+            <TableWrapper>
+              <Table>
+                <thead>
+                  <tr>
+                    <th>Subject</th>
+                    <th>Semester</th>
+                    <th>Units</th>
+                    <th>School Year</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredStudentLoad.length === 0 ? (
+                    <tr><td colSpan={5}>No custom subjects match current filters.</td></tr>
+                  ) : (
+                    filteredStudentLoad.map((row) => (
+                      <tr key={row.id}>
+                        <td>
+                          <strong>{text(row.subject_code)}</strong>
+                          <div>{text(row.subject_title)}</div>
+                        </td>
+                        <td><SemesterPill>{semesterLabel(row.semester) || "-"}</SemesterPill></td>
+                        <td>{row.units ?? "-"}</td>
+                        <td>{text(row.school_year) || "-"}</td>
+                        <td>
+                          <DangerButton type="button" onClick={() => handleRemoveSubject(Number(row.id))} disabled={saving}>
+                            <Trash2 size={14} /> Remove
+                          </DangerButton>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </Table>
+            </TableWrapper>
+          </ModalPanel>
+        </ModalBackdrop>
+      ) : null}
     </Container>
   );
 };
@@ -493,7 +552,8 @@ const StatCard = styled.div`
 
 const ContentGrid = styled.div`
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: ${(props) =>
+    props.$showEditor ? "minmax(340px, 1fr) minmax(420px, 1.2fr)" : "minmax(0, 1fr)"};
   gap: 1rem;
   @media (max-width: 1120px) { grid-template-columns: 1fr; }
 `;
@@ -505,10 +565,23 @@ const Panel = styled.div`
   overflow: hidden;
 `;
 
+const ModalPanel = styled(Panel)`
+  width: min(980px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  box-shadow: ${(props) =>
+    props.$open ? "0 16px 40px rgba(15, 23, 42, 0.14)" : "0 8px 20px rgba(15, 23, 42, 0.08)"};
+  border-color: ${(props) => (props.$open ? "var(--accent-primary)" : "var(--border-color)")};
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+`;
+
 const PanelHeader = styled.div`
   padding: 0.95rem 1rem;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-tertiary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   h3 {
     margin: 0;
     font-size: 0.95rem;
@@ -518,11 +591,32 @@ const PanelHeader = styled.div`
   }
 `;
 
+const CloseButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+`;
+
 const Toolbar = styled.div`
   padding: 0.85rem;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(130px, 1fr)) auto;
   gap: 8px;
+  align-items: center;
+  @media (max-width: 1160px) {
+    grid-template-columns: 1fr 1fr;
+  }
+  @media (max-width: 700px) {
+    grid-template-columns: 1fr;
+  }
 `;
 
 const SubToolbar = styled.div`
@@ -578,7 +672,7 @@ const GhostButton = styled.button`
 `;
 
 const StudentList = styled.div`
-  max-height: 570px;
+  max-height: 500px;
   overflow: auto;
 `;
 
@@ -586,15 +680,18 @@ const StudentItem = styled.button`
   width: 100%;
   border: none;
   border-top: 1px solid var(--border-color);
-  padding: 0.85rem 0.9rem;
+  padding: 0.6rem 0.75rem;
   text-align: left;
   background: ${(props) => (props.$active ? "var(--bg-tertiary)" : "transparent")};
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
   cursor: pointer;
-  span { font-size: 0.8rem; color: var(--text-secondary); }
+  transition: background 0.18s ease;
+  &:hover { background: var(--bg-tertiary); }
+  strong { font-size: 0.88rem; line-height: 1.15; }
+  span { font-size: 0.75rem; color: var(--text-secondary); }
 `;
 
 const TagRow = styled.div`
@@ -604,19 +701,11 @@ const TagRow = styled.div`
 `;
 
 const Tag = styled.span`
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
   border-radius: 999px;
-  padding: 2px 8px;
-`;
-
-const AssignRow = styled.div`
-  padding: 0.85rem;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  @media (max-width: 700px) { grid-template-columns: 1fr; }
+  padding: 1px 7px;
 `;
 
 const PrimaryButton = styled.button`
@@ -645,11 +734,12 @@ const Hint = styled.div`
 const TableWrapper = styled.div`
   padding: 0.85rem;
   overflow: auto;
+  max-height: 46vh;
 `;
 
 const Table = styled.table`
   width: 100%;
-  min-width: 680px;
+  min-width: 620px;
   border-collapse: collapse;
   th, td {
     border-bottom: 1px solid var(--border-color);
@@ -692,6 +782,80 @@ const DangerButton = styled.button`
 const EmptyState = styled.div`
   padding: 1rem;
   color: var(--text-secondary);
+`;
+
+const PaginationBar = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-color);
+  padding: 0.6rem 0.85rem;
+`;
+
+const PageButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+`;
+
+const PageInfo = styled.span`
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+`;
+
+const ModalBackdrop = styled.div`
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 60;
+`;
+
+const SubjectResults = styled.div`
+  margin: 0.75rem 0.85rem 0;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  max-height: 180px;
+  overflow: auto;
+`;
+
+const SubjectResultItem = styled.div`
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 0.55rem 0.65rem;
+  border-top: 1px solid var(--border-color);
+  &:first-child {
+    border-top: none;
+  }
+`;
+
+const SubjectMeta = styled.div`
+  min-width: 0;
+  strong {
+    display: block;
+    font-size: 0.82rem;
+  }
+  span {
+    display: block;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 `;
 
 export default IrregularStudyLoadView;

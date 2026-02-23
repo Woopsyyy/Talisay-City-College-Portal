@@ -17,7 +17,9 @@ import PageSkeleton from "../components/loaders/PageSkeleton";
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
+import ModernSidebar from "../components/common/ModernSidebar";
 import ChatBot from "../components/ChatBot";
+import NotificationBell from "../components/common/NotificationBell";
 
 const DashboardOverview = lazy(() => import("../components/views/admin/DashboardOverview"));
 const ManageUsersView = lazy(() => import("../components/views/admin/ManageUsersView"));
@@ -60,7 +62,7 @@ const AdminDashboard = () => {
   const navItems = [
     { id: "overview", icon: LayoutDashboard, label: "Overview" },
     { id: "feedback", icon: MessageSquare, label: "Feedback" },
-    { id: "settings", icon: Settings, label: "Settings" },
+    { id: "server_maintenance", icon: Settings, label: "Server Maintenance" },
     { id: "manage_user", icon: UserCog, label: "Manage Users" },
     { id: "account_access", icon: KeyRound, label: "Account Access" },
     { id: "pending_approval", icon: Inbox, label: "Pending Approval" },
@@ -100,8 +102,8 @@ const AdminDashboard = () => {
       title: "Status Logs",
       copy: "Review login events, account changes, and administrative actions with powerful filters.",
     },
-    settings: {
-      title: "System Settings",
+    "server-maintenance": {
+      title: "Server Maintenance",
       copy: "Perform maintenance tasks, clean up database records, and manage system configurations.",
     },
   };
@@ -116,7 +118,8 @@ const AdminDashboard = () => {
           <Route path="account_access" element={<AccountAccessView />} />
           <Route path="pending_approval" element={<PendingApprovalsView />} />
           <Route path="status_logs" element={<StatusLogsView />} />
-          <Route path="settings" element={<SettingsView />} />
+          <Route path="server-maintenance" element={<SettingsView />} />
+          <Route path="settings" element={<Navigate to="/admin/dashboard/server-maintenance" replace />} />
           <Route path="/" element={<Navigate to="overview" replace />} />
           <Route path="*" element={<Navigate to="overview" replace />} />
         </Routes>
@@ -135,33 +138,7 @@ const AdminDashboard = () => {
 
   return (
     <DashboardContainer>
-      <Sidebar>
-        <SidebarHeader>
-          <Avatar loading="lazy"
-            src={avatarUrl}
-            onError={(e) => {
-              const image = e.currentTarget as HTMLImageElement;
-              image.src = "/images/sample.jpg";
-            }}
-            alt="Admin"
-          />
-          <UserInfo>
-            <UserName>{currentUser?.full_name}</UserName>
-            {currentUser?.school_id && (
-              <SchoolId>{currentUser.school_id}</SchoolId>
-            )}
-            <UserRole>Administrator</UserRole>
-          </UserInfo>
-        </SidebarHeader>
-
-        <RoleSidebarNavigator menus={GLOBAL_ROLE_SIDEBAR_MENUS} />
-
-        <SidebarFooter>
-          <LogoutButton onClick={handleLogout}>
-            <LogOut size={20} /> Logout
-          </LogoutButton>
-        </SidebarFooter>
-      </Sidebar>
+      <ModernSidebar />
 
       <MainContent>
         <HeroSection>
@@ -175,6 +152,7 @@ const AdminDashboard = () => {
               {heroSpotlights[currentSection]?.copy}
             </HeroDescription>
             <HeroActions>
+              <NotificationBell />
               <ChatBot placement="hero" />
             </HeroActions>
           </HeroContent>
@@ -339,11 +317,16 @@ const LogoutButton = styled.button`
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 240px;
+  margin-left: var(--sidebar-width, 280px);
   padding: 2rem;
   background-color: var(--bg-primary);
   min-height: 100vh;
   transition: all 0.3s ease;
+
+  @media (max-width: 1024px) {
+    margin-left: 0;
+    padding: 1rem;
+  }
 `;
 
 const HeroSection = styled.section`

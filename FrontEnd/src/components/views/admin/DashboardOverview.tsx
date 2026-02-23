@@ -3,7 +3,7 @@ import baseStyled from "styled-components";
 import {
   ArrowDownRight,
   ArrowUpRight,
-  CalendarClock,
+  Activity,
   GraduationCap,
   Percent,
   RefreshCw,
@@ -21,6 +21,7 @@ import {
   Tooltip,
 } from "recharts";
 import { AdminAPI } from "../../../services/api";
+import { getActiveUsersSnapshot, subscribeToActiveUsers } from "../../../services/activeUsers";
 import PageSkeleton from "../../loaders/PageSkeleton";
 import { useTheme } from "../../../context/ThemeContext";
 
@@ -68,7 +69,7 @@ const DashboardOverview = () => {
   const { theme } = useTheme();
   const [metrics, setMetrics] = useState<DashboardMetrics>(INITIAL_METRICS);
   const [loading, setLoading] = useState(true);
-  const [analysisMonths, setAnalysisMonths] = useState(6);
+  const [activeUsers, setActiveUsers] = useState(() => getActiveUsersSnapshot());
   const [schoolYearInput, setSchoolYearInput] = useState(() => {
     const now = new Date().getFullYear();
     return `${now}-${now + 1}`;
@@ -94,6 +95,15 @@ const DashboardOverview = () => {
 
   useEffect(() => {
     fetchDashboardMetrics();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToActiveUsers((snapshot) => {
+      setActiveUsers(snapshot);
+    });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const fetchDashboardMetrics = async () => {
@@ -235,21 +245,6 @@ const DashboardOverview = () => {
     }));
   }, [metrics.students, metrics.teachers]);
 
-  const projectedSummary = useMemo(() => {
-    const projectedStudents = Math.round(metrics.students * (1 + analysisMonths * 0.012));
-    const projectedTeachers = Math.ceil(projectedStudents / 32);
-    const projectedSectionsNeeded = Math.ceil(projectedStudents / 40);
-    const projectedSchedules = Math.ceil(projectedSectionsNeeded * (metrics.subjects > 0 ? 5.5 : 4.2));
-
-    return {
-      projectedStudents,
-      projectedTeachers,
-      projectedSectionsNeeded,
-      projectedSchedules,
-    };
-  }, [analysisMonths, metrics.students, metrics.subjects]);
-
-  const periodFill = ((analysisMonths - 4) / 8) * 100;
   const riskTone =
     operationsSummary.sectionUtilization > 90
       ? "red"
@@ -400,57 +395,40 @@ const DashboardOverview = () => {
             <Card>
               <CardHeader>
                 <div>
-                  <h3>Planning Period & Forecast</h3>
-                  <p>Model staffing and section demand by analysis period.</p>
+                  <h3>Realtime Active Users</h3>
+                  <p>How many users are currently online on the website.</p>
                 </div>
               </CardHeader>
 
               <PeriodHead>
                 <span>
-                  Planning Window
-                  <strong>{analysisMonths} Month</strong>
+                  Online Now
+                  <strong>{activeUsers.total.toLocaleString()} User{activeUsers.total === 1 ? "" : "s"}</strong>
                 </span>
-                <CalendarClock size={16} />
+                <Activity size={16} />
               </PeriodHead>
-
-              <SliderWrap>
-                <input
-                  type="range"
-                  min={4}
-                  max={12}
-                  step={2}
-                  value={analysisMonths}
-                  onChange={(event) => setAnalysisMonths(Number(event.target.value))}
-                />
-                <SliderMarks>
-                  {[4, 6, 8, 10, 12].map((mark) => (
-                    <span key={mark}>{mark}M</span>
-                  ))}
-                </SliderMarks>
-              </SliderWrap>
-
-              <ProgressTrack>
-                <ProgressFill style={{ width: `${periodFill}%` }} />
-              </ProgressTrack>
 
               <MetricGrid>
                 <MetricCard>
-                  <label>Projected Students</label>
-                  <strong>{projectedSummary.projectedStudents.toLocaleString()}</strong>
-                </MetricCard>
-                <MetricCard>
-                  <label>Teachers Needed</label>
-                  <strong>{projectedSummary.projectedTeachers.toLocaleString()}</strong>
-                </MetricCard>
-                <MetricCard>
-                  <label>Sections Needed</label>
-                  <strong>{projectedSummary.projectedSectionsNeeded.toLocaleString()}</strong>
-                </MetricCard>
-                <MetricCard>
-                  <label>Projected Schedules</label>
-                  <strong>{projectedSummary.projectedSchedules.toLocaleString()}</strong>
+                  <label>Active Session Count</label>
+                  <strong>{activeUsers.total.toLocaleString()}</strong>
                 </MetricCard>
               </MetricGrid>
+
+              <OnlineList>
+                {activeUsers.users.length === 0 ? (
+                  <OnlineEmpty>No active users right now.</OnlineEmpty>
+                ) : (
+                  activeUsers.users.slice(0, 8).map((onlineUser) => (
+                    <OnlineRow key={`${onlineUser.user_id || onlineUser.key}`}>
+                      <span>
+                        {onlineUser.full_name || onlineUser.username || `User ${onlineUser.user_id || ""}`}
+                      </span>
+                      <strong>{String(onlineUser.role || "user").toUpperCase()}</strong>
+                    </OnlineRow>
+                  ))
+                )}
+              </OnlineList>
             </Card>
           </BottomGrid>
         </PrimaryColumn>
@@ -989,6 +967,44 @@ const MetricCard = styled.div`
     font-size: 0.88rem;
     font-weight: 700;
   }
+`;
+
+const OnlineList = styled.div`
+  margin-top: var(--space-sm);
+  border: 1px solid var(--dash-border);
+  border-radius: 12px;
+  overflow: hidden;
+`;
+
+const OnlineRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 10px 12px;
+  border-top: 1px solid var(--dash-border);
+
+  &:first-child {
+    border-top: 0;
+  }
+
+  span {
+    color: var(--dash-text);
+    font-size: 0.84rem;
+    font-weight: 600;
+  }
+
+  strong {
+    color: var(--dash-title);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+  }
+`;
+
+const OnlineEmpty = styled.div`
+  padding: 12px;
+  color: var(--dash-muted);
+  font-size: 0.82rem;
 `;
 
 const SchoolPortfolioCard = styled.article`

@@ -24,7 +24,8 @@ const RecordsView = () => {
     sanctions: null,
     sanctionText: "No",
     sanctionDays: null,
-    sanctionNote: ""
+    sanctionNote: "",
+    sanctionLevel: null
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -111,6 +112,9 @@ const RecordsView = () => {
                 }
             }
 
+            const sanctionReasonStr = assignmentData?.sanction_reason || '';
+            const levelMatch = sanctionReasonStr.match(/\[(Major|Minor)\]/i);
+
             setData({
                 building: buildingText,
                 floor: floorText,
@@ -123,6 +127,7 @@ const RecordsView = () => {
                 sanctionText,
                 sanctionDays,
                 sanctionNote,
+                sanctionLevel: levelMatch ? levelMatch[1] : null,
                 gender,
                 studentStatus
             });
@@ -267,7 +272,21 @@ const RecordsView = () => {
                                 </InfoValue>
                                 {data.sanctionNote && (
                                     <div className="mt-2 pt-2 border-top border-secondary-subtle">
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Reason:</div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Reason:</div>
+                                            {data.sanctionLevel && (
+                                                <span style={{ 
+                                                    fontSize: '0.7rem', 
+                                                    padding: '1px 6px', 
+                                                    borderRadius: '4px', 
+                                                    fontWeight: 700,
+                                                    background: data.sanctionLevel === 'Major' ? '#ef4444' : '#f59e0b',
+                                                    color: 'white'
+                                                }}>
+                                                    {data.sanctionLevel.toUpperCase()}
+                                                </span>
+                                            )}
+                                        </div>
                                         <div style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{data.sanctionNote}</div>
                                     </div>
                                 )}

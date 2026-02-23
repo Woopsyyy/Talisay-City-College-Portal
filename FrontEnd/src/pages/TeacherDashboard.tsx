@@ -7,7 +7,6 @@ import {
   CalendarDays,
   LineChart,
   ClipboardList,
-  Settings,
   LogOut,
   GraduationCap,
   MessageSquare,
@@ -20,9 +19,11 @@ import {
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
+import ModernSidebar from "../components/common/ModernSidebar";
 import Loader from "../components/Loader";
 import PageSkeleton from "../components/loaders/PageSkeleton";
 import ChatBot from "../components/ChatBot";
+import NotificationBell from "../components/common/NotificationBell";
 
 
 const ScheduleView = lazy(() => import("../components/views/teacher/ScheduleView"));
@@ -30,7 +31,6 @@ const AnnouncementsView = lazy(() => import("../components/views/teacher/Announc
 const TransparencyView = lazy(() => import("../components/views/teacher/TransparencyView"));
 const GradeSystemView = lazy(() => import("../components/views/teacher/GradeSystemView"));
 const EvaluationView = lazy(() => import("../components/views/teacher/EvaluationView"));
-const SettingsView = lazy(() => import("../components/views/teacher/SettingsView"));
 const FeedbackInboxView = lazy(() => import("../components/views/admin/FeedbackInboxView"));
 const ManageStudentsView = lazy(() => import("../components/views/admin/ManageStudentsView"));
 const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
@@ -127,7 +127,6 @@ const TeacherDashboard = () => {
     { id: "transparency", icon: LineChart, label: "Transparency" },
     { id: "grade_system", icon: GraduationCap, label: "Grade System" },
     { id: "evaluation", icon: ClipboardList, label: "Evaluation" },
-    { id: "settings", icon: Settings, label: "Settings" },
   ];
 
   const deanNavItems = [
@@ -197,10 +196,6 @@ const TeacherDashboard = () => {
       title: "Feedback Inbox",
       copy: "Review and respond to anonymous feedback from students.",
     },
-    settings: {
-      title: "Settings",
-      copy: "Update your account details and profile picture.",
-    },
   };
 
   const renderContent = () => {
@@ -227,7 +222,7 @@ const TeacherDashboard = () => {
           {!isFacultyOsasMode && <Route path="sanctions" element={<Navigate to={defaultSection} replace />} />}
           {!isFacultyTreasuryMode && <Route path="payments" element={<Navigate to={defaultSection} replace />} />}
           <Route path="feedback" element={<FeedbackInboxView />} />
-          <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+          <Route path="settings" element={<Navigate to="/home/settings" replace />} />
           <Route path="/" element={<Navigate to={defaultSection} replace />} />
           <Route path="*" element={<Navigate to={defaultSection} replace />} />
         </Routes>
@@ -248,39 +243,7 @@ const TeacherDashboard = () => {
 
   return (
     <DashboardContainer>
-      <Sidebar>
-        <SidebarHeader>
-          <Avatar loading="lazy"
-            src={avatarUrl}
-            onError={(e) => {
-              const image = e.currentTarget as HTMLImageElement;
-              image.src = "/images/sample.jpg";
-            }}
-            alt="Teacher"
-          />
-            <UserInfo>
-            <UserName>{currentUser?.full_name}</UserName>
-            {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
-            <UserRole>
-              {isDeanMode
-                ? "Dean"
-                : isFacultyOsasMode
-                  ? "OSAS"
-                  : isFacultyTreasuryMode
-                    ? "Treasury"
-                    : (isFacultyMode ? "Faculty" : "Teacher")}
-            </UserRole>
-          </UserInfo>
-        </SidebarHeader>
-
-        <RoleSidebarNavigator menus={GLOBAL_ROLE_SIDEBAR_MENUS} />
-
-        <SidebarFooter>
-          <LogoutButton onClick={handleLogout}>
-            <LogOut size={20} /> Logout
-          </LogoutButton>
-        </SidebarFooter>
-      </Sidebar>
+      <ModernSidebar />
 
       <MainContent>
         <HeroSection>
@@ -301,6 +264,7 @@ const TeacherDashboard = () => {
               {heroSpotlights[currentSection]?.copy || "Welcome to your dashboard."}
             </HeroDescription>
             <HeroActions>
+              <NotificationBell />
               <ChatBot placement="hero" />
             </HeroActions>
           </HeroContent>
@@ -470,11 +434,16 @@ const LogoutButton = styled.button`
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 240px;
+  margin-left: var(--sidebar-width, 280px);
   padding: 2rem;
   background-color: var(--bg-primary);
   min-height: 100vh;
   transition: all 0.3s ease;
+
+  @media (max-width: 1024px) {
+    margin-left: 0;
+    padding: 1rem;
+  }
 `;
 
 const HeroSection = styled.section`

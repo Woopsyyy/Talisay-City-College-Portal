@@ -58,7 +58,7 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
       { id: "account_access", label: "Account Access", path: "/admin/dashboard/account_access", icon: KeyRound },
       { id: "pending_approval", label: "Pending Approval", path: "/admin/dashboard/pending_approval", icon: Inbox },
       { id: "status_logs", label: "Status Logs", path: "/admin/dashboard/status_logs", icon: Activity },
-      { id: "settings", label: "Settings", path: "/admin/dashboard/settings", icon: Settings },
+      { id: "server_maintenance", label: "Server Maintenance", path: "/admin/dashboard/server-maintenance", icon: Settings },
     ],
   },
   {
@@ -73,7 +73,8 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
       { id: "sections", label: "Sections", path: "/nt/dashboard/sections", icon: Layers },
       { id: "irregular_study_load", label: "Irregular Study Load", path: "/nt/dashboard/irregular_study_load", icon: BookOpen },
       { id: "buildings", label: "Buildings", path: "/nt/dashboard/buildings", icon: Building2 },
-      { id: "settings", label: "Settings", path: "/nt/dashboard/settings", icon: Settings },
+      { id: "announcements", label: "Announcements", path: "/nt/dashboard/announcements", icon: Megaphone },
+      { id: "projects", label: "Projects", path: "/nt/dashboard/projects", icon: FolderKanban },
     ],
   },
   {
@@ -86,7 +87,6 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
       { id: "transparency", label: "Transparency", path: "/teachers/transparency", icon: LineChart },
       { id: "grade_system", label: "Grade System", path: "/teachers/grade_system", icon: GraduationCap },
       { id: "evaluation", label: "Evaluation", path: "/teachers/evaluation", icon: ClipboardCheck },
-      { id: "settings", label: "Settings", path: "/teachers/settings", icon: Settings },
     ],
   },
   {
@@ -99,7 +99,6 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
       { id: "grades", label: "Grades", path: "/home/grades", icon: Award },
       { id: "evaluation", label: "Evaluation", path: "/home/evaluation", icon: ClipboardCheck },
       { id: "feedback", label: "Feedback", path: "/home/feedback", icon: MessageSquare },
-      { id: "settings", label: "Settings", path: "/home/settings", icon: Settings },
     ],
   },
   {

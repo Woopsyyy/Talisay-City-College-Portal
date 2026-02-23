@@ -21,6 +21,7 @@ const BACKUP_BUCKET = import.meta.env.VITE_SUPABASE_BACKUP_BUCKET || AVATAR_BUCK
 const BACKUP_PREFIX = String(import.meta.env.VITE_SUPABASE_BACKUP_PREFIX || "backups")
   .replace(/^\/+/, "")
   .replace(/\/+$/, "");
+const MAINTENANCE_STORAGE_BASELINE_KEY = "tcc_maintenance_storage_last_bytes";
 const DEFAULT_AVATAR = "/images/sample.jpg";
 const USER_SAFE_SELECT =
   "id,username,full_name,role,roles,sub_role,sub_roles,school_id,image_path,created_at,updated_at";
@@ -213,6 +214,15 @@ const normalizeLogMetadata = (value) => {
   }
 };
 
+const isDefaultAvatarPath = (value) => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+/, "");
+
+  return !normalized || normalized === "images/sample.jpg" || normalized === "sample.jpg";
+};
+
 const logStatusEvent = async (payload: LooseRecord = {}) => {
   const action = String(payload?.action || "")
     .trim()
@@ -262,6 +272,126 @@ const logStatusEvent = async (payload: LooseRecord = {}) => {
   }
 };
 
+const isMissingNotificationFeatureError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  const details = String(error?.details || "").toLowerCase();
+  const combined = `${message} ${details}`;
+  const refersNotifications =
+    combined.includes("notification") || combined.includes("notifications");
+
+  if (!refersNotifications) return false;
+  return (
+    error?.code === "42P01" ||
+    error?.code === "42703" ||
+    message.includes("does not exist") ||
+    message.includes("could not find") ||
+    message.includes("permission denied")
+  );
+};
+
+const mapNotification = (row) => ({
+  id: row?.id ?? null,
+  created_at: row?.created_at || null,
+  title: String(row?.title || "").trim(),
+  message: String(row?.message || "").trim(),
+  action: String(row?.action || "general_update")
+    .trim()
+    .toLowerCase(),
+  category: String(row?.category || "general")
+    .trim()
+    .toLowerCase(),
+  actor_user_id: row?.actor_user_id ?? null,
+  actor_username: String(row?.actor_username || "").trim(),
+  actor_role: normalizeLogRole(row?.actor_role || ""),
+  target_user_id: row?.target_user_id ?? null,
+  target_role: normalizeNotificationTargetRole(row?.target_role) || "all",
+  metadata:
+    row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+      ? row.metadata
+      : {},
+});
+
+const describeCurrentActor = () => {
+  const actor = readStoredUser();
+  const actorName = String(actor?.full_name || actor?.username || "System").trim() || "System";
+  const actorRole = normalizeRole(actor?.role || "system") || "system";
+  return {
+    name: actorName,
+    role: actorRole,
+    label: `${actorName} (${actorRole})`,
+  };
+};
+
+const createUserNotification = async (payload: LooseRecord = {}) => {
+  const title = String(payload?.title || "").trim();
+  const message = String(payload?.message || "").trim();
+  if (!title && !message) return false;
+
+  const action = String(payload?.action || "general_update")
+    .trim()
+    .toLowerCase() || "general_update";
+  const category = String(payload?.category || "general")
+    .trim()
+    .toLowerCase() || "general";
+
+  const actorFallback = readStoredUser();
+  const actorUserId = normalizeLogUserId(payload?.actor_user_id ?? actorFallback?.id);
+  const actorUsername = normalizeLogText(payload?.actor_username ?? actorFallback?.username);
+  const actorRole = normalizeLogRole(payload?.actor_role ?? actorFallback?.role);
+
+  const targetUserId = normalizeLogUserId(payload?.target_user_id);
+  const targetRole = normalizeNotificationTargetRole(payload?.target_role);
+  const targetRoles = Array.from(
+    new Set(
+      normalizeListValue(payload?.target_roles)
+        .map((value) => normalizeNotificationTargetRole(value))
+        .filter(Boolean),
+    ),
+  );
+  const metadata = normalizeLogMetadata(payload?.metadata);
+
+  const baseRow = {
+    action,
+    category,
+    title: title || message || "System update",
+    message: message || title || "System update",
+    actor_user_id: actorUserId,
+    actor_username: actorUsername,
+    actor_role: actorRole || null,
+    metadata,
+  };
+
+  let rows: LooseRecord[] = [];
+  if (targetUserId) {
+    rows = [{ ...baseRow, target_user_id: targetUserId, target_role: null }];
+  } else if (targetRoles.length > 0) {
+    rows = targetRoles.map((role) => ({
+      ...baseRow,
+      target_user_id: null,
+      target_role: role,
+    }));
+  } else {
+    rows = [{
+      ...baseRow,
+      target_user_id: null,
+      target_role: targetRole || "all",
+    }];
+  }
+
+  try {
+    const { error } = await supabase.from("notifications").insert(rows);
+    if (!error) return true;
+    if (isMissingNotificationFeatureError(error)) return false;
+
+    console.warn("Notification write failed:", error?.message || error);
+    return false;
+  } catch (error) {
+    if (isMissingNotificationFeatureError(error)) return false;
+    console.warn("Notification write failed:", error?.message || error);
+    return false;
+  }
+};
+
 const requireStoredUser = () => {
   const user = readStoredUser();
   if (!user?.id) {
@@ -297,6 +427,21 @@ const normalizeRole = (role) => {
     .trim()
     .toLowerCase();
   return normalized === "go" ? "nt" : normalized;
+};
+
+const normalizeNotificationTargetRole = (role) => {
+  const normalized = normalizeRole(role);
+  if (!normalized) return null;
+
+  if (["all", "everyone"].includes(normalized)) return "all";
+  if (["student", "teacher", "admin", "nt", "osas", "treasury"].includes(normalized)) {
+    return normalized;
+  }
+
+  if (["staff", "non-teaching", "non_teaching", "nonteaching"].includes(normalized)) return "nt";
+  if (["faculty", "dean"].includes(normalized)) return "teacher";
+
+  return null;
 };
 
 const normalizeRoles = (rolesLike, fallbackRole = "student") => {
@@ -715,6 +860,7 @@ const mapAccountRequest = (row) => ({
   resolved_at: row?.resolved_at || null,
   resolved_by_user_id: row?.resolved_by_user_id ?? null,
   resolved_by_username: row?.resolved_by_username || "",
+  requested_image_path: row?.requested_image_path || "",
 });
 
 const normalizeImageStoragePath = (value) => {
@@ -746,6 +892,36 @@ const buildAvatarStoragePath = (userId, filename) => {
   return `profiles/${ownerId}/${Date.now()}_${safeName || "avatar"}`;
 };
 
+const isImageFilename = (value) => {
+  const name = String(value || "").trim().toLowerCase();
+  return /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|webp)$/.test(name);
+};
+
+const normalizeImageUploadFile = (input, fallbackName = "profile.jpg") => {
+  if (!input || typeof input !== "object") return null;
+
+  const size = Number(input?.size || 0);
+  if (!Number.isFinite(size) || size <= 0) return null;
+
+  const type = String(input?.type || "").trim().toLowerCase();
+  const name = String(input?.name || fallbackName).trim() || fallbackName;
+  const looksLikeImage = type.startsWith("image/") || isImageFilename(name);
+  if (!looksLikeImage) return null;
+
+  if (typeof File !== "undefined" && input instanceof File) {
+    return input;
+  }
+
+  if (typeof Blob !== "undefined" && input instanceof Blob && typeof File !== "undefined") {
+    return new File([input], name, {
+      type: type || "image/jpeg",
+      lastModified: Date.now(),
+    });
+  }
+
+  return null;
+};
+
 const extractAvatarOwnerId = (storagePath) => {
   const normalized = String(storagePath || "")
     .trim()
@@ -766,6 +942,19 @@ const normalizeAvatarPathForUser = (userId, imagePath) => {
   return "";
 };
 
+const removeAvatarPathIfOwned = async (userId, imagePath) => {
+  const ownedPath = normalizeAvatarPathForUser(userId, imagePath);
+  if (!ownedPath) return false;
+
+  const { error } = await supabase.storage.from(AVATAR_BUCKET).remove([ownedPath]);
+  if (error) {
+    console.warn("Failed to remove old avatar path:", ownedPath, error);
+    return false;
+  }
+
+  return true;
+};
+
 const chunkArray = (list, chunkSize = 100) => {
   const items = Array.isArray(list) ? list : [];
   const size = Math.max(1, Number(chunkSize) || 100);
@@ -775,6 +964,12 @@ const chunkArray = (list, chunkSize = 100) => {
   }
   return chunks;
 };
+
+const sumStorageBytes = (entries = []) =>
+  (entries || []).reduce((total, item) => {
+    const size = parseNumber(item?.metadata?.size, 0) || 0;
+    return total + Math.max(0, size);
+  }, 0);
 
 const listStorageFilesRecursive = async (bucket, rootPrefix = "") => {
   const files = [];
@@ -1352,6 +1547,7 @@ export const AuthAPI = {
           : null;
 
         const updates: LooseRecord = { updated_at: new Date().toISOString() };
+        let previousAvatarPath = "";
         if (canEditPersonalInfo && username) updates.username = String(username).trim();
         if (canEditPersonalInfo && fullName) updates.full_name = String(fullName).trim();
         if (canEditPersonalInfo && gender) updates.gender = String(gender).trim();
@@ -1388,11 +1584,16 @@ export const AuthAPI = {
           }
         }
 
-        if (imageFile instanceof File && imageFile.size > 0) {
-          const storagePath = buildAvatarStoragePath(currentUser.id, imageFile.name);
+        if (imageFile) {
+          const normalizedImage = normalizeImageUploadFile(imageFile, "avatar.jpg");
+          if (!normalizedImage) {
+            throw new Error("Please select a valid image file.");
+          }
+          previousAvatarPath = normalizeAvatarPathForUser(currentUser.id, currentUser.image_path);
+          const storagePath = buildAvatarStoragePath(currentUser.id, normalizedImage.name);
           const { error: uploadError } = await supabase.storage
             .from(AVATAR_BUCKET)
-            .upload(storagePath, imageFile, { upsert: true });
+            .upload(storagePath, normalizedImage, { upsert: true });
           if (uploadError) throw formatSupabaseError(uploadError, "Failed to upload avatar.");
           updates.image_path = storagePath;
         }
@@ -1401,6 +1602,11 @@ export const AuthAPI = {
         const normalized = normalizeUser(updatedRow);
         writeStoredUser(normalized);
         const avatar = await getAvatarUrl(normalized.id, normalized.image_path);
+
+        const nextAvatarPath = normalizeAvatarPathForUser(normalized.id, normalized.image_path);
+        if (previousAvatarPath && previousAvatarPath !== nextAvatarPath) {
+          await removeAvatarPathIfOwned(normalized.id, previousAvatarPath);
+        }
 
         const changedFields = Object.keys(updates).filter((key) => key !== "updated_at");
         await logStatusEvent({
@@ -1539,6 +1745,74 @@ export const PublicAPI = {
         sections: sectionsCount.count || 0,
       };
     }),
+
+  getLandingPageStats: async () =>
+    withApi(async () => {
+      const { data: rpcData, error: rpcError } = await supabase.rpc("app_public_landing_stats");
+      if (!rpcError) {
+        const row = Array.isArray(rpcData) ? (rpcData[0] || null) : (rpcData || null);
+        if (row) {
+          const rawAvatars = Array.isArray(row.avatars) ? row.avatars : [];
+          const urls = await Promise.all(rawAvatars.map((path) => getAvatarUrl(null, path)));
+          const avatars = urls.filter(Boolean).slice(0, 3);
+          return {
+            totalStudents:
+              Number(row.total_students ?? row.totalStudents ?? row.students ?? row.users) || 0,
+            avatars,
+          };
+        }
+      } else if (
+        !isMissingFunctionError(rpcError, "app_public_landing_stats") &&
+        !isPermissionDeniedError(rpcError)
+      ) {
+        throw formatSupabaseError(rpcError);
+      }
+
+      // Fallback for projects without public landing RPC.
+      const [{ data: students, error: studentsError }, { count, error: countError }] =
+        await Promise.all([
+          supabase
+            .from("users")
+            .select("image_path,updated_at")
+            .eq("role", "student")
+            .not("image_path", "is", null)
+            .order("updated_at", { ascending: false })
+            .limit(24),
+          supabase
+            .from("users")
+            .select("id", { count: "exact", head: true })
+            .eq("role", "student"),
+        ]);
+
+      if (studentsError && !isPermissionDeniedError(studentsError)) {
+        throw formatSupabaseError(studentsError);
+      }
+
+      let totalStudents = Number(count) || 0;
+      if (countError && !isPermissionDeniedError(countError)) {
+        throw formatSupabaseError(countError);
+      }
+
+      // Public login page cannot read users directly with strict RLS;
+      // use public aggregate stats as a best-effort realtime count fallback.
+      if (countError && isPermissionDeniedError(countError)) {
+        try {
+          const publicStats = await PublicAPI.getStats();
+          totalStudents = Number(publicStats?.users) || 0;
+        } catch (_) {}
+      }
+
+      const avatarPaths = (students || [])
+        .map((student) => student?.image_path)
+        .filter((path) => !isDefaultAvatarPath(path));
+      const avatarUrls = await Promise.all(avatarPaths.map((path) => getAvatarUrl(null, path)));
+      const avatars = Array.from(new Set(avatarUrls.filter(Boolean))).slice(0, 3);
+
+      return {
+        totalStudents,
+        avatars,
+      };
+    }, { silent: true }),
 };
 
 const mapAnnouncement = (row) => ({
@@ -2350,6 +2624,18 @@ export const AdminAPI = {
         },
       });
 
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "account_update_admin",
+        category: "account",
+        target_user_id: normalized?.id || numericUserId,
+        title: "Account updated",
+        message: `Your account details were updated by ${actor.label}.`,
+        metadata: {
+          updated_fields: ["full_name", "username", "role", "school_id", "expires_at"],
+        },
+      });
+
       return { success: true, user: normalized };
     }),
 
@@ -2404,6 +2690,16 @@ export const AdminAPI = {
         metadata: { auth_synced: true, auth_uid: authUid },
       });
 
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "reset_password",
+        category: "account",
+        target_user_id: targetUser?.id || numericUserId,
+        title: "Password changed",
+        message: `Your account password was changed by ${actor.label}.`,
+        metadata: { auth_synced: true, auth_uid: authUid },
+      });
+
       return { success: true };
     }),
 
@@ -2427,6 +2723,16 @@ export const AdminAPI = {
         metadata: { roles: normalized },
       });
 
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "account_role_update",
+        category: "role",
+        target_user_id: normalizedUser?.id || userId,
+        title: "Role updated",
+        message: `Your account role access was updated by ${actor.label}.`,
+        metadata: { roles: normalized },
+      });
+
       return { success: true };
     }),
 
@@ -2447,6 +2753,19 @@ export const AdminAPI = {
         target_username: normalizedUser?.username || null,
         target_role: normalizedUser?.role || null,
         message: `Updated functional roles for "${normalizedUser?.full_name || normalizedUser?.username || userId}".`,
+        metadata: {
+          sub_role: normalized[0] || null,
+          sub_roles: normalized,
+        },
+      });
+
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "account_sub_role_update",
+        category: "role",
+        target_user_id: normalizedUser?.id || userId,
+        title: "Functional role updated",
+        message: `Your functional role access was updated by ${actor.label}.`,
         metadata: {
           sub_role: normalized[0] || null,
           sub_roles: normalized,
@@ -2559,7 +2878,22 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
-      return mapAnnouncement(data);
+
+      const mapped = mapAnnouncement(data);
+      await createUserNotification({
+        action: "announcement_created",
+        category: "announcement",
+        target_role: normalizeNotificationTargetRole(insertPayload.target_role) || "all",
+        title: `New announcement: ${mapped?.title || "Campus update"}`,
+        message: mapped?.content || "A new announcement has been posted.",
+        metadata: {
+          announcement_id: mapped?.id || null,
+          priority: mapped?.priority || insertPayload.priority || "medium",
+          target_role: mapped?.target_role || insertPayload.target_role || "all",
+        },
+      });
+
+      return mapped;
     }),
 
   updateAnnouncement: async (id, payload) =>
@@ -2581,7 +2915,22 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
-      return mapAnnouncement(data);
+
+      const mapped = mapAnnouncement(data);
+      await createUserNotification({
+        action: "announcement_updated",
+        category: "announcement",
+        target_role: normalizeNotificationTargetRole(mapped?.target_role || payload?.target_role) || "all",
+        title: `Announcement updated: ${mapped?.title || "Campus update"}`,
+        message: mapped?.content || "An announcement has been updated.",
+        metadata: {
+          announcement_id: mapped?.id || id,
+          priority: mapped?.priority || payload?.priority || "medium",
+          target_role: mapped?.target_role || payload?.target_role || "all",
+        },
+      });
+
+      return mapped;
     }),
 
   deleteAnnouncement: async (id) =>
@@ -2620,14 +2969,55 @@ export const AdminAPI = {
 
   updateEvaluationSettings: async (settings) =>
     withApi(async () => {
+      let evaluationEnabledChanged = false;
+      let nextEnabledValue = null;
+      let previousEnabledValue = null;
+
       if (settings?.enabled !== undefined) {
+        const { data: existingEnabledRows, error: existingEnabledError } = await supabase
+          .from("evaluation_settings")
+          .select("setting_key,setting_value")
+          .in("setting_key", ["enabled", "evaluation_enabled"]);
+        if (existingEnabledError) {
+          throw formatSupabaseError(existingEnabledError, "Failed to read evaluation settings.");
+        }
+
+        const existingEnabledMap = new Map();
+        (existingEnabledRows || []).forEach((row) => {
+          existingEnabledMap.set(String(row?.setting_key || "").trim().toLowerCase(), row?.setting_value);
+        });
+
+        previousEnabledValue = toBoolean(
+          existingEnabledMap.get("enabled") ?? existingEnabledMap.get("evaluation_enabled"),
+          true,
+        );
+        nextEnabledValue = Boolean(settings.enabled);
+
         const enabled = settings.enabled ? "true" : "false";
         await upsertSetting("enabled", enabled, "Enable/disable teacher evaluation system");
         await upsertSetting("evaluation_enabled", enabled, "Enable/disable teacher evaluation system");
+        evaluationEnabledChanged = previousEnabledValue !== nextEnabledValue;
       }
 
       if (settings?.template !== undefined) {
         await upsertSetting("template", JSON.stringify(settings.template), "Evaluation template");
+      }
+
+      if (evaluationEnabledChanged) {
+        const actor = describeCurrentActor();
+        await createUserNotification({
+          action: nextEnabledValue ? "evaluation_enabled" : "evaluation_disabled",
+          category: "evaluation",
+          target_role: "all",
+          title: nextEnabledValue ? "Evaluation enabled" : "Evaluation disabled",
+          message: nextEnabledValue
+            ? `Teacher evaluation is now enabled by ${actor.label}.`
+            : `Teacher evaluation is now disabled by ${actor.label}.`,
+          metadata: {
+            enabled_before: previousEnabledValue,
+            enabled_after: nextEnabledValue,
+          },
+        });
       }
 
       return { success: true };
@@ -3113,6 +3503,23 @@ export const AdminAPI = {
         },
       });
 
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "student_warning_issued",
+        category: "discipline",
+        target_user_id: assignmentRow.user_id,
+        title: "New warning issued",
+        message: `You received a ${offenseLevel} warning from ${actor.label}: ${description}`,
+        metadata: {
+          warning_count: warningCount,
+          offense_level: offenseLevel,
+          school_year: schoolYear,
+          section: sectionName || null,
+          year_level: yearLevel || null,
+          department: department || null,
+        },
+      });
+
       let sanctionApplied = false;
       let sanctionReason = "";
       let sanctionDays = 0;
@@ -3156,6 +3563,24 @@ export const AdminAPI = {
             section: sectionName,
             year_level: yearLevel,
             department,
+          },
+        });
+
+        await createUserNotification({
+          action: "student_sanction_applied",
+          category: "discipline",
+          target_user_id: assignmentRow.user_id,
+          title: "Sanction applied",
+          message: `A ${sanctionDays}-day sanction was applied by ${actor.label}. Reason: ${description}`,
+          metadata: {
+            sanction_level: offenseLevel,
+            sanction_days: sanctionDays,
+            sanction_reason: sanctionReason,
+            source: isMajorOffense ? "auto_major_immediate" : "auto_minor_three_warnings",
+            school_year: schoolYear,
+            section: sectionName || null,
+            year_level: yearLevel || null,
+            department: department || null,
           },
         });
       }
@@ -3231,6 +3656,24 @@ export const AdminAPI = {
           section: sectionName,
           year_level: yearLevel,
           department,
+        },
+      });
+
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action: "student_sanction_applied",
+        category: "discipline",
+        target_user_id: assignmentRow.user_id,
+        title: "Sanction applied",
+        message: `A ${sanctionDays}-day sanction was applied by ${actor.label}. Reason: ${reason}`,
+        metadata: {
+          sanction_level: offenseLevel || null,
+          sanction_days: sanctionDays,
+          sanction_reason: sanctionReason,
+          school_year: schoolYear,
+          section: sectionName || null,
+          year_level: yearLevel || null,
+          department: department || null,
         },
       });
 
@@ -3832,6 +4275,27 @@ export const AdminAPI = {
             section: sectionName,
             year_level: yearLevel,
             department,
+          },
+        });
+
+        const actor = describeCurrentActor();
+        await createUserNotification({
+          action: nextSanctions ? "student_sanction_applied" : "student_sanction_cleared",
+          category: "discipline",
+          target_user_id: data?.user_id || previousAssignment?.user_id || null,
+          title: nextSanctions ? "Sanction updated" : "Sanction cleared",
+          message: nextSanctions
+            ? `Your sanction status was updated by ${actor.label}.`
+            : `Your sanction was cleared by ${actor.label}.`,
+          metadata: {
+            sanctions_before: previousSanctions,
+            sanctions_after: nextSanctions,
+            sanction_reason_before: previousSanctionReason || null,
+            sanction_reason_after: nextSanctionReason || null,
+            school_year: schoolYear,
+            section: sectionName || null,
+            year_level: yearLevel || null,
+            department: department || null,
           },
         });
       }
@@ -4735,6 +5199,22 @@ export const AdminAPI = {
         remarks: payload?.remarks || null,
         updated_at: new Date().toISOString(),
       };
+      const actor = describeCurrentActor();
+      const subjectMap = await fetchSubjectsByIds([subjectId]);
+      const sectionMap = await fetchSectionsByIds([sectionId]);
+      const subject = subjectMap.get(subjectId);
+      const section = sectionMap.get(sectionId);
+      const gradeSummaryParts = [];
+      if (gradePayload.prelim_grade != null) {
+        gradeSummaryParts.push(`Prelim ${Number(gradePayload.prelim_grade).toFixed(1)}`);
+      }
+      if (gradePayload.midterm_grade != null) {
+        gradeSummaryParts.push(`Midterm ${Number(gradePayload.midterm_grade).toFixed(1)}`);
+      }
+      if (gradePayload.finals_grade != null) {
+        gradeSummaryParts.push(`Finals ${Number(gradePayload.finals_grade).toFixed(1)}`);
+      }
+      const gradeSummary = gradeSummaryParts.join(", ");
 
       const { data: existing, error: existingError } = await supabase
         .from("grades")
@@ -4755,6 +5235,29 @@ export const AdminAPI = {
           .select("*")
           .single();
         if (error) throw formatSupabaseError(error);
+
+        await createUserNotification({
+          action: "grade_updated",
+          category: "grade",
+          target_user_id: studentId,
+          title: `Grade updated: ${subject?.subject_code || subject?.subject_name || "Subject"}`,
+          message: `${subject?.subject_name || subject?.subject_code || "Subject"} (${semester}) updated by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+          metadata: {
+            grade_id: data?.id || existing.id,
+            subject_id: subjectId,
+            subject_code: subject?.subject_code || null,
+            subject_name: subject?.subject_name || null,
+            section_id: sectionId,
+            section: section?.section_name || null,
+            school_year: schoolYear,
+            semester,
+            prelim_grade: gradePayload.prelim_grade,
+            midterm_grade: gradePayload.midterm_grade,
+            finals_grade: gradePayload.finals_grade,
+            final_grade: gradePayload.final_grade,
+          },
+        });
+
         return data;
       }
 
@@ -4767,6 +5270,29 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      await createUserNotification({
+        action: "grade_created",
+        category: "grade",
+        target_user_id: studentId,
+        title: `New grade uploaded: ${subject?.subject_code || subject?.subject_name || "Subject"}`,
+        message: `${subject?.subject_name || subject?.subject_code || "Subject"} (${semester}) uploaded by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+        metadata: {
+          grade_id: data?.id || null,
+          subject_id: subjectId,
+          subject_code: subject?.subject_code || null,
+          subject_name: subject?.subject_name || null,
+          section_id: sectionId,
+          section: section?.section_name || null,
+          school_year: schoolYear,
+          semester,
+          prelim_grade: gradePayload.prelim_grade,
+          midterm_grade: gradePayload.midterm_grade,
+          finals_grade: gradePayload.finals_grade,
+          final_grade: gradePayload.final_grade,
+        },
+      });
+
       return data;
     }),
 
@@ -4786,6 +5312,40 @@ export const AdminAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      const subjectMap = await fetchSubjectsByIds([data?.subject_id]);
+      const sectionMap = await fetchSectionsByIds([data?.section_id]);
+      const subject = subjectMap.get(data?.subject_id);
+      const section = sectionMap.get(data?.section_id);
+      const actor = describeCurrentActor();
+      const gradeSummaryParts = [];
+      if (data?.prelim_grade != null) gradeSummaryParts.push(`Prelim ${Number(data.prelim_grade).toFixed(1)}`);
+      if (data?.midterm_grade != null) gradeSummaryParts.push(`Midterm ${Number(data.midterm_grade).toFixed(1)}`);
+      if (data?.finals_grade != null) gradeSummaryParts.push(`Finals ${Number(data.finals_grade).toFixed(1)}`);
+      const gradeSummary = gradeSummaryParts.join(", ");
+
+      await createUserNotification({
+        action: "grade_updated",
+        category: "grade",
+        target_user_id: data?.student_id || null,
+        title: `Grade updated: ${subject?.subject_code || subject?.subject_name || "Subject"}`,
+        message: `${subject?.subject_name || subject?.subject_code || "Subject"} grade updated by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+        metadata: {
+          grade_id: data?.id || id,
+          subject_id: data?.subject_id || null,
+          subject_code: subject?.subject_code || null,
+          subject_name: subject?.subject_name || null,
+          section_id: data?.section_id || null,
+          section: section?.section_name || null,
+          school_year: data?.school_year || null,
+          semester: data?.semester || null,
+          prelim_grade: data?.prelim_grade ?? null,
+          midterm_grade: data?.midterm_grade ?? null,
+          finals_grade: data?.finals_grade ?? null,
+          final_grade: data?.final_grade ?? null,
+        },
+      });
+
       return data;
     }),
 
@@ -4846,6 +5406,531 @@ export const AdminAPI = {
         scanned_files: storedFiles.length,
         active_files: referencedPaths.size,
         files: stalePaths,
+      };
+    }),
+
+  clearStatusLogsByDateRange: async (filters: LooseRecord = {}) =>
+    withApi(async () => {
+      const fromRaw = String(filters?.date_from || "").trim();
+      const toRaw = String(filters?.date_to || "").trim();
+      const category = String(filters?.category || "").trim().toLowerCase();
+
+      if (!fromRaw || !toRaw) {
+        throw new Error("Start and end date are required.");
+      }
+
+      const fromDate = new Date(fromRaw);
+      const toDate = new Date(toRaw);
+      if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+        throw new Error("Invalid date range.");
+      }
+      if (toDate < fromDate) {
+        throw new Error("End date must be after start date.");
+      }
+
+      const toDateInclusive = new Date(toDate);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) {
+        toDateInclusive.setHours(23, 59, 59, 999);
+      }
+
+      let countQuery = supabase
+        .from("status_logs")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", fromDate.toISOString())
+        .lte("created_at", toDateInclusive.toISOString());
+
+      let deleteQuery = supabase
+        .from("status_logs")
+        .delete()
+        .gte("created_at", fromDate.toISOString())
+        .lte("created_at", toDateInclusive.toISOString());
+
+      if (category) {
+        countQuery = countQuery.eq("category", category);
+        deleteQuery = deleteQuery.eq("category", category);
+      }
+
+      const { count, error: countError } = await countQuery;
+      if (countError) {
+        if (isMissingRelation(countError)) {
+          throw new Error("Status logs table is missing.");
+        }
+        throw formatSupabaseError(countError, "Failed to count logs.");
+      }
+
+      const total = Number(count || 0);
+      if (total <= 0) {
+        return { deleted: 0, date_from: fromDate.toISOString(), date_to: toDateInclusive.toISOString(), category };
+      }
+
+      const { error: deleteError } = await deleteQuery;
+      if (deleteError) {
+        throw formatSupabaseError(deleteError, "Failed to clear logs.");
+      }
+
+      await logStatusEvent({
+        action: "status_logs_cleared",
+        category: "system",
+        message: `Cleared ${total} status log record(s) from ${fromDate.toISOString()} to ${toDateInclusive.toISOString()}.`,
+        metadata: {
+          deleted_count: total,
+          date_from: fromDate.toISOString(),
+          date_to: toDateInclusive.toISOString(),
+          category: category || null,
+        },
+      });
+
+      return {
+        deleted: total,
+        date_from: fromDate.toISOString(),
+        date_to: toDateInclusive.toISOString(),
+        category: category || null,
+      };
+    }),
+
+  getStorageHealth: async (options: LooseRecord = {}) =>
+    withApi(async () => {
+      const largeFileThresholdMb = Math.max(1, parseNumber(options?.large_file_threshold_mb, 5) || 5);
+      const spikeThresholdMb = Math.max(10, parseNumber(options?.spike_threshold_mb, 100) || 100);
+      const largeFileThresholdBytes = largeFileThresholdMb * 1024 * 1024;
+      const spikeThresholdBytes = spikeThresholdMb * 1024 * 1024;
+
+      const [avatarFiles, backupFiles] = await Promise.all([
+        listStorageFilesRecursive(AVATAR_BUCKET, "profiles"),
+        listStorageFilesRecursive(BACKUP_BUCKET, BACKUP_PREFIX),
+      ]);
+
+      const avatarBytes = sumStorageBytes(avatarFiles);
+      const backupBytes = sumStorageBytes(backupFiles);
+      const totalBytes = avatarBytes + backupBytes;
+
+      const largeFiles = [...avatarFiles, ...backupFiles]
+        .map((entry) => ({
+          bucket: entry?.bucket || (entry?.full_path?.startsWith("profiles/") ? AVATAR_BUCKET : BACKUP_BUCKET),
+          path: entry?.full_path,
+          size: parseNumber(entry?.metadata?.size, 0) || 0,
+          created_at: entry?.created_at || entry?.updated_at || null,
+        }))
+        .filter((entry) => entry.size >= largeFileThresholdBytes)
+        .sort((a, b) => b.size - a.size);
+
+      const previousTotalBytes = parseNumber(localStorage.getItem(MAINTENANCE_STORAGE_BASELINE_KEY), 0) || 0;
+      const deltaBytes = totalBytes - previousTotalBytes;
+      const spikeDetected = previousTotalBytes > 0 && deltaBytes >= spikeThresholdBytes;
+      localStorage.setItem(MAINTENANCE_STORAGE_BASELINE_KEY, String(totalBytes));
+
+      if (spikeDetected || largeFiles.length > 0) {
+        await logStatusEvent({
+          action: "storage_alert_detected",
+          category: "system",
+          message: spikeDetected
+            ? "Storage spike detected during maintenance health check."
+            : "Large storage files detected during maintenance health check.",
+          metadata: {
+            total_bytes: totalBytes,
+            previous_total_bytes: previousTotalBytes,
+            delta_bytes: deltaBytes,
+            spike_detected: spikeDetected,
+            large_file_threshold_mb: largeFileThresholdMb,
+            spike_threshold_mb: spikeThresholdMb,
+            large_files_count: largeFiles.length,
+            largest_files: largeFiles.slice(0, 20),
+          },
+        });
+      }
+
+      return {
+        avatar_bucket: {
+          bucket: AVATAR_BUCKET,
+          file_count: avatarFiles.length,
+          total_bytes: avatarBytes,
+        },
+        backup_bucket: {
+          bucket: BACKUP_BUCKET,
+          file_count: backupFiles.length,
+          total_bytes: backupBytes,
+        },
+        total_bytes: totalBytes,
+        previous_total_bytes: previousTotalBytes,
+        delta_bytes: deltaBytes,
+        spike_detected: spikeDetected,
+        large_file_threshold_mb: largeFileThresholdMb,
+        spike_threshold_mb: spikeThresholdMb,
+        large_files: largeFiles,
+      };
+    }),
+
+  getDatabaseHealth: async () =>
+    withApi(async () => {
+      const startedAt = performance.now();
+      const nowIso = new Date().toISOString();
+
+      const [{ error: usersError }, { error: logsError }, { error: requestsError }] = await Promise.all([
+        supabase.from("users").select("id", { count: "exact", head: true }),
+        supabase.from("status_logs").select("id", { count: "exact", head: true }),
+        supabase.from("account_requests").select("id", { count: "exact", head: true }),
+      ]);
+
+      const latencyMs = Math.round((performance.now() - startedAt) * 100) / 100;
+      const healthy = !usersError && !logsError && !requestsError;
+
+      return {
+        checked_at: nowIso,
+        healthy,
+        latency_ms: latencyMs,
+        checks: [
+          { name: "users_table", ok: !usersError, error: usersError?.message || null },
+          { name: "status_logs_table", ok: !logsError, error: logsError?.message || null },
+          { name: "account_requests_table", ok: !requestsError, error: requestsError?.message || null },
+        ],
+      };
+    }),
+
+  findDuplicateUsers: async () =>
+    withApi(async () => {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, username, full_name, school_id, auth_uid, image_path, created_at, updated_at")
+        .order("created_at", { ascending: true });
+
+      if (error) throw formatSupabaseError(error, "Failed to scan users for duplicates.");
+
+      const rows = data || [];
+      const byUsername = new Map<string, any[]>();
+      const bySchoolId = new Map<string, any[]>();
+      const byAuthUid = new Map<string, any[]>();
+
+      for (const row of rows) {
+        const usernameKey = String(row?.username || "").trim().toLowerCase();
+        const schoolIdKey = String(row?.school_id || "").trim().toLowerCase();
+        const authUidKey = String(row?.auth_uid || "").trim().toLowerCase();
+
+        if (usernameKey) {
+          if (!byUsername.has(usernameKey)) byUsername.set(usernameKey, []);
+          byUsername.get(usernameKey)?.push(row);
+        }
+        if (schoolIdKey) {
+          if (!bySchoolId.has(schoolIdKey)) bySchoolId.set(schoolIdKey, []);
+          bySchoolId.get(schoolIdKey)?.push(row);
+        }
+        if (authUidKey) {
+          if (!byAuthUid.has(authUidKey)) byAuthUid.set(authUidKey, []);
+          byAuthUid.get(authUidKey)?.push(row);
+        }
+      }
+
+      const toDuplicateGroups = (map: Map<string, any[]>, kind: string) =>
+        Array.from(map.entries())
+          .filter(([, group]) => (group || []).length > 1)
+          .map(([key, group]) => ({
+            type: kind,
+            key,
+            count: group.length,
+            users: group.map((row) => ({
+              id: row.id,
+              username: row.username || "",
+              full_name: row.full_name || "",
+              school_id: row.school_id || "",
+              auth_uid: row.auth_uid || null,
+              image_path: row.image_path || null,
+              created_at: row.created_at || null,
+              updated_at: row.updated_at || null,
+            })),
+          }))
+          .sort((a, b) => b.count - a.count);
+
+      const usernameDuplicates = toDuplicateGroups(byUsername, "username");
+      const schoolIdDuplicates = toDuplicateGroups(bySchoolId, "school_id");
+      const authUidDuplicates = toDuplicateGroups(byAuthUid, "auth_uid");
+
+      return {
+        total_users: rows.length,
+        duplicate_groups:
+          usernameDuplicates.length + schoolIdDuplicates.length + authUidDuplicates.length,
+        username_duplicates: usernameDuplicates,
+        school_id_duplicates: schoolIdDuplicates,
+        auth_uid_duplicates: authUidDuplicates,
+      };
+    }),
+
+  restoreBackup: async (backupPath: string, options: LooseRecord = {}) =>
+    withApi(async () => {
+      const path = String(backupPath || "").trim().replace(/^\/+/, "");
+      if (!path) throw new Error("Backup path is required.");
+
+      const graceDays = Math.max(1, parseNumber(options?.grace_days, 30) || 30);
+      const selectedTables = Array.isArray(options?.tables)
+        ? options.tables.map((table) => String(table || "").trim()).filter(Boolean)
+        : [];
+
+      const tableAllowList = [
+        "users",
+        "buildings",
+        "rooms",
+        "sections",
+        "subjects",
+        "announcements",
+        "campus_projects",
+        "evaluation_settings",
+        "section_assignments",
+        "teacher_assignments",
+        "schedules",
+        "user_assignments",
+        "study_load",
+        "grades",
+        "teacher_evaluations",
+        "feedbacks",
+        "projects",
+        "attendance_logs",
+        "settings",
+        "section_subjects",
+      ];
+
+      const backups = await AdminAPI.getBackups();
+      const targetBackup = (backups || []).find((entry) => String(entry?.path || "").trim() === path);
+      if (!targetBackup?.created_at) {
+        throw new Error("Backup not found.");
+      }
+
+      const createdAt = new Date(targetBackup.created_at);
+      if (Number.isNaN(createdAt.getTime())) {
+        throw new Error("Backup has invalid creation date.");
+      }
+
+      const now = Date.now();
+      const ageMs = now - createdAt.getTime();
+      const allowedMs = graceDays * 24 * 60 * 60 * 1000;
+      if (ageMs > allowedMs) {
+        throw new Error(`Backup is older than ${graceDays} day grace period and cannot be restored.`);
+      }
+
+      const { data: blobData, error: downloadError } = await supabase.storage
+        .from(BACKUP_BUCKET)
+        .download(path);
+      if (downloadError || !blobData) {
+        throw formatSupabaseError(downloadError, "Failed to download backup file.");
+      }
+
+      let payload: any = null;
+      try {
+        payload = JSON.parse(await blobData.text());
+      } catch (_) {
+        throw new Error("Backup file is invalid JSON.");
+      }
+
+      const records = payload?.records && typeof payload.records === "object" ? payload.records : {};
+      const tablesToRestore = (selectedTables.length > 0 ? selectedTables : tableAllowList)
+        .filter((table) => tableAllowList.includes(table));
+
+      const restored: Record<string, number> = {};
+      const skipped: Record<string, number> = {};
+
+      for (const table of tablesToRestore) {
+        const rows = Array.isArray(records?.[table]) ? records[table] : [];
+        if (rows.length <= 0) {
+          skipped[table] = 0;
+          continue;
+        }
+
+        let restoredCount = 0;
+        for (const batch of chunkArray(rows, 200)) {
+          const { error: upsertError } = await supabase
+            .from(table)
+            .upsert(batch, { onConflict: "id" });
+
+          if (upsertError) {
+            if (isMissingRelation(upsertError)) {
+              skipped[table] = rows.length;
+              restoredCount = 0;
+              break;
+            }
+            throw formatSupabaseError(upsertError, `Failed to restore "${table}".`);
+          }
+          restoredCount += batch.length;
+        }
+        if (restoredCount > 0) {
+          restored[table] = restoredCount;
+        }
+      }
+
+      await logStatusEvent({
+        action: "backup_restored",
+        category: "system",
+        message: `Backup restored from ${path}.`,
+        metadata: {
+          path,
+          grace_days: graceDays,
+          restored,
+          skipped,
+        },
+      });
+
+      return {
+        path,
+        restored,
+        skipped,
+      };
+    }),
+
+  runMaintenanceSuite: async (options: LooseRecord = {}) =>
+    withApi(async () => {
+      const dateFrom = String(options?.logs_date_from || "").trim();
+      const dateTo = String(options?.logs_date_to || "").trim();
+      const clearLogs = Boolean(options?.clear_logs && dateFrom && dateTo);
+
+      const [cleanupResult, storageHealth, dbHealth, duplicateUsers] = await Promise.all([
+        AdminAPI.cleanupPictures(),
+        AdminAPI.getStorageHealth({
+          large_file_threshold_mb: parseNumber(options?.large_file_threshold_mb, 5) || 5,
+          spike_threshold_mb: parseNumber(options?.spike_threshold_mb, 100) || 100,
+        }),
+        AdminAPI.getDatabaseHealth(),
+        AdminAPI.findDuplicateUsers(),
+      ]);
+
+      let logsResult = null;
+      if (clearLogs) {
+        logsResult = await AdminAPI.clearStatusLogsByDateRange({
+          date_from: dateFrom,
+          date_to: dateTo,
+          category: String(options?.logs_category || "").trim().toLowerCase() || null,
+        });
+      }
+
+      const report = {
+        generated_at: new Date().toISOString(),
+        cleanup_pictures: cleanupResult,
+        storage_health: storageHealth,
+        database_health: dbHealth,
+        duplicate_users: duplicateUsers,
+        logs_cleanup: logsResult,
+      };
+
+      await logStatusEvent({
+        action: "maintenance_suite_completed",
+        category: "system",
+        message: "Admin maintenance suite completed.",
+        metadata: report,
+      });
+
+      return report;
+    }),
+
+  getMaintenanceScheduler: async () =>
+    withApi(async () => {
+      const keys = [
+        "maintenance_schedule_enabled",
+        "maintenance_schedule_frequency",
+        "maintenance_schedule_day",
+        "maintenance_schedule_time",
+        "maintenance_schedule_last_report_at",
+      ];
+
+      const { data, error } = await supabase
+        .from("evaluation_settings")
+        .select("setting_key,setting_value")
+        .in("setting_key", keys);
+      if (error) throw formatSupabaseError(error, "Failed to load maintenance scheduler settings.");
+
+      const byKey = new Map<string, any>();
+      (data || []).forEach((row) => byKey.set(String(row?.setting_key || ""), row?.setting_value));
+
+      const enabledRaw = String(byKey.get("maintenance_schedule_enabled") || "")
+        .trim()
+        .toLowerCase();
+
+      return {
+        enabled: enabledRaw === "true" || enabledRaw === "1" || enabledRaw === "yes",
+        frequency: String(byKey.get("maintenance_schedule_frequency") || "weekly")
+          .trim()
+          .toLowerCase(),
+        day: String(byKey.get("maintenance_schedule_day") || "monday")
+          .trim()
+          .toLowerCase(),
+        time: String(byKey.get("maintenance_schedule_time") || "08:00").trim(),
+        last_report_at: byKey.get("maintenance_schedule_last_report_at") || null,
+      };
+    }),
+
+  updateMaintenanceScheduler: async (payload: LooseRecord = {}) =>
+    withApi(async () => {
+      const enabled = Boolean(payload?.enabled);
+      const frequency = String(payload?.frequency || "weekly")
+        .trim()
+        .toLowerCase();
+      const day = String(payload?.day || "monday")
+        .trim()
+        .toLowerCase();
+      const time = String(payload?.time || "08:00").trim();
+
+      if (!["weekly", "monthly"].includes(frequency)) {
+        throw new Error("Frequency must be weekly or monthly.");
+      }
+      if (!/^\d{2}:\d{2}$/.test(time)) {
+        throw new Error("Time must be in HH:mm format.");
+      }
+
+      await upsertSetting(
+        "maintenance_schedule_enabled",
+        enabled ? "true" : "false",
+        "Enable or disable automated maintenance scheduler",
+      );
+      await upsertSetting(
+        "maintenance_schedule_frequency",
+        frequency,
+        "Maintenance schedule frequency",
+      );
+      await upsertSetting(
+        "maintenance_schedule_day",
+        day,
+        "Maintenance schedule day (weekday or month day)",
+      );
+      await upsertSetting(
+        "maintenance_schedule_time",
+        time,
+        "Maintenance schedule time HH:mm",
+      );
+
+      await logStatusEvent({
+        action: "maintenance_scheduler_updated",
+        category: "system",
+        message: "Maintenance scheduler configuration updated.",
+        metadata: { enabled, frequency, day, time },
+      });
+
+      return { enabled, frequency, day, time };
+    }),
+
+  sendMaintenanceReportNow: async (options: LooseRecord = {}) =>
+    withApi(async () => {
+      const report = await AdminAPI.runMaintenanceSuite({
+        large_file_threshold_mb: parseNumber(options?.large_file_threshold_mb, 5) || 5,
+        spike_threshold_mb: parseNumber(options?.spike_threshold_mb, 100) || 100,
+        clear_logs: false,
+      });
+
+      const sentAt = new Date().toISOString();
+      await upsertSetting(
+        "maintenance_schedule_last_report_at",
+        sentAt,
+        "Last maintenance report dispatch time",
+      );
+
+      await logStatusEvent({
+        action: "maintenance_report_sent",
+        category: "system",
+        message: "Maintenance report sent to admins.",
+        metadata: {
+          sent_at: sentAt,
+          recipient_group: "admins",
+          report,
+        },
+      });
+
+      return {
+        sent_at: sentAt,
+        recipient_group: "admins",
+        report,
       };
     }),
 
@@ -5031,6 +6116,162 @@ export const AdminAPI = {
     }),
 };
 
+export const NotificationAPI = {
+  getUnread: async (options: LooseRecord = {}) =>
+    withApi(async () => {
+      const currentUser = requireStoredUser();
+      const limitValue = Number(options?.limit);
+      const limit = Number.isFinite(limitValue)
+        ? Math.min(100, Math.max(1, Math.trunc(limitValue)))
+        : 20;
+      const fetchLimit = Math.min(400, Math.max(limit * 4, 40));
+
+      const { data: notificationRows, error: notificationsError } = await supabase
+        .from("notifications")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit);
+
+      if (notificationsError) {
+        if (isMissingNotificationFeatureError(notificationsError)) return [];
+        throw formatSupabaseError(notificationsError, "Failed to load notifications.");
+      }
+
+      const notifications = (notificationRows || []).map(mapNotification);
+      if (!notifications.length) return [];
+
+      const notificationIds = notifications
+        .map((row) => parseNumber(row?.id, null))
+        .filter(Boolean);
+      if (!notificationIds.length) return [];
+
+      const { data: readRows, error: readError } = await supabase
+        .from("notification_reads")
+        .select("notification_id")
+        .eq("user_id", currentUser.id)
+        .in("notification_id", notificationIds);
+
+      if (readError) {
+        if (isMissingNotificationFeatureError(readError)) {
+          return notifications.slice(0, limit);
+        }
+        throw formatSupabaseError(readError, "Failed to load notification read status.");
+      }
+
+      const readSet = new Set(
+        (readRows || [])
+          .map((row) => parseNumber(row?.notification_id, null))
+          .filter(Boolean),
+      );
+
+      return notifications
+        .filter((notification) => !readSet.has(parseNumber(notification?.id, null)))
+        .slice(0, limit);
+    }, { silent: true }),
+
+  markAsRead: async (notificationId) =>
+    withApi(async () => {
+      const currentUser = requireStoredUser();
+      const numericNotificationId = parseNumber(notificationId, null);
+      if (!numericNotificationId) throw new Error("Invalid notification selected.");
+
+      const { error } = await supabase
+        .from("notification_reads")
+        .upsert(
+          {
+            notification_id: numericNotificationId,
+            user_id: currentUser.id,
+            read_at: new Date().toISOString(),
+          },
+          { onConflict: "notification_id,user_id" },
+        );
+
+      if (error && !isMissingNotificationFeatureError(error)) {
+        throw formatSupabaseError(error, "Failed to mark notification as read.");
+      }
+
+      return { success: true };
+    }, { silent: true }),
+
+  markAllAsRead: async (options: LooseRecord = {}) =>
+    withApi(async () => {
+      const currentUser = requireStoredUser();
+      const limitValue = Number(options?.limit);
+      const fetchLimit = Number.isFinite(limitValue)
+        ? Math.min(2000, Math.max(20, Math.trunc(limitValue)))
+        : 1000;
+
+      const { data: notificationRows, error: notificationsError } = await supabase
+        .from("notifications")
+        .select("id")
+        .order("created_at", { ascending: false })
+        .limit(fetchLimit);
+
+      if (notificationsError) {
+        if (isMissingNotificationFeatureError(notificationsError)) {
+          return { success: true, marked_count: 0 };
+        }
+        throw formatSupabaseError(notificationsError, "Failed to load notifications.");
+      }
+
+      const notificationIds = (notificationRows || [])
+        .map((row) => parseNumber(row?.id, null))
+        .filter(Boolean);
+      if (!notificationIds.length) return { success: true, marked_count: 0 };
+
+      const nowIso = new Date().toISOString();
+      const payloadRows = notificationIds.map((id) => ({
+        notification_id: id,
+        user_id: currentUser.id,
+        read_at: nowIso,
+      }));
+
+      for (const batch of chunkArray(payloadRows, 200)) {
+        const { error } = await supabase
+          .from("notification_reads")
+          .upsert(batch, { onConflict: "notification_id,user_id" });
+
+        if (error && !isMissingNotificationFeatureError(error)) {
+          throw formatSupabaseError(error, "Failed to mark all notifications as read.");
+        }
+      }
+
+      return { success: true, marked_count: payloadRows.length };
+    }, { silent: true }),
+
+  subscribeToInbox: (onChange) => {
+    if (typeof onChange !== "function") return () => {};
+
+    const currentUser = readStoredUser();
+    const currentUserId = parseNumber(currentUser?.id, null);
+    if (!currentUserId) return () => {};
+
+    const channelName = `notification-inbox-${currentUserId}-${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications" },
+        () => onChange(),
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "notification_reads",
+          filter: `user_id=eq.${currentUserId}`,
+        },
+        () => onChange(),
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel).catch(() => undefined);
+    };
+  },
+};
+
 const detectMissingColumn = (error) => {
   const message = String(error?.message || "");
   return (
@@ -5213,6 +6454,82 @@ const tryParseJson = (value) => {
 };
 
 export const StudentAPI = {
+  requestProfilePictureUpdate: async (note = null) =>
+    withApi(async () => {
+      const { data, error } = await supabase.rpc("app_request_profile_picture_update", {
+        p_image_path: null,
+        p_note: note == null ? null : String(note).trim() || null,
+      });
+
+      if (error) {
+        if (isMissingFunctionError(error, "app_request_profile_picture_update")) {
+          throw new Error(
+            "Profile picture request RPC is missing. Run the latest supabase.txt to enable this approval workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to submit profile picture request.");
+      }
+
+      const row = Array.isArray(data) ? data[0] : data;
+      return row || null;
+    }),
+
+  completeApprovedProfilePictureUpdate: async (imageFile) =>
+    withApi(async () => {
+      const currentUser = requireStoredUser();
+      const previousAvatarPath = normalizeAvatarPathForUser(currentUser.id, currentUser.image_path);
+      const normalizedImage = normalizeImageUploadFile(imageFile, "profile.jpg");
+      if (!normalizedImage) {
+        throw new Error("Please select a valid image file.");
+      }
+
+      const storagePath = buildAvatarStoragePath(currentUser.id, normalizedImage.name);
+      const { error: uploadError } = await supabase.storage
+        .from(AVATAR_BUCKET)
+        .upload(storagePath, normalizedImage, { upsert: true });
+      if (uploadError) {
+        throw formatSupabaseError(uploadError, "Failed to upload profile picture.");
+      }
+
+      const { data, error } = await supabase.rpc("app_complete_approved_profile_picture_update", {
+        p_image_path: storagePath,
+      });
+
+      if (error) {
+        await supabase.storage.from(AVATAR_BUCKET).remove([storagePath]);
+        if (isMissingFunctionError(error, "app_complete_approved_profile_picture_update")) {
+          throw new Error(
+            "Approved profile picture RPC is missing. Run the latest supabase.txt to enable this workflow.",
+          );
+        }
+        throw formatSupabaseError(error, "Failed to apply approved profile picture update.");
+      }
+
+      const value = Array.isArray(data) ? data[0] : data;
+      let synced = null;
+      if (typeof value === "boolean") {
+        synced = value;
+      } else if (value && typeof value === "object") {
+        if (typeof value.app_complete_approved_profile_picture_update === "boolean") {
+          synced = value.app_complete_approved_profile_picture_update;
+        } else if (typeof value.success === "boolean") {
+          synced = value.success;
+        }
+      }
+      if (synced == null) {
+        synced = toBoolean(value, false);
+      }
+      if (!synced) {
+        throw new Error("Profile picture update was not completed. Please try again.");
+      }
+
+      if (previousAvatarPath && previousAvatarPath !== storagePath) {
+        await removeAvatarPathIfOwned(currentUser.id, previousAvatarPath);
+      }
+
+      return true;
+    }),
+
   requestPasswordReset: async (note = null) =>
     withApi(async () => {
       const { data, error } = await supabase.rpc("app_request_password_reset", {
@@ -5299,13 +6616,17 @@ export const StudentAPI = {
         );
       }
 
-      // Force password sync on the authenticated Supabase user as an additional guard.
-      const { error: authUpdateError } = await supabase.auth.updateUser({ password });
-      if (authUpdateError) {
-        throw formatSupabaseError(
-          authUpdateError,
-          "Password reset succeeded in database, but failed to sync active auth session password.",
-        );
+      // Best-effort session sync: RPC already updates auth.users securely.
+      // Some legacy/stale sessions are not eligible for updateUser and should not fail the flow.
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.user?.id) {
+        const { error: authUpdateError } = await supabase.auth.updateUser({ password });
+        if (authUpdateError) {
+          console.warn(
+            "Password reset RPC succeeded, but auth.updateUser failed for current session:",
+            authUpdateError,
+          );
+        }
       }
 
       return true;
@@ -6032,7 +7353,22 @@ export const TeacherAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
-      return mapAnnouncement(data);
+
+      const mapped = mapAnnouncement(data);
+      await createUserNotification({
+        action: "announcement_created",
+        category: "announcement",
+        target_role: normalizeNotificationTargetRole(mapped?.target_role || payload?.target_role) || "all",
+        title: `New announcement: ${mapped?.title || "Campus update"}`,
+        message: mapped?.content || "A new announcement has been posted.",
+        metadata: {
+          announcement_id: mapped?.id || null,
+          priority: mapped?.priority || payload?.priority || "medium",
+          target_role: mapped?.target_role || payload?.target_role || "all",
+        },
+      });
+
+      return mapped;
     }),
 
   deleteAnnouncement: async (id) =>
@@ -6317,6 +7653,12 @@ export const TeacherAPI = {
         finals_grade: finalsGrade,
         updated_at: new Date().toISOString(),
       };
+      const actor = describeCurrentActor();
+      const gradeSummaryParts = [];
+      if (prelimGrade != null) gradeSummaryParts.push(`Prelim ${prelimGrade.toFixed(1)}`);
+      if (midtermGrade != null) gradeSummaryParts.push(`Midterm ${midtermGrade.toFixed(1)}`);
+      if (finalsGrade != null) gradeSummaryParts.push(`Finals ${finalsGrade.toFixed(1)}`);
+      const gradeSummary = gradeSummaryParts.join(", ");
 
       if (existing) {
         const { data, error } = await supabase
@@ -6326,6 +7668,28 @@ export const TeacherAPI = {
           .select("*")
           .single();
         if (error) throw formatSupabaseError(error);
+
+        await createUserNotification({
+          action: "grade_updated",
+          category: "grade",
+          target_user_id: studentId,
+          title: `Grade updated: ${subject.subject_code || subject.subject_name || "Subject"}`,
+          message: `${subject.subject_name || subject.subject_code || "Subject"} (${semester}) updated by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+          metadata: {
+            grade_id: data?.id || existing.id,
+            subject_id: subject.id,
+            subject_code: subject.subject_code || null,
+            subject_name: subject.subject_name || null,
+            section_id: section.id,
+            section: section.section_name || section.section || null,
+            school_year: schoolYear,
+            semester,
+            prelim_grade: prelimGrade,
+            midterm_grade: midtermGrade,
+            finals_grade: finalsGrade,
+          },
+        });
+
         return data;
       }
 
@@ -6338,6 +7702,28 @@ export const TeacherAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      await createUserNotification({
+        action: "grade_created",
+        category: "grade",
+        target_user_id: studentId,
+        title: `New grade uploaded: ${subject.subject_code || subject.subject_name || "Subject"}`,
+        message: `${subject.subject_name || subject.subject_code || "Subject"} (${semester}) uploaded by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+        metadata: {
+          grade_id: data?.id || null,
+          subject_id: subject.id,
+          subject_code: subject.subject_code || null,
+          subject_name: subject.subject_name || null,
+          section_id: section.id,
+          section: section.section_name || section.section || null,
+          school_year: schoolYear,
+          semester,
+          prelim_grade: prelimGrade,
+          midterm_grade: midtermGrade,
+          finals_grade: finalsGrade,
+        },
+      });
+
       return data;
     }),
 
@@ -6359,6 +7745,39 @@ export const TeacherAPI = {
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
+
+      const subjectMap = await fetchSubjectsByIds([data?.subject_id]);
+      const sectionMap = await fetchSectionsByIds([data?.section_id]);
+      const subject = subjectMap.get(data?.subject_id);
+      const section = sectionMap.get(data?.section_id);
+      const actor = describeCurrentActor();
+      const gradeSummaryParts = [];
+      if (prelimGrade != null) gradeSummaryParts.push(`Prelim ${prelimGrade.toFixed(1)}`);
+      if (midtermGrade != null) gradeSummaryParts.push(`Midterm ${midtermGrade.toFixed(1)}`);
+      if (finalsGrade != null) gradeSummaryParts.push(`Finals ${finalsGrade.toFixed(1)}`);
+      const gradeSummary = gradeSummaryParts.join(", ");
+
+      await createUserNotification({
+        action: "grade_updated",
+        category: "grade",
+        target_user_id: data?.student_id || null,
+        title: `Grade updated: ${subject?.subject_code || subject?.subject_name || "Subject"}`,
+        message: `${subject?.subject_name || subject?.subject_code || "Subject"} grade updated by ${actor.label}${gradeSummary ? `: ${gradeSummary}` : "."}`,
+        metadata: {
+          grade_id: data?.id || id,
+          subject_id: data?.subject_id || null,
+          subject_code: subject?.subject_code || null,
+          subject_name: subject?.subject_name || null,
+          section_id: data?.section_id || null,
+          section: section?.section_name || null,
+          school_year: data?.school_year || null,
+          semester: data?.semester || null,
+          prelim_grade: prelimGrade,
+          midterm_grade: midtermGrade,
+          finals_grade: finalsGrade,
+        },
+      });
+
       return data;
     }),
 

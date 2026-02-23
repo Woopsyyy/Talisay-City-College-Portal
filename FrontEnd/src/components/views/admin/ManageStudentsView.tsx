@@ -37,7 +37,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
 
     const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState(false);
     const [isSanctionModalOpen, setIsSanctionModalOpen] = useState(false);
-    const [sanctionDetails, setSanctionDetails] = useState({ days: '', reason: '' });
+    const [sanctionDetails, setSanctionDetails] = useState({ days: '', reason: '', level: 'Minor' });
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
     
     const [deleteModal, setDeleteModal] = useState({
@@ -99,11 +99,46 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
     const fetchData = async () => {
         try {
             setLoading(true);
-            const [fetchedAssignments, fetchedSections] = await Promise.all([
+            const [fetchedAssignments, fetchedSections, fetchedUsers] = await Promise.all([
                 AdminAPI.getUserAssignments(),
-                AdminAPI.getSections()
+                AdminAPI.getSections(),
+                AdminAPI.getUsers()
             ]);
-            setAssignments(Array.isArray(fetchedAssignments) ? fetchedAssignments : []);
+            
+            let assignments = Array.isArray(fetchedAssignments) ? fetchedAssignments : [];
+            const users = Array.isArray(fetchedUsers) ? fetchedUsers : [];
+
+            const assignedUserIds = new Set(assignments.map(a => a.user_id));
+            const unassignedStudents = users.filter(u => 
+                (u.role === 'student' || (u.roles && u.roles.includes('student'))) && 
+                !assignedUserIds.has(u.id)
+            );
+
+            const unassignedAssignments = unassignedStudents.map(user => ({
+                id: null,
+                user_id: user.id,
+                username: user.username || "",
+                full_name: user.full_name || user.username || `Student #${user.id}`,
+                school_id: user.school_id || '',
+                gender: user.gender || '',
+                image_path: user.image_path || '/images/sample.jpg',
+                year: '',
+                year_level: '',
+                section: '',
+                section_name: '',
+                department: '',
+                major: '',
+                payment: 'paid',
+                amount_lacking: 0,
+                sanctions: false,
+                sanction_reason: '',
+                semester: '1st Semester',
+                student_status: 'Regular',
+            }));
+
+            assignments = [...assignments, ...unassignedAssignments];
+
+            setAssignments(assignments);
             setSections(Array.isArray(fetchedSections) ? fetchedSections : []);
         } catch (err) {
             console.error("Error loading manage students data:", err);
@@ -148,12 +183,12 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                  const days = daysMatch ? daysMatch[1] : '';
                  const reason = existingReason.replace(/^\d+\s*days?:\s*/i, '').trim();
                  
-                 setSanctionDetails({ days, reason });
+                 setSanctionDetails({ days, reason, level: 'Minor' });
                  setTimeout(() => setIsSanctionModalOpen(true), 100); 
              }
              if (name === 'has_sanction' && value === 'no') {
                  newData.sanction_reason = ''; 
-                 setSanctionDetails({ days: '', reason: '' });
+                 setSanctionDetails({ days: '', reason: '', level: 'Minor' });
              }
              return newData;
         });
@@ -220,14 +255,17 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         setIsAssignmentModalOpen(true);
     };
 
-    const parseSanctionReason = (rawReason = '') => {
+  const parseSanctionReason = (rawReason = '') => {
         const cleanReason = String(rawReason || '').trim();
         const daysMatch = cleanReason.match(/(\d+)\s*days?/i);
         const days = daysMatch ? Number(daysMatch[1]) : 0;
-        const reason = cleanReason.replace(/^\d+\s*days?:\s*/i, '').trim();
+        const levelMatch = cleanReason.match(/\[(Major|Minor)\]/i);
+        const level = levelMatch ? levelMatch[1] : 'Minor';
+        const reason = cleanReason.replace(/^\d+\s*days?:\s*/i, '').replace(/\[(Major|Minor)\]\s*/i, '').trim();
         return {
             days,
             reason,
+            level,
             hasDays: days > 0
         };
     };
@@ -236,8 +274,8 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         const existingReason = assignment.sanction_reason || '';
         const parsed = parseSanctionReason(existingReason);
         
-        setAssignForm(prev => ({ ...prev, id: assignment.id, sanction_reason: existingReason }));
-        setSanctionDetails({ days: parsed.days ? String(parsed.days) : '', reason: parsed.reason });
+        setAssignForm(prev => ({ ...prev, id: assignment.id, existing_user_id: assignment.user_id, sanction_reason: existingReason }));
+        setSanctionDetails({ days: parsed.days ? String(parsed.days) : '', reason: parsed.reason, level: parsed.level });
         setIsSanctionModalOpen(true);
     };
 
@@ -264,8 +302,8 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         e.preventDefault();
 
         if (assignForm.has_sanction === 'yes' && !assignForm.sanction_reason) {
-            showToast("Please details (days and reason) for the sanction.", "error");
-            setSanctionDetails({ days: '', reason: '' }); 
+            showToast("Please provide details (days and reason) for the sanction.", "error");
+            setSanctionDetails({ days: '', reason: '', level: 'Minor' }); 
             setIsSanctionModalOpen(true);
             return;
         }
@@ -344,7 +382,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
             return;
         }
         
-        const formattedReason = `${sanctionDetails.days} days: ${sanctionDetails.reason}`;
+        const formattedReason = `${sanctionDetails.days} days: [${sanctionDetails.level}] ${sanctionDetails.reason}`;
         
         if (assignForm.id && !isAssignmentModalOpen) {
             try {
@@ -399,7 +437,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
             return;
         }
 
-        const nextReason = `${nextDays} days: ${parsed.reason || 'Sanction active'}`;
+        const nextReason = `${nextDays} days: [${parsed.level}] ${parsed.reason || 'Sanction active'}`;
         try {
             setLoading(true);
             await AdminAPI.updateUserAssignment(assignment.id, {
@@ -864,7 +902,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                         </tr>
                                     ) : (
                                         paginatedAssignments.map(a => (
-                                            <tr key={a.id}>
+                                            <tr key={a.id || `unassigned-${a.user_id}`}>
                                                 <td>
                                                     <StudentCell>
                                                         <StudentIcon>
@@ -946,7 +984,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                             </>
                                                         ) : isTreasury && filters.lacking_payment === 'paid' ? (
                                                             <Button style={{ padding: '6px 12px', height: 'auto', fontSize: '0.8rem', background: '#f59e0b' }} onClick={() => {
-                                                                setAssignForm(prev => ({ ...prev, id: a.id, full_name: a.full_name, lacking_payment: 'yes' }));
+                                                                setAssignForm(prev => ({ ...prev, id: a.id, existing_user_id: a.user_id, full_name: a.full_name, lacking_payment: 'yes' }));
                                                                 setIsAssignmentModalOpen(true);
                                                             }}>
                                                                 <CreditCard size={14} /> Add Debt
@@ -1025,38 +1063,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                 <div className="row g-3">
                                     {showAcademicFields && (
                                         <>
-                                            <div className="col-md-6">
-                                                <FormLabel>Year</FormLabel>
-                                                <Select
-                                                    name="year"
-                                                    value={assignForm.year}
-                                                    onChange={handleAssignInputChange}
-                                                    required
-                                                >
-                                                    <option value="">Select Year</option>
-                                                    {YEAR_LEVEL_OPTIONS.map((year) => (
-                                                        <option key={year} value={String(year)}>
-                                                            {year} Year
-                                                        </option>
-                                                    ))}
-                                                </Select>
-                                            </div>
-                                            <div className="col-md-6">
-                                                <FormLabel>Department</FormLabel>
-                                                <Select
-                                                    name="department"
-                                                    value={assignForm.department}
-                                                    onChange={handleAssignInputChange}
-                                                    required
-                                                >
-                                                    <option value="">Select Department</option>
-                                                    {availableDepartments.map((department) => (
-                                                        <option key={department} value={department}>
-                                                            {department}
-                                                        </option>
-                                                    ))}
-                                                </Select>
-                                            </div>
+
                                             <div className="col-12">
                                                 <FormLabel>Section</FormLabel>
                                                 <Select
@@ -1066,29 +1073,14 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                                     required
                                                 >
                                                     <option value="">Select Section</option>
-                                                    {modalSectionsByScope.map(s => (
+                                                    {modalSections.map(s => (
                                                         <option key={s.id} value={s.section_name}>
                                                             {s.section_name} ({getYearFromLevel(s.grade_level)} - {s.course || s.department || 'Gen'})
                                                         </option>
                                                     ))}
                                                 </Select>
                                             </div>
-                                            <div className="col-md-6">
-                                                <FormLabel>Major</FormLabel>
-                                                <Select
-                                                    name="major"
-                                                    value={assignForm.major}
-                                                    onChange={handleAssignInputChange}
-                                                    disabled={!assignForm.department}
-                                                >
-                                                    <option value="">Select Major</option>
-                                                    {modalMajorOptions.map((major) => (
-                                                        <option key={major} value={major}>
-                                                            {major}
-                                                        </option>
-                                                    ))}
-                                                </Select>
-                                            </div>
+
                                             <div className="col-md-6">
                                                 <FormLabel>Gender</FormLabel>
                                                 <Select
@@ -1166,8 +1158,18 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                         <ModalBody>
                             <p className="text-muted mb-4">Enter the sanction duration and reason below</p>
                             
-                            <div className="row g-3">
-                                <div className="col-md-4">
+                             <div className="row g-3">
+                                <div className="col-md-3">
+                                    <FormLabel>Offense Level*</FormLabel>
+                                    <Select
+                                        value={sanctionDetails.level}
+                                        onChange={(e) => setSanctionDetails(prev => ({ ...prev, level: e.target.value }))}
+                                    >
+                                        <option value="Minor">Minor</option>
+                                        <option value="Major">Major</option>
+                                    </Select>
+                                </div>
+                                <div className="col-md-3">
                                     <FormLabel>Days Remaining*</FormLabel>
                                     <Input
                                         type="number"
@@ -1178,7 +1180,7 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
                                         autoFocus
                                     />
                                 </div>
-                                <div className="col-md-8">
+                                <div className="col-md-6">
                                     <FormLabel>Reason*</FormLabel>
                                     <Input
                                         type="text"

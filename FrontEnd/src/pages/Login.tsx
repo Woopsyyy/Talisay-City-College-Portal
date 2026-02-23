@@ -1,17 +1,73 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { AuthAPI } from "../services/api";
 import usePageStyle from "../hooks/usePageStyle";
+import { PublicAPI } from "../services/api";
+import { supabase } from "../supabaseClient";
+import { Eye, EyeOff, ArrowRight, GraduationCap } from "lucide-react";
 
 const Login = () => {
   usePageStyle("/css/login.css");
   const { login, user, loading: authLoading } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [stats, setStats] = useState({ totalStudents: 0, avatars: [] });
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
   const navigate = useNavigate();
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const data = await PublicAPI.getLandingPageStats();
+      setStats({
+        totalStudents: Math.max(0, Number(data?.totalStudents) || 0),
+        avatars: Array.isArray(data?.avatars) ? data.avatars : [],
+      });
+    } catch (err) {
+      console.error("Failed to fetch landing stats:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStats();
+  }, [fetchStats]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      fetchStats();
+    }, 3000);
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [fetchStats]);
+
+  useEffect(() => {
+    const queueRealtimeRefresh = () => {
+      if (realtimeRefreshTimerRef.current) return;
+      realtimeRefreshTimerRef.current = window.setTimeout(async () => {
+        realtimeRefreshTimerRef.current = null;
+        await fetchStats();
+      }, 250);
+    };
+
+    const usersChannel = supabase
+      .channel("login-landing-stats-users-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () =>
+        queueRealtimeRefresh(),
+      )
+      .subscribe();
+
+    return () => {
+      if (realtimeRefreshTimerRef.current) {
+        clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = null;
+      }
+      supabase.removeChannel(usersChannel);
+    };
+  }, [fetchStats]);
 
   useEffect(() => {
     if (user && !authLoading) {
@@ -43,71 +99,122 @@ const Login = () => {
     }
   };
 
+  const displayAvatars = [...(stats.avatars || [])].slice(0, 3);
+  while (displayAvatars.length < 3) {
+    displayAvatars.push("/images/sample.jpg");
+  }
+
+  const displayedStudentCount =
+    stats.totalStudents > 99 ? "99+" : String(Math.min(99, Math.max(0, stats.totalStudents)));
+
   return (
-    <>
-      <img loading="lazy" src="/images/background.jpg" alt="Background" className="logo" />
-      <div className="login-card">
-        <div className="login-header">
-          <img loading="lazy"
-            src="/images/tcc-logo.png"
-            alt="Talisay City College logo"
-            className="school-logo"
-          />
-          <h2 className="mb-2">Talisay City College</h2>
-        </div>
-        <form id="loginForm" className="w-100" onSubmit={handleLogin}>
-          {error && (
-            <div
-              className="text-danger mb-3"
-              id="error-message"
-              style={{ display: "block" }}
-            >
-              {error}
+    <div className="login-page-wrapper">
+      <div className="login-container-new">
+        {/* Left Side: Form */}
+        <div className="login-form-side">
+          <div className="login-form-header">
+            <div className="brand-logo-container">
+              <img src="/images/tcc-logo.png" alt="TCC Logo" className="brand-logo" />
+              <span className="brand-name">TCC</span>
             </div>
-          )}
-          <div className="form-group mb-3">
-            <label htmlFor="username" className="form-label">
-              Username
-            </label>
-            <input
-              type="text"
-              className="form-control"
-              id="username"
-              name="username"
-              placeholder="Enter your username"
-              required
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={loading}
-              autoComplete="username"
-            />
+            <h1 className="login-title">Sign in</h1>
           </div>
-          <div className="form-group mb-3">
-            <label htmlFor="password" className="form-label">
-              Password
-            </label>
-            <input
-              type="password"
-              className="form-control"
-              id="password"
-              name="password"
-              placeholder="Enter your password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
-            />
+
+          <form className="login-form-content" onSubmit={handleLogin}>
+            {error && <div className="login-error-toast">{error}</div>}
+            
+            <div className="login-input-group">
+              <label htmlFor="username">Username</label>
+              <div className="input-with-icon">
+                <input
+                  type="text"
+                  id="username"
+                  className="no-left-icon"
+                  placeholder="Enter your username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="login-input-group">
+              <label htmlFor="password">Password</label>
+              <div className="input-with-icon">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  id="password"
+                  className="no-left-icon has-toggle"
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+                <button 
+                  type="button" 
+                  className="password-toggle-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="login-options">
+              <label className="remember-me-label">
+                <input 
+                  type="checkbox" 
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  id="rememberMe"
+                />
+                <span className="remember-me-text">Remember me</span>
+              </label>
+            </div>
+
+            <button type="submit" className="login-submit-btn" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
+              {!loading && <ArrowRight size={18} style={{ marginLeft: '10px' }} />}
+            </button>
+          </form>
+        </div>
+
+        {/* Right Side: Welcome Illustration/Details */}
+        <div className="login-info-side">
+          <div className="info-side-overlay"></div>
+          <div className="info-content-wrapper">
+            <div className="info-top-block">
+              <img src="/images/tcc-logo.png" alt="Large Logo" className="info-large-logo" />
+              <h2 className="info-welcome-text">Welcome to Talisay City College</h2>
+              <p className="info-description">
+                TCC helps students to build organized and well structured academic records. 
+                Join us and start building your future today.
+              </p>
+            </div>
+            
+            <div className="info-floating-card">
+              <div style={{ backgroundColor: '#ebf8ff', width: '40px', height: '40px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '15px', color: '#3182ce' }}>
+                <GraduationCap size={24} />
+              </div>
+              <h3 className="floating-card-title">Get your right education and right place apply now</h3>
+              <p className="floating-card-text">
+                Be among the first students to experience the easiest way to manage your academic life.
+              </p>
+              <div className="floating-card-users">
+                <div className="avatar-stack">
+                  {displayAvatars.map((path, idx) => (
+                    <img key={idx} src={path} alt={`student-${idx}`} />
+                  ))}
+                  <div className="avatar-more">{displayedStudentCount}</div>
+                </div>
+              </div>
+            </div>
           </div>
-          <button
-            type="submit"
-            className="btn btn-primary w-100 mb-3"
-            disabled={loading}
-          >
-            {loading ? "Logging in..." : "Login"}
-          </button>
-        </form>
+        </div>
       </div>
-    </>
+    </div>
   );
 };
 

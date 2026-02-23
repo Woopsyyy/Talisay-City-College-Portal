@@ -1,5 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { AuthAPI, getAvatarUrl, subscribeToUnauthorized } from '../services/api';
+import {
+  refreshActiveUserPresence,
+  startActiveUserPresence,
+  stopActiveUserPresence,
+} from '../services/activeUsers';
 
 type AuthUser = {
   id?: number;
@@ -159,6 +164,82 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
   }, [user, activeRole, activeSubRole]);
 
   useEffect(() => {
+    if (!user?.id) {
+      stopActiveUserPresence();
+      return;
+    }
+
+    startActiveUserPresence(user);
+    const heartbeatTimer = window.setInterval(() => {
+      refreshActiveUserPresence();
+    }, 20000);
+
+    return () => {
+      clearInterval(heartbeatTimer);
+      stopActiveUserPresence();
+    };
+  }, [user?.id, user?.username, user?.full_name, user?.role]);
+
+  // Handle Session Inactivity
+  useEffect(() => {
+    if (!user) return;
+
+    let warningTimer: any;
+    let logoutTimer: any;
+    const WARNING_TIMEOUT = 14 * 60 * 1000; // 14 minutes
+    const LOGOUT_TIMEOUT = 1 * 60 * 1000; // 1 minute after warning
+
+    const handleInactivityWarning = () => {
+      const isConfirmed = window.confirm(
+        "Your session has been idle for 14 minutes. Do you want to stay logged in?"
+      );
+      
+      if (isConfirmed) {
+        resetTimers(); // User clicks OK, reset inactivity
+      } else {
+        // User clicks Cancel, execute logout immediately
+        clearTimers();
+        logout();
+      }
+    };
+
+    const handleAutoLogout = () => {
+      clearTimers();
+      logout();
+    };
+
+    const clearTimers = () => {
+      clearTimeout(warningTimer);
+      clearTimeout(logoutTimer);
+    };
+
+    const resetTimers = () => {
+      clearTimers();
+      warningTimer = setTimeout(() => {
+        handleInactivityWarning();
+        logoutTimer = setTimeout(handleAutoLogout, LOGOUT_TIMEOUT);
+      }, WARNING_TIMEOUT);
+    };
+
+    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
+
+    const resetOnInteraction = () => {
+      // Don't reset if the warning is actively showing to prevent accidental bypass
+      resetTimers();
+    };
+
+    events.forEach(event => window.addEventListener(event, resetOnInteraction));
+    resetTimers(); // Initialize
+
+    return () => {
+      events.forEach(event => window.removeEventListener(event, resetOnInteraction));
+      clearTimers();
+    };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  useEffect(() => {
     const unsubscribe = subscribeToUnauthorized(() => {
       setUser(null);
       setAvatarUrl('/images/sample.jpg');
@@ -192,6 +273,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     try {
       await AuthAPI.logout();
     } finally {
+      stopActiveUserPresence();
       setUser(null);
       setAvatarUrl('/images/sample.jpg');
       setActiveRole(null);

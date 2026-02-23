@@ -14,6 +14,7 @@ const formatRequestType = (value) => {
 const formatRequestDescription = (value) => {
   const type = String(value || "").trim().toLowerCase();
   if (type === "password_reset") return "Request to reset account password.";
+  if (type === "profile_picture_update") return "Request to update account profile picture.";
   return "Request pending admin approval.";
 };
 

@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { AuthAPI, StudentAPI, getAvatarUrl } from '../../../services/api';
-import { useAuth } from '../../../context/AuthContext';
+import { StudentAPI, getAvatarUrl } from '../../../services/api';
 import { Camera, Save, ShieldCheck, CheckCircle, AlertTriangle, KeyRound } from 'lucide-react';
-import imageCompression from 'browser-image-compression';
+import ProfilePictureRequestModal from '../../common/ProfilePictureRequestModal';
+import { useAuth } from '../../../context/AuthContext';
 const styled = baseStyled as any;
 
 type SettingsMessage = {
@@ -12,14 +12,16 @@ type SettingsMessage = {
 } | null;
 
 const SettingsView = ({ currentUser }: { currentUser: any }) => {
-    const [loading, setLoading] = useState(false);
     const [requestLoading, setRequestLoading] = useState(false);
     const [requestSubmitting, setRequestSubmitting] = useState(false);
+    const [pictureSubmitting, setPictureSubmitting] = useState(false);
     const [resetSubmitting, setResetSubmitting] = useState(false);
     const [message, setMessage] = useState<SettingsMessage>(null);
     const [previewUrl, setPreviewUrl] = useState("images/sample.jpg");
+    const [pictureModalOpen, setPictureModalOpen] = useState(false);
     const { checkAuth } = useAuth();
-    const [latestRequest, setLatestRequest] = useState(null);
+    const [latestResetRequest, setLatestResetRequest] = useState(null);
+    const [latestPictureRequest, setLatestPictureRequest] = useState(null);
     const [passwordForm, setPasswordForm] = useState({ password: "", confirm: "" });
     const [approvalConsumed, setApprovalConsumed] = useState(false);
     const [consumedRequestId, setConsumedRequestId] = useState<number | null>(null);
@@ -39,57 +41,29 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
         }
     }, [currentUser]);
 
-    const openFilePicker = () => {
-        const picker = document.getElementById('profileImageInput') as HTMLInputElement | null;
-        picker?.click();
-    };
-
-    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            try {
-                const options = {
-                    maxSizeMB: 0.15,
-                    maxWidthOrHeight: 400,
-                    useWebWorker: true,
-                    fileType: "image/jpeg",
-                    initialQuality: 0.8
-                };
-                const compressedFile = await imageCompression(file, options);
-                
-                const dataTransfer = new DataTransfer();
-                dataTransfer.items.add(new File([compressedFile], compressedFile.name, {
-                    type: compressedFile.type,
-                    lastModified: Date.now(),
-                }));
-                e.target.files = dataTransfer.files;
-
-                const reader = new FileReader();
-                reader.onload = (evt) => setPreviewUrl((evt.target?.result as string) || "images/sample.jpg");
-                reader.readAsDataURL(compressedFile);
-            } catch (err) {
-                console.error("Compression err:", err);
-                const reader = new FileReader();
-                reader.onload = (evt) => setPreviewUrl((evt.target?.result as string) || "images/sample.jpg");
-                reader.readAsDataURL(file);
-            }
-        }
-    };
-
-    const loadResetRequests = async () => {
+    const loadAccountRequests = async () => {
         try {
             setRequestLoading(true);
             const rows = await StudentAPI.getMyAccountRequests(20);
-            const activeRequest = Array.isArray(rows)
+            const activeResetRequest = Array.isArray(rows)
                 ? rows.find((row) => {
                     const requestType = String(row?.request_type || '').trim().toLowerCase();
                     const status = String(row?.status || '').trim().toLowerCase();
                     return requestType === 'password_reset' && (status === 'pending' || status === 'approved');
                 })
                 : null;
-            setLatestRequest(activeRequest || null);
-            if (activeRequest) {
-                const activeId = Number(activeRequest?.id || 0);
+            const activePictureRequest = Array.isArray(rows)
+                ? rows.find((row) => {
+                    const requestType = String(row?.request_type || '').trim().toLowerCase();
+                    const status = String(row?.status || '').trim().toLowerCase();
+                    return requestType === 'profile_picture_update' && (status === 'pending' || status === 'approved');
+                })
+                : null;
+
+            setLatestResetRequest(activeResetRequest || null);
+            setLatestPictureRequest(activePictureRequest || null);
+            if (activeResetRequest) {
+                const activeId = Number(activeResetRequest?.id || 0);
                 if (consumedRequestId && activeId === consumedRequestId) {
                     setApprovalConsumed(true);
                 } else {
@@ -99,10 +73,11 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                 setApprovalConsumed(false);
             }
         } catch (error: any) {
-            setLatestRequest(null);
+            setLatestResetRequest(null);
+            setLatestPictureRequest(null);
             setMessage({
                 type: 'danger',
-                text: error?.message || 'Failed to load password reset requests.',
+                text: error?.message || 'Failed to load account requests.',
             });
         } finally {
             setRequestLoading(false);
@@ -111,51 +86,78 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
 
     useEffect(() => {
         if (currentUser?.id) {
-            loadResetRequests();
+            loadAccountRequests();
         }
     }, [currentUser?.id, consumedRequestId]);
 
-    const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
+    const handlePictureRequestAction = async () => {
         setMessage(null);
-
-        const fileInput = document.getElementById('profileImageInput') as HTMLInputElement | null;
-        if (!fileInput?.files?.[0]) {
-            setMessage({ type: 'danger', text: 'Select a profile image first.' });
+        if (pictureRequestStatus === 'approved') {
+            setPictureModalOpen(true);
             return;
         }
 
-        setLoading(true);
-        const submitData = new FormData();
-        submitData.append('profile_image', fileInput.files[0]);
+        if (pictureRequestStatus === 'pending') {
+            setMessage({
+                type: 'danger',
+                text: 'Your profile picture update request is still pending admin approval.',
+            });
+            return;
+        }
 
         try {
-            const result = await AuthAPI.updateProfile(submitData);
-            if (result.success) {
-                await checkAuth();
-                setMessage({ type: 'success', text: 'Profile image updated successfully!' });
-            } else {
-                setMessage({ type: 'danger', text: result.error || 'Failed to update profile image.' });
-            }
+            setPictureSubmitting(true);
+            const result = await StudentAPI.requestProfilePictureUpdate();
+            await loadAccountRequests();
+            setMessage({
+                type: 'success',
+                text: result?.message || 'Profile picture update permission requested. Wait for admin approval.',
+            });
         } catch (err: any) {
-            console.error("Profile image update error:", err);
-            setMessage({ type: 'danger', text: err?.message || 'An error occurred' });
+            setMessage({
+                type: 'danger',
+                text: err?.message || 'Failed to request profile picture update permission.',
+            });
         } finally {
-            setLoading(false);
+            setPictureSubmitting(false);
         }
     };
 
-    const requestStatus = String(latestRequest?.status || '').toLowerCase();
+    const handleSubmitPictureRequest = async (file: File) => {
+        try {
+            setPictureSubmitting(true);
+            const result = await StudentAPI.completeApprovedProfilePictureUpdate(file);
+            if (!result) {
+                throw new Error('Profile picture update was not completed.');
+            }
+            await checkAuth();
+            await loadAccountRequests();
+            setMessage({
+                type: 'success',
+                text: 'Profile picture updated successfully.',
+            });
+            setPictureModalOpen(false);
+        } catch (err: any) {
+            console.error("Profile image request error:", err);
+            setMessage({ type: 'danger', text: err?.message || 'Failed to update profile picture.' });
+        } finally {
+            setPictureSubmitting(false);
+        }
+    };
+
+    const requestStatus = String(latestResetRequest?.status || '').toLowerCase();
+    const pictureRequestStatus = String(latestPictureRequest?.status || '').toLowerCase();
     const canRequestReset =
         !requestLoading && requestStatus !== 'pending' && requestStatus !== 'approved';
     const canCompleteReset = requestStatus === 'approved' && !approvalConsumed;
+    const canRequestPictureUpdate = !requestLoading && pictureRequestStatus !== 'pending';
 
     const handleRequestPasswordReset = async () => {
         try {
             setMessage(null);
             setRequestSubmitting(true);
             const result = await StudentAPI.requestPasswordReset();
-            await loadResetRequests();
+            await loadAccountRequests();
             setMessage({
                 type: 'success',
                 text: result?.message || 'Password reset request submitted. Wait for admin approval.',
@@ -170,8 +172,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
         }
     };
 
-    const handleApprovedReset = async (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
+    const handleApprovedReset = async () => {
         const password = String(passwordForm.password || '');
         const confirm = String(passwordForm.confirm || '');
 
@@ -191,18 +192,18 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
             if (!synced) {
                 throw new Error('Password was not synced to secure auth. Please contact admin.');
             }
-            const requestId = Number(latestRequest?.id || 0);
+            const requestId = Number(latestResetRequest?.id || 0);
             setPasswordForm({ password: "", confirm: "" });
             setApprovalConsumed(true);
             setConsumedRequestId(requestId > 0 ? requestId : null);
-            setLatestRequest(null);
-            await loadResetRequests();
+            setLatestResetRequest(null);
+            await loadAccountRequests();
             setMessage({
                 type: 'success',
                 text: 'Password updated successfully. Approval consumed. Request again next time you need another reset.',
             });
         } catch (error: any) {
-            await loadResetRequests();
+            await loadAccountRequests();
             setMessage({
                 type: 'danger',
                 text: error?.message || 'Failed to reset password.',
@@ -226,7 +227,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                 </Alert>
             )}
 
-            <Form onSubmit={handleSubmit}>
+            <Form>
                 <SplitLayout>
                     <ProfileCard>
                         <CardHeader>
@@ -234,7 +235,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                             <h3>Profile Picture</h3>
                         </CardHeader>
                         <CardBody $center>
-                            <AvatarWrapper onClick={openFilePicker}>
+                            <AvatarWrapper>
                                 <Avatar loading="lazy"
                                     src={previewUrl}
                                     onError={(e) => {
@@ -246,11 +247,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                                     <Camera size={24} />
                                 </Overlay>
                             </AvatarWrapper>
-                            <input type="file" id="profileImageInput" accept="image/*" onChange={handleFileChange} hidden />
-                            <p className="hint">Click to upload a new photo</p>
-                            <Button type="button" $secondary onClick={openFilePicker}>
-                                Choose Image
-                            </Button>
+                            <p className="hint">Profile picture updates require admin approval.</p>
                         </CardBody>
                     </ProfileCard>
 
@@ -287,8 +284,40 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                                     </p>
                                 </FormGroup>
 
+                                <FormGroup>
+                                    <Label>Profile Picture Update Request</Label>
+                                    <RequestStatus $status={pictureRequestStatus || 'none'}>
+                                        <span className="dot" />
+                                        {requestLoading
+                                            ? 'Checking request status...'
+                                            : pictureRequestStatus === 'approved'
+                                                ? 'Approved - click the button again to open upload modal.'
+                                                : pictureRequestStatus === 'pending'
+                                                    ? 'Pending admin approval.'
+                                                    : 'No active request.'}
+                                    </RequestStatus>
+                                    <Button
+                                        type="button"
+                                        $secondary
+                                        disabled={!canRequestPictureUpdate || pictureSubmitting}
+                                        onClick={handlePictureRequestAction}
+                                    >
+                                        <Camera size={18} />
+                                        {pictureSubmitting
+                                            ? 'Processing...'
+                                            : pictureRequestStatus === 'approved'
+                                                ? 'Open Profile Picture Modal'
+                                                : 'Request Profile Picture Update Permission'}
+                                    </Button>
+                                    <p className="hint">
+                                        {pictureRequestStatus === 'approved'
+                                            ? 'Approval granted. Click the button above to open the upload modal.'
+                                            : 'Request permission first. After admin approval, click again to open upload modal.'}
+                                    </p>
+                                </FormGroup>
+
                                 {canCompleteReset && (
-                                    <ResetForm onSubmit={handleApprovedReset}>
+                                    <ResetForm>
                                         <FormGroup>
                                             <Label>New Password</Label>
                                             <Input
@@ -307,7 +336,7 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                                                 required
                                             />
                                         </FormGroup>
-                                        <Button type="submit" disabled={resetSubmitting}>
+                                        <Button type="button" disabled={resetSubmitting} onClick={handleApprovedReset}>
                                             <Save size={18} />
                                             {resetSubmitting ? 'Resetting Password...' : 'Reset Password'}
                                         </Button>
@@ -317,13 +346,14 @@ const SettingsView = ({ currentUser }: { currentUser: any }) => {
                         </Card>
                     </MainSettings>
                 </SplitLayout>
-
-                <Actions>
-                    <Button type="submit" disabled={loading}>
-                        <Save size={18} /> {loading ? 'Saving Image...' : 'Save Profile Image'}
-                    </Button>
-                </Actions>
             </Form>
+            <ProfilePictureRequestModal
+                isOpen={pictureModalOpen}
+                submitting={pictureSubmitting}
+                basePreviewUrl={previewUrl}
+                onClose={() => setPictureModalOpen(false)}
+                onSubmit={handleSubmitPictureRequest}
+            />
         </Container>
     );
 };
@@ -465,10 +495,6 @@ const ResetForm = styled.form`
   border: 1px solid var(--border-color);
   border-radius: 8px;
   background: var(--bg-primary);
-`;
-
-const Actions = styled.div`
-  display: flex; justify-content: flex-end;
 `;
 
 const Button = styled.button`

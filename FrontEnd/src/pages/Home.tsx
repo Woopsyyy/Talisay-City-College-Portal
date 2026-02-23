@@ -23,7 +23,9 @@ import PageSkeleton from "../components/loaders/PageSkeleton";
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
+import ModernSidebar from "../components/common/ModernSidebar";
 import ChatBot from "../components/ChatBot";
+import NotificationBell from "../components/common/NotificationBell";
 
 const RecordsView = lazy(() => import("../components/views/RecordsView"));
 const AnnouncementsView = lazy(() => import("../components/views/student/AnnouncementsView"));
@@ -170,32 +172,7 @@ const Home = () => {
 
   return (
     <DashboardContainer>
-      <Sidebar>
-        <SidebarHeader>
-          <Avatar loading="lazy"
-            src={avatarUrl}
-            onError={(e) => {
-              const image = e.currentTarget as HTMLImageElement;
-              image.src = "/images/sample.jpg";
-            }}
-            alt="User"
-          />
-          <UserInfo>
-            <UserName>{currentUser?.full_name || "Student"}</UserName>
-            {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
-            <UserRole>{effectiveSubRoleLabel}</UserRole>
-          </UserInfo>
-        </SidebarHeader>
-
-        <RoleSidebarNavigator menus={GLOBAL_ROLE_SIDEBAR_MENUS} />
-
-        <SidebarFooter>
-          <LogoutButton onClick={handleLogout}>
-            <LogOut size={20} /> Logout
-          </LogoutButton>
-        </SidebarFooter>
-
-      </Sidebar>
+      <ModernSidebar />
 
       <MainContent>
         <HeroSection>
@@ -212,6 +189,7 @@ const Home = () => {
               {heroSpotlights[currentSection]?.copy || "Welcome to your portal."}
             </HeroDescription>
             <HeroActions>
+              <NotificationBell />
               <ChatBot placement="hero" />
             </HeroActions>
           </HeroContent>
@@ -381,10 +359,16 @@ const LogoutButton = styled.button`
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 240px;
+  margin-left: var(--sidebar-width, 280px);
   padding: 2rem;
   max-width: 100%;
   overflow-x: hidden;
+  transition: margin-left 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+
+  @media (max-width: 1024px) {
+    margin-left: 0;
+    padding: 1rem;
+  }
 `;
 
 const HeroSection = styled.section`

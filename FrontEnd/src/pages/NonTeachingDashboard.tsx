@@ -12,7 +12,6 @@ import {
   FolderKanban,
   AlertTriangle,
   ReceiptText,
-  Settings,
   LogOut,
   ShieldAlert,
   CreditCard,
@@ -23,8 +22,10 @@ import Loader from "../components/Loader";
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
+import ModernSidebar from "../components/common/ModernSidebar";
 import PageSkeleton from "../components/loaders/PageSkeleton";
 import ChatBot from "../components/ChatBot";
+import NotificationBell from "../components/common/NotificationBell";
 
 const FacilitiesView = lazy(() => import("../components/views/admin/FacilitiesView"));
 const SectionsView = lazy(() => import("../components/views/admin/SectionsView"));
@@ -41,7 +42,6 @@ const StaffTreasuryPaymentView = lazy(() => import("../components/views/staff/Tr
 const StaffPaymentRecordsView = lazy(() => import("../components/views/staff/PaymentRecordsView"));
 const AnnouncementsView = lazy(() => import("../components/views/admin/AnnouncementsView"));
 const ProjectsView = lazy(() => import("../components/views/admin/ProjectsView"));
-const SettingsView = lazy(() => import("../components/views/teacher/SettingsView"));
 const styled = baseStyled as any;
 
 const NonTeachingDashboard = () => {
@@ -86,7 +86,10 @@ const NonTeachingDashboard = () => {
       : currentUser?.role
         ? [String(currentUser.role).toLowerCase().trim()]
         : [];
-  const hasNtRole = normalizedRoles.includes("nt") || normalizedSubRoles.includes("nt");
+  const hasGenericStaffRole =
+    normalizedRoles.some((role) => ["staff", "non-teaching", "non_teaching", "nonteaching", "go"].includes(role)) ||
+    normalizedSubRoles.some((role) => ["staff", "non-teaching", "non_teaching", "nonteaching", "go"].includes(role));
+  const hasNtRole = normalizedRoles.includes("nt") || normalizedSubRoles.includes("nt") || hasGenericStaffRole;
   const hasOsasRole = normalizedSubRoles.includes("osas");
   const hasTreasuryRole = normalizedSubRoles.includes("treasury");
 
@@ -116,7 +119,10 @@ const NonTeachingDashboard = () => {
     const hasStaffAccess =
       roleSet.has("admin") ||
       roleSet.has("nt") ||
-      subRoles.some((role) => ["nt", "osas", "treasury"].includes(role));
+      roleSet.has("staff") ||
+      subRoles.some((role) =>
+        ["nt", "staff", "non-teaching", "non_teaching", "nonteaching", "go", "osas", "treasury"].includes(role),
+      );
 
     if (!authLoading && (!currentUser || !hasStaffAccess)) {
       if (roleSet.has("admin")) navigate("/admin/dashboard");
@@ -144,6 +150,8 @@ const NonTeachingDashboard = () => {
     { id: "subjects", icon: BookOpen, label: "Subjects" },
     { id: "sections", icon: Layers, label: "Sections" },
     { id: "buildings", icon: Building2, label: "Buildings" },
+    { id: "announcements", icon: Megaphone, label: "Announcement" },
+    { id: "projects", icon: FolderKanban, label: "Project" },
   ];
 
   const osasNavItems = [
@@ -152,7 +160,6 @@ const NonTeachingDashboard = () => {
     { id: "warning", icon: AlertTriangle, label: "Warning" },
     { id: "sanction", icon: ShieldAlert, label: "Sanction" },
     { id: "record", icon: BookOpen, label: "Record" },
-    { id: "settings", icon: Settings, label: "Settings" },
   ];
 
   const treasuryNavItems = [
@@ -160,7 +167,6 @@ const NonTeachingDashboard = () => {
     { id: "projects", icon: FolderKanban, label: "Project" },
     { id: "payment", icon: CreditCard, label: "Payment" },
     { id: "record", icon: ReceiptText, label: "Record" },
-    { id: "settings", icon: Settings, label: "Settings" },
   ];
 
   const navItems = isOsasMode ? osasNavItems : isTreasuryMode ? treasuryNavItems : ntNavItems;
@@ -232,10 +238,6 @@ const NonTeachingDashboard = () => {
       title: "Record",
       copy: "Review per-student warning/sanction and payment history records.",
     },
-    settings: {
-      title: "Settings",
-      copy: "Manage your profile details and account preferences.",
-    },
   };
 
   const renderContent = () => {
@@ -259,6 +261,8 @@ const NonTeachingDashboard = () => {
               <Route path="subjects" element={<SubjectsView />} />
               <Route path="sections" element={<SectionsView />} />
               <Route path="buildings" element={<FacilitiesView />} />
+              <Route path="announcements" element={<AnnouncementsView />} />
+              <Route path="projects" element={<ProjectsView />} />
               <Route path="sanctions" element={<StaffSanctionsView />} />
               <Route path="payments" element={<StaffPaymentsView />} />
             </>
@@ -271,7 +275,7 @@ const NonTeachingDashboard = () => {
               <Route path="warning" element={<StaffWarningsView />} />
               <Route path="sanction" element={<StaffSanctionsView />} />
               <Route path="record" element={<StaffDisciplineRecordsView />} />
-              <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+              <Route path="settings" element={<Navigate to="/home/settings" replace />} />
               <Route path="sanctions" element={<Navigate to="/nt/dashboard/sanction" replace />} />
               <Route path="payments" element={<Navigate to="/nt/dashboard/record" replace />} />
             </>
@@ -283,7 +287,7 @@ const NonTeachingDashboard = () => {
               <Route path="projects" element={<ProjectsView />} />
               <Route path="payment" element={<StaffTreasuryPaymentView />} />
               <Route path="record" element={<StaffPaymentRecordsView />} />
-              <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
+              <Route path="settings" element={<Navigate to="/home/settings" replace />} />
               <Route path="payments" element={<Navigate to="/nt/dashboard/payment" replace />} />
               <Route path="sanctions" element={<Navigate to="/nt/dashboard/record" replace />} />
             </>
@@ -319,37 +323,16 @@ const NonTeachingDashboard = () => {
   const hasStaffAccess =
     currentRoles.includes("admin") ||
     currentRoles.includes("nt") ||
-    currentSubRoles.some((role) => ["nt", "osas", "treasury"].includes(role));
+    currentRoles.includes("staff") ||
+    currentSubRoles.some((role) =>
+      ["nt", "staff", "non-teaching", "non_teaching", "nonteaching", "go", "osas", "treasury"].includes(role),
+    );
 
   if (!currentUser || (!hasStaffAccess)) return null;
 
   return (
     <DashboardContainer>
-      <Sidebar>
-        <SidebarHeader>
-          <Avatar loading="lazy"
-            src={avatarUrl}
-            onError={(e) => {
-              const image = e.currentTarget as HTMLImageElement;
-              image.src = "/images/sample.jpg";
-            }}
-            alt="Non-Teaching"
-          />
-          <UserInfo>
-            <UserName>{currentUser?.full_name}</UserName>
-            {currentUser?.school_id && <SchoolId>{currentUser.school_id}</SchoolId>}
-            <UserRole>{sidebarRoleLabel}</UserRole>
-          </UserInfo>
-        </SidebarHeader>
-
-        <RoleSidebarNavigator menus={GLOBAL_ROLE_SIDEBAR_MENUS} />
-
-        <SidebarFooter>
-          <LogoutButton onClick={handleLogout}>
-            <LogOut size={20} /> Logout
-          </LogoutButton>
-        </SidebarFooter>
-      </Sidebar>
+      <ModernSidebar />
 
       <MainContent>
         <HeroSection>
@@ -368,6 +351,7 @@ const NonTeachingDashboard = () => {
               {heroSpotlights[currentSection]?.copy || "Manage campus operations."}
             </HeroDescription>
             <HeroActions>
+              <NotificationBell />
               <ChatBot placement="hero" />
             </HeroActions>
           </HeroContent>
@@ -539,11 +523,16 @@ const LogoutButton = styled.button`
 
 const MainContent = styled.main`
   flex: 1;
-  margin-left: 240px;
+  margin-left: var(--sidebar-width, 280px);
   padding: 2rem;
   background-color: var(--bg-primary);
   min-height: 100vh;
   transition: all 0.3s ease;
+
+  @media (max-width: 1024px) {
+    margin-left: 0;
+    padding: 1rem;
+  }
 `;
 
 const HeroSection = styled.section`
