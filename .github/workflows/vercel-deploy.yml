@@ -11,9 +11,13 @@ concurrency:
   group: vercel-production-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -34,14 +38,6 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: FrontEnd/package-lock.json
-
-      - name: Cache frontend node_modules
-        uses: actions/cache@v3
-        with:
-          path: FrontEnd/node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('FrontEnd/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
 
       - name: Validate required Vercel secrets
         shell: bash
@@ -97,11 +93,8 @@ jobs:
       - name: Run frontend tests (if configured)
         run: npm run test --if-present --prefix FrontEnd
 
-      - name: Build frontend
-        run: npm run build --prefix FrontEnd
-
       - name: Install Vercel CLI
-        run: npm i -g vercel@latest
+        run: npm i -g vercel@34
 
       - name: Pull Vercel project settings
         run: vercel pull --yes --environment=production --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
@@ -112,20 +105,16 @@ jobs:
       - name: Deploy to Vercel production
         run: vercel deploy --prebuilt --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
 
-      # Success notification
       - name: Notify Discord on success
         if: ${{ success() && env.DISCORD_WEBHOOK_SUCCESS != '' }}
-        uses: Ilshidur/action-discord@0.4.0
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_SUCCESS }}
-        with:
-          args: "✅ Frontend deployed to Vercel Production successfully! (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
+        shell: bash
+        run: |
+          payload='{"content":"✅ Frontend deployed to Vercel Production successfully! (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"}'
+          curl -fsS -H "Content-Type: application/json" -X POST -d "$payload" "$DISCORD_WEBHOOK_SUCCESS"
 
-      # Failure notification
       - name: Notify Discord on failure
         if: ${{ failure() && env.DISCORD_WEBHOOK_FAIL != '' }}
-        uses: Ilshidur/action-discord@0.4.0
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_FAIL }}
-        with:
-          args: "❌ Deployment FAILED! Check logs: (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"
+        shell: bash
+        run: |
+          payload='{"content":"❌ Deployment FAILED! Check logs: (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}>)"}'
+          curl -fsS -H "Content-Type: application/json" -X POST -d "$payload" "$DISCORD_WEBHOOK_FAIL"
