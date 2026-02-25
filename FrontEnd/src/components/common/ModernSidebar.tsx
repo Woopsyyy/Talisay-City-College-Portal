@@ -18,8 +18,6 @@ import {
   CreditCard
 } from "lucide-react";
 
-export const getSidebarWidth = () => 0; // Legacy export, no longer used
-
 const styled = baseStyled as any;
 
 const normalizeToken = (value: unknown): string[] => {

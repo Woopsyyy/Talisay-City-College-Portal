@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import baseStyled, { createGlobalStyle } from "styled-components";
-import { StudentAPI } from "../../../services/api";
+import { StudentAPI } from 'services/apis/student';
 import {
   BookOpen,
   Calendar,

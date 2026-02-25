@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import { 
   MessageSquare, 
   Send, 

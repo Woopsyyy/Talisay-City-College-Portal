@@ -1,10 +1,16 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import baseStyled, { keyframes } from 'styled-components';
 import { CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 
 const styled = baseStyled as any;
 
 const Toast = ({ message, type = 'success', onClose, duration = 3000 }) => {
+  const portalTarget = useMemo(() => {
+    if (typeof document === 'undefined') return null;
+    return document.body;
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       if (onClose) onClose();
@@ -16,12 +22,15 @@ const Toast = ({ message, type = 'success', onClose, duration = 3000 }) => {
   if (type === 'error') Icon = AlertCircle;
   if (type === 'warning') Icon = AlertTriangle;
 
-  return (
+  const toastNode = (
     <ToastContainer $type={type}>
       <Icon size={20} />
       {message}
     </ToastContainer>
   );
+
+  if (!portalTarget) return toastNode;
+  return createPortal(toastNode, portalTarget);
 };
 
 const slideIn = keyframes`

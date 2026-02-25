@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { StudentAPI, getAvatarUrl } from '../../../services/api';
+import { StudentAPI } from '../../../services/apis/student';
+import { getAvatarUrl } from '../../../services/apis/avatar';
 import { Camera, Save, ShieldCheck, CheckCircle, AlertTriangle, KeyRound } from 'lucide-react';
 import ProfilePictureRequestModal from '../../common/ProfilePictureRequestModal';
 import { useAuth } from '../../../context/AuthContext';

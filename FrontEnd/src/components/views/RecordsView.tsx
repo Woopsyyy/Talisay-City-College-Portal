@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import baseStyled from 'styled-components';
-import { StudentAPI, AdminAPI } from '../../services/api';
+import { StudentAPI } from '../../services/apis/student';
+import { AdminAPI } from '../../services/apis/admin';
 import { 
     Building2, Layers, Calendar, Users, Wallet, 
     CheckCircle, AlertTriangle, AlertCircle, Clock, MessageSquare

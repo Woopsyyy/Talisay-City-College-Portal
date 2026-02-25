@@ -14,7 +14,7 @@ import {
   Trash2,
   UserCheck,
 } from "lucide-react";
-import { AdminAPI } from "../../../services/api";
+import { AdminAPI } from 'services/apis/admin';
 import Toast from "../../common/Toast";
 import PageSkeleton from "../../loaders/PageSkeleton";
 

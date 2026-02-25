@@ -1,1027 +1,1575 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import baseStyled, { keyframes } from 'styled-components';
-const styled = baseStyled as any;
-import { AdminAPI, getAvatarUrl } from '../../../services/api';
-import { 
-    Users, Search, UserCog, Trash2, 
-    GraduationCap, BookOpen, ShieldCheck, Briefcase, 
-    Check, X, Award, HeartHandshake, Banknote
+import {
+  Award,
+  Banknote,
+  BookOpen,
+  Briefcase,
+  Check,
+  Download,
+  GraduationCap,
+  HeartHandshake,
+  Search,
+  Trash2,
+  UserCog,
+  Users,
+  X,
 } from 'lucide-react';
+import { AdminAPI } from '../../../services/apis/admin';
+import { getAvatarUrl } from '../../../services/apis/avatar';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import useDebouncedValue from '../../../hooks/useDebouncedValue';
 import PageSkeleton from '../../loaders/PageSkeleton';
 
-// --- Utils ---
-const ROLE_PAGE_SIZE = 5;
-const ROLE_ICON_SIZE = 28;
-const ROLE_ICON_GAP = 6;
-const ROLE_PAGE_WIDTH_PX = ROLE_PAGE_SIZE * ROLE_ICON_SIZE + (ROLE_PAGE_SIZE - 1) * ROLE_ICON_GAP;
-const ROLE_PAGE_WIDTH = `${ROLE_PAGE_WIDTH_PX}px`;
-const ROLE_MARQUEE_INTERVAL_MS = 2500;
+const styled = baseStyled as any;
 
-const normalizeRoles = (rolesInput, allowed, currentRoles = []) => {
-    const roles = Array.isArray(rolesInput) ? rolesInput : (rolesInput ? [rolesInput] : []);
-    const normalized = roles
-        .map(r => String(r || '').trim().toLowerCase())
-        .map(r => (r === 'go' ? 'nt' : r))
-        .filter(r => allowed.includes(r));
-    const unique = Array.from(new Set(normalized));
-    return unique.length ? unique : ['student'];
+const ROLE_OPTIONS = [
+  {
+    key: 'student',
+    label: 'Student',
+    icon: GraduationCap,
+    color: '#60a5fa',
+    glow: 'rgba(96, 165, 250, 0.45)',
+  },
+  {
+    key: 'teacher',
+    label: 'Teacher',
+    icon: BookOpen,
+    color: '#2dd4bf',
+    glow: 'rgba(45, 212, 191, 0.45)',
+  },
+  {
+    key: 'nt',
+    label: 'Non-Teaching',
+    icon: Briefcase,
+    color: '#f59e0b',
+    glow: 'rgba(245, 158, 11, 0.45)',
+  },
+];
+
+const SUB_ROLE_OPTIONS = [
+  {
+    key: 'dean',
+    label: 'Dean',
+    icon: Award,
+    color: '#fde047',
+    glow: 'rgba(253, 224, 71, 0.35)',
+  },
+  {
+    key: 'osas',
+    label: 'OSAS',
+    icon: HeartHandshake,
+    color: '#f472b6',
+    glow: 'rgba(244, 114, 182, 0.35)',
+  },
+  {
+    key: 'treasury',
+    label: 'Treasury',
+    icon: Banknote,
+    color: '#34d399',
+    glow: 'rgba(52, 211, 153, 0.35)',
+  },
+];
+
+const ALLOWED_ROLES = ROLE_OPTIONS.map((entry) => entry.key);
+const SUB_ROLES = SUB_ROLE_OPTIONS.map((entry) => entry.key);
+const PAGE_SIZE = 10;
+
+const parseRoleTokens = (value: any) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .map((entry) => String(entry || '').trim().toLowerCase())
+            .filter(Boolean);
+        }
+      } catch (_) {
+        // fallback parsing below
+      }
+    }
+
+    if (trimmed.includes(',')) {
+      return trimmed
+        .split(',')
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean);
+    }
+
+    return [trimmed.toLowerCase()];
+  }
+
+  return [];
 };
 
-const getRoleIcon = (role) => {
-    switch (role) {
-        case 'student': return <GraduationCap size={16} />;
-        case 'teacher': return <BookOpen size={16} />;
-        case 'admin': return <ShieldCheck size={16} />;
-        case 'nt': return <Briefcase size={16} />;
-        default: return <Users size={16} />;
-    }
+const normalizeRoleToken = (value: any) => {
+  const token = String(value || '').trim().toLowerCase();
+  if (!token) return '';
+  return token === 'go' ? 'nt' : token;
 };
 
-const getRoleColor = (role) => {
-    switch (role) {
-        case 'student': return 'var(--accent-info, #3b82f6)';
-        case 'teacher': return 'var(--accent-success, #10b981)';
-        case 'admin': return 'var(--accent-danger, #ef4444)';
-        case 'nt': return 'var(--accent-warning, #f59e0b)';
-        default: return 'var(--text-secondary)';
-    }
+const collectUserRoleTokens = (user: any) => {
+  const tokens = [
+    ...parseRoleTokens(user?.role),
+    ...parseRoleTokens(user?.roles),
+    ...parseRoleTokens(user?.sub_role),
+    ...parseRoleTokens(user?.sub_roles),
+  ]
+    .map(normalizeRoleToken)
+    .filter(Boolean);
+
+  return Array.from(new Set(tokens));
 };
 
-const getSubRoleIcon = (subRole) => {
-    switch (subRole) {
-        case 'dean': return <Award size={14} />;
-        case 'osas': return <HeartHandshake size={14} />;
-        case 'treasury': return <Banknote size={14} />;
-        default: return <Briefcase size={14} />;
-    }
+const userIsManageUser = (user: any) => {
+  const tokens = collectUserRoleTokens(user);
+  if (!tokens.length) return false;
+  return !tokens.includes('admin');
 };
 
-const getSubRoleColor = (subRole) => {
-    switch (subRole) {
-        case 'dean': return '#eab308';    // Yellow
-        case 'osas': return '#ec4899';    // Pink
-        case 'treasury': return '#10b981'; // Emerald
-        default: return 'var(--text-secondary)';
+const normalizeRoles = (rolesInput: any, allowed: string[], currentRoles: any = []) => {
+  const roles = Array.isArray(rolesInput) ? rolesInput : rolesInput ? [rolesInput] : [];
+  const fallbackRoles = (Array.isArray(currentRoles) ? currentRoles : [currentRoles])
+    .map((role) => normalizeRoleToken(role))
+    .filter((role) => allowed.includes(role));
+
+  const normalized = roles
+    .map((role) => normalizeRoleToken(role))
+    .filter((role) => allowed.includes(role));
+
+  const unique = Array.from(new Set(normalized));
+  if (unique.length) return unique;
+  if (fallbackRoles.length) return Array.from(new Set(fallbackRoles));
+  return allowed.includes('student') ? ['student'] : allowed.length ? [allowed[0]] : [];
+};
+
+const normalizeSubRoles = (subRolesInput: any, allowed: string[], currentSubRoles: any = []) => {
+  const subRoles = Array.isArray(subRolesInput) ? subRolesInput : subRolesInput ? [subRolesInput] : [];
+  const fallback = (Array.isArray(currentSubRoles) ? currentSubRoles : [currentSubRoles])
+    .map((entry) => normalizeRoleToken(entry))
+    .filter((entry) => allowed.includes(entry));
+
+  const normalized = subRoles
+    .map((entry) => normalizeRoleToken(entry))
+    .filter((entry) => allowed.includes(entry));
+
+  const unique = Array.from(new Set(normalized));
+  if (unique.length) return unique;
+  return Array.from(new Set(fallback));
+};
+
+const roleMetaByKey = Object.fromEntries(ROLE_OPTIONS.map((entry) => [entry.key, entry]));
+const subRoleMetaByKey = Object.fromEntries(SUB_ROLE_OPTIONS.map((entry) => [entry.key, entry]));
+
+const toRoleLabel = (token: string) => {
+  const key = normalizeRoleToken(token);
+  if (!key) return '';
+  if (key === 'nt') return 'Non-Teaching';
+  return key.charAt(0).toUpperCase() + key.slice(1);
+};
+
+const downloadCsv = (filename: string, rows: string[][]) => {
+  const escapeCell = (value: string) => {
+    const raw = String(value ?? '');
+    if (/[,\n\"]/g.test(raw)) {
+      return `"${raw.replace(/"/g, '""')}"`;
     }
+    return raw;
+  };
+
+  const csv = rows.map((row) => row.map(escapeCell).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 };
 
 const ManageUsersView = () => {
-    const ALLOWED_ROLES = ['student', 'teacher', 'admin', 'nt'];
-    const SUB_ROLES = ['dean', 'osas', 'treasury'];
-    
-    const [users, setUsers] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [searchQuery, setSearchQuery] = useState('');
-    const [roleFilter, setRoleFilter] = useState('');
-    const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
-    const [avatarUrls, setAvatarUrls] = useState({});
-    const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-    const roleScrollRefs = useRef({});
-    const roleScrollTimers = useRef({});
-    
-    // Role Editor State
-    const [activeRoleUserId, setActiveRoleUserId] = useState(null);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [subRoleFilter, setSubRoleFilter] = useState('');
+  const [accessFilter, setAccessFilter] = useState('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [avatarUrls, setAvatarUrls] = useState<Record<number, string>>({});
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' as 'success' | 'error' | 'warning' | 'info' });
+  const [activeRoleUserId, setActiveRoleUserId] = useState<number | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<any | null>(null);
 
-    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-    const [userToDelete, setUserToDelete] = useState(null);
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
 
-    useEffect(() => {
-        fetchUsers();
-    }, []);
+  useEffect(() => {
+    fetchUsers();
+  }, []);
 
-    const activeUser = activeRoleUserId
-        ? users.find((u) => u.id === activeRoleUserId)
-        : null;
+  useEffect(() => {
+    let mounted = true;
 
-    const filteredUsers = useMemo(() => {
-        if (!debouncedSearchQuery) return users;
-        const lowerQ = debouncedSearchQuery.toLowerCase();
-        return users.filter(user => 
-            (user.username && user.username.toLowerCase().includes(lowerQ)) ||
-            (user.full_name && user.full_name.toLowerCase().includes(lowerQ)) ||
-            (user.school_id && String(user.school_id).includes(lowerQ))
-        );
-    }, [debouncedSearchQuery, users]);
+    const fetchAvatars = async () => {
+      const toFetch = users.filter((entry) => entry.image_path && !avatarUrls[Number(entry.id)]);
+      if (toFetch.length === 0) return;
 
-    const visibleUsers = useMemo(() => {
-        return filteredUsers.filter(user => {
-            const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role].filter(Boolean);
-            if (roleFilter && !roles.includes(roleFilter)) return false;
-            return true;
-        });
-    }, [filteredUsers, roleFilter]);
+      const next: Record<number, string> = {};
+      await Promise.all(
+        toFetch.map(async (user) => {
+          const userId = Number(user.id);
+          if (!Number.isFinite(userId) || userId <= 0) return;
+          try {
+            const url = await getAvatarUrl(userId, user.image_path);
+            next[userId] = url || '/images/sample.jpg';
+          } catch (_) {
+            next[userId] = '/images/sample.jpg';
+          }
+        }),
+      );
 
-    useEffect(() => {
-        let isMounted = true;
-        
-        const fetchAvatars = async () => {
-             const usersToFetch = filteredUsers.filter(u => u.image_path && !avatarUrls[u.id]);
-             if (usersToFetch.length === 0) return;
-
-             const newUrls = {};
-             const BATCH_SIZE = 10;
-             for (let i = 0; i < usersToFetch.length; i += BATCH_SIZE) {
-                 if (!isMounted) return;
-                 const batch = usersToFetch.slice(i, i + BATCH_SIZE);
-                 await Promise.all(batch.map(async (user) => {
-                     try {
-                         const url = await getAvatarUrl(user.id, user.image_path);
-                         newUrls[user.id] = url;
-                     } catch (e) {
-                         console.error("Failed to load avatar for", user.id, e);
-                         newUrls[user.id] = "/images/sample.jpg";
-                     }
-                 }));
-             }
-             
-             if (isMounted && Object.keys(newUrls).length > 0) {
-                 setAvatarUrls(prev => ({ ...prev, ...newUrls }));
-             }
-        };
-        
-        if (filteredUsers.length > 0) {
-            fetchAvatars();
-        }
-
-        return () => { isMounted = false; };
-    }, [filteredUsers, avatarUrls]);
-
-    useEffect(() => {
-        const visibleIds = new Set(visibleUsers.map(u => String(u.id)));
-        Object.keys(roleScrollTimers.current).forEach((id) => {
-            if (!visibleIds.has(id)) {
-                clearInterval(roleScrollTimers.current[id]);
-                delete roleScrollTimers.current[id];
-            }
-        });
-
-        visibleUsers.forEach((user) => {
-            const items = getRoleItems(user);
-            const pages = Math.ceil(items.length / ROLE_PAGE_SIZE);
-            if (pages <= 1) {
-                stopRoleMarquee(user.id);
-                return;
-            }
-            startRoleMarquee(user.id);
-        });
-
-        return () => {
-            Object.keys(roleScrollTimers.current).forEach((id) => {
-                clearInterval(roleScrollTimers.current[id]);
-                delete roleScrollTimers.current[id];
-            });
-        };
-    }, [visibleUsers]);
-
-    const fetchUsers = async () => {
-        try {
-            setLoading(true);
-            const data = await AdminAPI.getUsers();
-            console.log('Fetched users data:', data); 
-            
-            const list = Array.isArray(data) ? data : [];
-            setUsers(list.map(u => ({
-                ...u,
-                roles: normalizeRoles(Array.isArray(u.roles) && u.roles.length ? u.roles : (u.role ? [u.role] : []), ALLOWED_ROLES),
-                sub_roles: Array.isArray(u.sub_roles) ? u.sub_roles : (u.sub_role ? [u.sub_role] : [])
-            })));
-        } catch (err) {
-            console.error("Error fetching users:", err);
-            setToast({ show: true, message: `Failed to load users: ${err.message || 'Unknown error'}`, type: 'error' });
-        } finally {
-            setLoading(false);
-        }
+      if (mounted && Object.keys(next).length > 0) {
+        setAvatarUrls((prev) => ({ ...prev, ...next }));
+      }
     };
 
-    const handleRolesChange = async (userId, newRoles) => {
-        try {
-            const normalized = normalizeRoles(newRoles, ALLOWED_ROLES);
-            setUsers(prev => prev.map(u => u.id === userId ? { ...u, roles: normalized, role: normalized[0] } : u));
-            await AdminAPI.updateUserRoles(userId, normalized);
-            setToast({ show: true, message: "User roles updated successfully", type: 'success' });
-        } catch (err) {
-            setToast({ show: true, message: `Error updating roles: ${err.message}`, type: 'error' });
-            fetchUsers();
-        }
+    void fetchAvatars();
+
+    return () => {
+      mounted = false;
     };
+  }, [users, avatarUrls]);
 
-    const getRoleItems = (user) => {
-        const roles = Array.isArray(user.roles) ? user.roles : [];
-        const subRoles = Array.isArray(user.sub_roles) ? user.sub_roles : [];
-        return [
-            ...roles.map((role) => ({ type: 'role', value: role })),
-            ...subRoles.map((subRole) => ({ type: 'sub', value: subRole })),
-        ];
+  const fetchUsers = async () => {
+    try {
+      setLoading(true);
+      const data = await AdminAPI.getUsers();
+      const list = Array.isArray(data) ? data : [];
+      const manageUserList = list.filter((entry) => userIsManageUser(entry));
+
+      setUsers(
+        manageUserList.map((entry) => ({
+          ...entry,
+          roles: normalizeRoles(
+            Array.isArray(entry.roles) && entry.roles.length
+              ? entry.roles
+              : entry.role
+                ? [entry.role]
+                : [],
+            ALLOWED_ROLES,
+          ),
+          sub_roles: normalizeSubRoles(
+            Array.isArray(entry.sub_roles) && entry.sub_roles.length
+              ? entry.sub_roles
+              : entry.sub_role
+                ? [entry.sub_role]
+                : [],
+            SUB_ROLES,
+          ),
+        })),
+      );
+    } catch (err: any) {
+      setToast({ show: true, message: `Failed to load users: ${err?.message || 'Unknown error'}`, type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearchQuery, roleFilter, subRoleFilter, accessFilter]);
+
+  const filteredUsers = useMemo(() => {
+    if (!debouncedSearchQuery) return users;
+    const q = debouncedSearchQuery.trim().toLowerCase();
+    if (!q) return users;
+
+    return users.filter((user) => {
+      const fullName = String(user.full_name || '').toLowerCase();
+      const username = String(user.username || '').toLowerCase();
+      const schoolId = String(user.school_id || '').toLowerCase();
+      return fullName.includes(q) || username.includes(q) || schoolId.includes(q);
+    });
+  }, [debouncedSearchQuery, users]);
+
+  const visibleUsers = useMemo(() => {
+    return filteredUsers.filter((user) => {
+      const mainRoles = Array.isArray(user.roles) ? user.roles.map(normalizeRoleToken).filter(Boolean) : [];
+      const functionalRoles = Array.isArray(user.sub_roles)
+        ? user.sub_roles.map(normalizeRoleToken).filter(Boolean)
+        : [];
+
+      if (roleFilter && !mainRoles.includes(roleFilter)) return false;
+      if (subRoleFilter && !functionalRoles.includes(subRoleFilter)) return false;
+
+      if (accessFilter === 'main_only' && (!mainRoles.length || functionalRoles.length > 0)) return false;
+      if (accessFilter === 'functional_only' && !functionalRoles.length) return false;
+
+      return true;
+    });
+  }, [filteredUsers, roleFilter, subRoleFilter, accessFilter]);
+
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(visibleUsers.length / PAGE_SIZE)),
+    [visibleUsers.length],
+  );
+
+  useEffect(() => {
+    setCurrentPage((prev) => Math.min(prev, totalPages));
+  }, [totalPages]);
+
+  const pagedUsers = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return visibleUsers.slice(start, start + PAGE_SIZE);
+  }, [currentPage, visibleUsers]);
+
+  const summary = useMemo(() => {
+    const source = users;
+    const countByRole = (role: string) =>
+      source.filter((user) => Array.isArray(user.roles) && user.roles.includes(role)).length;
+    const withFunctional = source.filter(
+      (user) => Array.isArray(user.sub_roles) && user.sub_roles.length > 0,
+    ).length;
+
+    return {
+      total: source.length,
+      students: countByRole('student'),
+      teachers: countByRole('teacher'),
+      nonTeaching: countByRole('nt'),
+      functional: withFunctional,
     };
+  }, [users]);
 
-    const chunkItems = (items, size) => {
-        const chunks = [];
-        for (let i = 0; i < items.length; i += size) {
-            chunks.push(items.slice(i, i + size));
-        }
-        return chunks;
-    };
+  const activeUser = activeRoleUserId ? users.find((entry) => Number(entry.id) === Number(activeRoleUserId)) || null : null;
 
-    const stopRoleMarquee = (userId) => {
-        const key = String(userId);
-        if (roleScrollTimers.current[key]) {
-            clearInterval(roleScrollTimers.current[key]);
-            delete roleScrollTimers.current[key];
-        }
-    };
+  const handleRolesChange = async (userId: number, nextRoles: string[]) => {
+    try {
+      const normalized = normalizeRoles(nextRoles, ALLOWED_ROLES);
+      setUsers((prev) =>
+        prev.map((entry) =>
+          Number(entry.id) === Number(userId)
+            ? { ...entry, roles: normalized, role: normalized[0] || null }
+            : entry,
+        ),
+      );
+      await AdminAPI.updateUserRoles(userId, normalized);
+      setToast({ show: true, message: 'User roles updated successfully.', type: 'success' });
+    } catch (err: any) {
+      setToast({ show: true, message: `Error updating roles: ${err?.message || 'Unknown error'}`, type: 'error' });
+      await fetchUsers();
+    }
+  };
 
-    const startRoleMarquee = (userId) => {
-        const key = String(userId);
-        if (roleScrollTimers.current[key]) return;
-        const scroller = roleScrollRefs.current[key];
-        if (!scroller) return;
-        const pageWidth = ROLE_PAGE_WIDTH_PX;
-        if (!pageWidth) return;
+  const handleSubRoleChange = async (userId: number, nextSubRoles: string[]) => {
+    try {
+      const normalized = normalizeSubRoles(nextSubRoles, SUB_ROLES);
+      const primary = normalized.length > 0 ? normalized[0] : null;
 
-        roleScrollTimers.current[key] = setInterval(() => {
-            if (scroller.matches(':hover')) return;
-            const maxScroll = scroller.scrollWidth - scroller.clientWidth;
-            if (maxScroll <= 0) return;
-            const next = scroller.scrollLeft + pageWidth;
-            scroller.scrollTo({
-                left: next > maxScroll + 4 ? 0 : next,
-                behavior: 'smooth',
-            });
-        }, ROLE_MARQUEE_INTERVAL_MS);
-    };
+      setUsers((prev) =>
+        prev.map((entry) =>
+          Number(entry.id) === Number(userId)
+            ? { ...entry, sub_roles: normalized, sub_role: primary }
+            : entry,
+        ),
+      );
 
-    const handleRoleWheel = (userId, event) => {
-        const scroller = roleScrollRefs.current[String(userId)];
-        if (!scroller) return;
-        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-        if (delta !== 0) {
-            scroller.scrollLeft += delta;
-            event.preventDefault();
-        }
-    };
+      await AdminAPI.updateUserSubRole(userId, primary, normalized);
+      setToast({ show: true, message: 'Functional roles updated successfully.', type: 'success' });
+    } catch (err: any) {
+      setToast({ show: true, message: `Error updating functional roles: ${err?.message || 'Unknown error'}`, type: 'error' });
+      await fetchUsers();
+    }
+  };
 
-    const openDeleteModal = (user) => {
-        setUserToDelete(user);
-        setIsDeleteModalOpen(true);
-    };
+  const openDeleteModal = (user: any) => {
+    setUserToDelete(user);
+    setIsDeleteModalOpen(true);
+  };
 
-    const closeDeleteModal = () => {
-        setIsDeleteModalOpen(false);
-        setUserToDelete(null);
-    };
+  const closeDeleteModal = () => {
+    setIsDeleteModalOpen(false);
+    setUserToDelete(null);
+  };
 
-    const handleSubRoleChange = async (userId, newSubRoles) => {
-        try {
-            const primarySubRole = newSubRoles.length > 0 ? newSubRoles[0] : null;
-            setUsers(prev => prev.map(u => u.id === userId ? { ...u, sub_role: primarySubRole, sub_roles: newSubRoles } : u));
-            await AdminAPI.updateUserSubRole(userId, primarySubRole, newSubRoles);
-            setToast({ show: true, message: "Functional roles updated successfully", type: 'success' });
-        } catch (err) {
-            setToast({ show: true, message: `Error updating functional roles: ${err.message}`, type: 'error' });
-            fetchUsers();
-        }
-    };
+  const confirmDelete = async () => {
+    if (!userToDelete) return;
+    try {
+      await AdminAPI.deleteUser(userToDelete.id);
+      setUsers((prev) => prev.filter((entry) => Number(entry.id) !== Number(userToDelete.id)));
+      if (Number(activeRoleUserId) === Number(userToDelete.id)) {
+        setActiveRoleUserId(null);
+      }
+      setToast({ show: true, message: 'User deleted successfully.', type: 'success' });
+      closeDeleteModal();
+    } catch (err: any) {
+      setToast({ show: true, message: `Failed to delete user: ${err?.message || 'Unknown error'}`, type: 'error' });
+    }
+  };
 
-    const confirmDelete = async () => {
-        if (!userToDelete) return;
+  const handleExportList = () => {
+    if (!visibleUsers.length) {
+      setToast({ show: true, message: 'No users to export for the current filter.', type: 'info' });
+      return;
+    }
 
-        try {
-            await AdminAPI.deleteUser(userToDelete.id);
-            setUsers(prev => prev.filter(u => u.id !== userToDelete.id));
-            setToast({ show: true, message: "User deleted successfully", type: 'success' });
-            closeDeleteModal();
-        } catch (err) {
-            console.error("Error deleting user:", err);
-            setToast({ show: true, message: `Failed to delete user: ${err.message}`, type: 'error' });
-        }
-    };
+    const rows = [
+      ['Full Name', 'Username', 'School ID', 'Main Roles', 'Functional Roles'],
+      ...visibleUsers.map((user) => [
+        String(user.full_name || ''),
+        String(user.username || ''),
+        String(user.school_id || ''),
+        (Array.isArray(user.roles) ? user.roles : []).map((entry: string) => toRoleLabel(entry)).join(' | '),
+        (Array.isArray(user.sub_roles) ? user.sub_roles : []).map((entry: string) => toRoleLabel(entry)).join(' | '),
+      ]),
+    ];
 
-    return (
-        <StyledContainer>
-            <HeaderSection>
-                <div>
-                     <h2><UserCog size={32} /> Manage User Roles</h2>
-                     <p>Manage user permissions and assign roles across the system.</p>
-                </div>
-            </HeaderSection>
-            
-            {toast.show && (
-                <Toast 
-                    message={toast.message} 
-                    type={toast.type} 
-                    onClose={() => setToast(prev => ({ ...prev, show: false }))} 
+    downloadCsv(`manage-users-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+    setToast({ show: true, message: 'User list exported.', type: 'success' });
+  };
+
+  return (
+    <StyledContainer>
+      <HeaderSection>
+        <HeaderMeta>
+          <HeaderTag>
+            <Users size={14} /> People Console
+          </HeaderTag>
+          <h2>
+            <UserCog size={28} /> Manage Users
+          </h2>
+          <p>Dark-mode role management with clearer labels, stronger contrast, and cleaner control flow.</p>
+        </HeaderMeta>
+
+        <HeaderActions>
+          <OutlineActionButton type="button" onClick={handleExportList}>
+            <Download size={14} /> Export List
+          </OutlineActionButton>
+        </HeaderActions>
+      </HeaderSection>
+
+      {toast.show ? (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast((prev) => ({ ...prev, show: false }))}
+        />
+      ) : null}
+
+      <MainCard>
+        <PanelHead>
+          <TitleBlock>
+            <h3>Employees</h3>
+            <p>Manage non-admin accounts, access roles, and functional assignments.</p>
+          </TitleBlock>
+        </PanelHead>
+
+        <StatsGrid>
+          <StatCard $tone="neutral">
+            <span>Total Employees</span>
+            <strong>{summary.total}</strong>
+          </StatCard>
+          <StatCard $tone="student">
+            <span>Student</span>
+            <strong>{summary.students}</strong>
+          </StatCard>
+          <StatCard $tone="teacher">
+            <span>Teacher</span>
+            <strong>{summary.teachers}</strong>
+          </StatCard>
+          <StatCard $tone="nt">
+            <span>Non-Teaching</span>
+            <strong>{summary.nonTeaching}</strong>
+          </StatCard>
+          <StatCard $tone="functional">
+            <span>With Functional Role</span>
+            <strong>{summary.functional}</strong>
+          </StatCard>
+        </StatsGrid>
+
+        <ControlsGrid>
+          <SearchWrapper>
+            <ControlLabel htmlFor="manage-users-search">
+              <Search size={14} />
+              Search Users
+            </ControlLabel>
+            <SearchField>
+              <Search size={16} />
+              <SearchInput
+                id="manage-users-search"
+                type="text"
+                placeholder="Search by name, username, or school ID"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </SearchField>
+          </SearchWrapper>
+
+          <FiltersGroup>
+            <FilterField>
+              <ControlLabel htmlFor="manage-users-main-role">Main Role</ControlLabel>
+              <FilterSelect
+                id="manage-users-main-role"
+                value={roleFilter}
+                onChange={(event) => setRoleFilter(event.target.value)}
+              >
+                <option value="">All Main Roles</option>
+                {ROLE_OPTIONS.map((entry) => (
+                  <option key={entry.key} value={entry.key}>
+                    {entry.label}
+                  </option>
+                ))}
+              </FilterSelect>
+            </FilterField>
+
+            <FilterField>
+              <ControlLabel htmlFor="manage-users-functional-role">Functional Role</ControlLabel>
+              <FilterSelect
+                id="manage-users-functional-role"
+                value={subRoleFilter}
+                onChange={(event) => setSubRoleFilter(event.target.value)}
+              >
+                <option value="">All Functional Roles</option>
+                {SUB_ROLE_OPTIONS.map((entry) => (
+                  <option key={entry.key} value={entry.key}>
+                    {entry.label}
+                  </option>
+                ))}
+              </FilterSelect>
+            </FilterField>
+
+            <FilterField>
+              <ControlLabel htmlFor="manage-users-access-type">Access Type</ControlLabel>
+              <FilterSelect
+                id="manage-users-access-type"
+                value={accessFilter}
+                onChange={(event) => setAccessFilter(event.target.value)}
+              >
+                <option value="all">All Access Types</option>
+                <option value="main_only">Main Role Only</option>
+                <option value="functional_only">Has Functional Role</option>
+              </FilterSelect>
+            </FilterField>
+          </FiltersGroup>
+        </ControlsGrid>
+
+        <TableWrap>
+          <Table>
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>School ID</th>
+                <th>Roles</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={3}>
+                    <PageSkeleton variant="table" compact columns={3} />
+                  </td>
+                </tr>
+              ) : visibleUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={3}>
+                    <EmptyTableCell>No users found matching your filters.</EmptyTableCell>
+                  </td>
+                </tr>
+              ) : (
+                pagedUsers.map((user) => {
+                  const mainRoles = Array.isArray(user.roles) ? user.roles.map(normalizeRoleToken).filter(Boolean) : [];
+                  const subRoles = Array.isArray(user.sub_roles)
+                    ? user.sub_roles.map(normalizeRoleToken).filter(Boolean)
+                    : [];
+
+                  return (
+                    <tr key={user.id}>
+                      <td>
+                        <UserProfile>
+                          <Avatar
+                            loading="lazy"
+                            src={avatarUrls[Number(user.id)] || '/images/sample.jpg'}
+                            onError={(event) => {
+                              const img = event.currentTarget as HTMLImageElement;
+                              img.src = '/images/sample.jpg';
+                            }}
+                          />
+                          <div>
+                            <UserNameButton
+                              type="button"
+                              onClick={() => setActiveRoleUserId(Number(user.id))}
+                              title="Edit user roles"
+                            >
+                              {user.full_name || user.username || 'Unknown user'}
+                            </UserNameButton>
+                            <UserHandle>@{user.username || 'unknown'}</UserHandle>
+                          </div>
+                        </UserProfile>
+                      </td>
+
+                      <td>
+                        {user.school_id ? <SchoolId>{user.school_id}</SchoolId> : <MutedMeta>N/A</MutedMeta>}
+                      </td>
+
+                      <td>
+                        <RolesCellFrame>
+                          <ChipGroup>
+                            {mainRoles.map((role) => {
+                              const meta = roleMetaByKey[role];
+                              const Icon = meta?.icon || Briefcase;
+                              return (
+                                <RoleChip
+                                  key={`main-${user.id}-${role}`}
+                                  $color={meta?.color || '#93c5fd'}
+                                  $glow={meta?.glow || 'rgba(147, 197, 253, 0.25)'}
+                                >
+                                  <Icon size={13} />
+                                  <span>{meta?.label || toRoleLabel(role)}</span>
+                                </RoleChip>
+                              );
+                            })}
+                            {subRoles.map((subRole) => {
+                              const meta = subRoleMetaByKey[subRole];
+                              const Icon = meta?.icon || Briefcase;
+                              return (
+                                <SubRoleChip
+                                  key={`sub-${user.id}-${subRole}`}
+                                  $color={meta?.color || '#cbd5e1'}
+                                  $glow={meta?.glow || 'rgba(203, 213, 225, 0.25)'}
+                                >
+                                  <Icon size={12} />
+                                  <span>{meta?.label || toRoleLabel(subRole)}</span>
+                                </SubRoleChip>
+                              );
+                            })}
+                            {mainRoles.length === 0 && subRoles.length === 0 ? (
+                              <MutedMeta>Unassigned</MutedMeta>
+                            ) : null}
+                          </ChipGroup>
+                        </RolesCellFrame>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </Table>
+        </TableWrap>
+
+        {visibleUsers.length > 0 ? (
+          <PaginationRow>
+            <PagerButton
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+            >
+              Prev
+            </PagerButton>
+            <PageMeta>
+              Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
+              <span>
+                Showing {(currentPage - 1) * PAGE_SIZE + 1}-{Math.min(currentPage * PAGE_SIZE, visibleUsers.length)} of{' '}
+                {visibleUsers.length}
+              </span>
+            </PageMeta>
+            <PagerButton
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+            >
+              Next
+            </PagerButton>
+          </PaginationRow>
+        ) : null}
+      </MainCard>
+
+      {activeUser ? (
+        <ModalOverlay onClick={() => setActiveRoleUserId(null)}>
+          <RoleEditorContainer onClick={(event) => event.stopPropagation()}>
+            <EditorHeader>
+              <span>Assign Roles</span>
+              <CloseButton type="button" onClick={() => setActiveRoleUserId(null)}>
+                <X size={16} />
+              </CloseButton>
+            </EditorHeader>
+
+            <EditorBody>
+              <EditorUserInfo>
+                <EditorAvatar
+                  src={avatarUrls[Number(activeUser.id)] || '/images/sample.jpg'}
+                  onError={(event) => {
+                    const img = event.currentTarget as HTMLImageElement;
+                    img.src = '/images/sample.jpg';
+                  }}
                 />
-            )}
+                <div>
+                  <strong>{activeUser.full_name || activeUser.username || 'Unknown user'}</strong>
+                  <span>@{activeUser.username || 'unknown'}</span>
+                </div>
+              </EditorUserInfo>
 
-            <MainCard>
-                <CardHeader>
-                    <div className="d-flex align-items-center gap-2">
-                        <Users size={20} />
-                        <h3>System Users</h3>
-                    </div>
-                        <SearchWrapper>
-                            <Search size={16} />
-                            <SearchInput 
-                                type="text" 
-                                placeholder="Search by name, username or ID..."
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                            />
-                        </SearchWrapper>
-                        <FilterRow>
-                            <FilterSelect value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
-                                <option value="">All Roles</option>
-                                <option value="student">Student</option>
-                                <option value="teacher">Teacher</option>
-                                <option value="admin">Admin</option>
-                                <option value="nt">Non-Teaching</option>
-                            </FilterSelect>
-                        </FilterRow>
-                    </CardHeader>
+              <SectionLabel>Roles</SectionLabel>
+              <RoleOptionsGrid>
+                {ROLE_OPTIONS.map((entry) => {
+                  const isSelected = Array.isArray(activeUser.roles)
+                    ? activeUser.roles.includes(entry.key)
+                    : false;
+                  const Icon = entry.icon;
 
-                <CardBody>
-                     <div className="table-responsive" style={{ position: 'relative', minHeight: '400px' }}>
-                        <Table>
-                            <thead>
-                                <tr>
-                                    <th>User Profile</th>
-                                    <th>School ID</th>
-                                    <th>Assigned Roles</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {loading ? (
-                                    <tr>
-                                        <td colSpan={4}>
-                                            <PageSkeleton variant="table" compact />
-                                        </td>
-                                    </tr>
-                                ) : visibleUsers.length === 0 ? (
-                                    <tr><td colSpan={4} className="text-center py-5 text-muted">No users found matching your filters.</td></tr>
-                                ) : (
-                                    visibleUsers.map(user => {
-                                        const roleItems = getRoleItems(user);
-                                        const rolePages = chunkItems(roleItems, ROLE_PAGE_SIZE);
-
-                                        return (
-                                        <tr key={user.id}>
-                                            <td>
-                                                <UserProfile>
-                                                    <Avatar loading="lazy" 
-                                                        src={avatarUrls[user.id] || "/images/sample.jpg"} 
-                                                        onError={(e) => {
-                                                            const image = e.currentTarget as HTMLImageElement;
-                                                            image.src = "/images/sample.jpg";
-                                                        }}
-                                                    />
-                                                    <div>
-                                                        <UserName>{user.full_name || user.username}</UserName>
-                                                        <UserHandle>{user.username}</UserHandle>
-                                                    </div>
-                                                </UserProfile>
-                                            </td>
-                                            <td>
-                                                {user.school_id ? (
-                                                    <SchoolId>{user.school_id}</SchoolId>
-                                                ) : (
-                                                    <span className="text-muted fst-italic text-sm">N/A</span>
-                                                )}
-                                            </td>
-                                            <td>
-                                                <div style={{ position: 'relative' }}>
-                                                    <RoleDisplay 
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setActiveRoleUserId(activeRoleUserId === user.id ? null : user.id);
-                                                        }}
-                                                        $active={activeRoleUserId === user.id}
-                                                    >
-                                                        {roleItems.length === 0 ? (
-                                                            <span className="text-muted text-xs">No roles</span>
-                                                        ) : (
-                                                            <RoleScroller
-                                                                ref={(el) => {
-                                                                    if (el) roleScrollRefs.current[String(user.id)] = el;
-                                                                }}
-                                                                onMouseEnter={() => stopRoleMarquee(user.id)}
-                                                                onMouseLeave={() => startRoleMarquee(user.id)}
-                                                                onWheel={(e) => handleRoleWheel(user.id, e)}
-                                                            >
-                                                                {rolePages.map((page, pageIndex) => (
-                                                                    <RolePage key={`${user.id}-page-${pageIndex}`} data-role-page>
-                                                                        {page.map((item) => (
-                                                                            item.type === 'role' ? (
-                                                                                <RoleBadge
-                                                                                    key={`role-${user.id}-${item.value}`}
-                                                                                    $role={item.value}
-                                                                                    title={item.value === 'nt' ? 'Non-Teaching' : item.value.charAt(0).toUpperCase() + item.value.slice(1)}
-                                                                                >
-                                                                                    {getRoleIcon(item.value)}
-                                                                                </RoleBadge>
-                                                                            ) : (
-                                                                                <SubRoleBadge
-                                                                                    key={`sub-${user.id}-${item.value}`}
-                                                                                    $subRole={item.value}
-                                                                                    title={item.value.toUpperCase()}
-                                                                                >
-                                                                                    {getSubRoleIcon(item.value)}
-                                                                                </SubRoleBadge>
-                                                                            )
-                                                                        ))}
-                                                                    </RolePage>
-                                                                ))}
-                                                            </RoleScroller>
-                                                        )}
-                                                        <EditIconWrapper $active={activeRoleUserId === user.id}>
-                                                            <UserCog size={14} />
-                                                        </EditIconWrapper>
-                                                    </RoleDisplay>
-
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <ActionWrapper>
-                                                    <DeleteButton 
-                                                        onClick={() => openDeleteModal(user)}
-                                                        title="Delete User"
-                                                    >
-                                                        <Trash2 size={16} />
-                                                    </DeleteButton>
-                                                </ActionWrapper>
-                                            </td>
-                                        </tr>
-                                        );
-                                    })
-                                )}
-                            </tbody>
-                        </Table>
-                     </div>
-                </CardBody>
-            </MainCard>
-
-            {activeUser && (
-                <ModalOverlay onClick={() => setActiveRoleUserId(null)}>
-                    <RoleEditorContainer 
-                        onClick={(e) => e.stopPropagation()}
+                  return (
+                    <RoleOptionCard
+                      key={entry.key}
+                      $selected={isSelected}
+                      $color={entry.color}
+                      onClick={() => {
+                        const current = Array.isArray(activeUser.roles) ? activeUser.roles : [];
+                        const next = isSelected
+                          ? current.filter((role: string) => role !== entry.key)
+                          : [...current, entry.key];
+                        handleRolesChange(activeUser.id, next);
+                      }}
                     >
-                        <EditorHeader>
-                            <span>Assign Roles</span>
-                            <CloseButton onClick={() => setActiveRoleUserId(null)}>
-                                <X size={16} />
-                            </CloseButton>
-                        </EditorHeader>
-                        
-                        <EditorBody>
-                            <SectionLabel>Main Access Role</SectionLabel>
-                            <RoleOptionsGrid>
-                                {ALLOWED_ROLES.map((role) => {
-                                    const isSelected = activeUser.roles && activeUser.roles.includes(role);
-                                    return (
-                                        <RoleOptionCard 
-                                            key={role} 
-                                            $selected={isSelected}
-                                            $role={role}
-                                            onClick={() => {
-                                                const currentRoles = activeUser.roles || [];
-                                                const newRoles = isSelected
-                                                    ? currentRoles.filter(r => r !== role)
-                                                    : [...currentRoles, role];
-                                                handleRolesChange(activeUser.id, newRoles);
-                                            }}
-                                        >
-                                            <div className="icon-box">
-                                                {getRoleIcon(role)}
-                                            </div>
-                                            <div className="label">
-                                                {role === 'nt' ? 'Non-Teaching' : role.charAt(0).toUpperCase() + role.slice(1)}
-                                            </div>
-                                            {isSelected && <CheckCircle size={14} />}
-                                        </RoleOptionCard>
-                                    );
-                                })}
-                            </RoleOptionsGrid>
+                      <div className="icon-box">
+                        <Icon size={16} />
+                      </div>
+                      <div className="label">{entry.label}</div>
+                      {isSelected ? <SelectedMark size={14} /> : null}
+                    </RoleOptionCard>
+                  );
+                })}
+              </RoleOptionsGrid>
 
-                            <Divider />
+              <Divider />
 
-                            <SubRoleSection>
-                                <SectionTitle>
-                                    <Briefcase size={12} /> Functional Sub-Roles
-                                </SectionTitle>
-                                <SubRoleGrid>
-                                    {SUB_ROLES.map((subRole) => {
-                                        const isSelected = activeUser.sub_roles && activeUser.sub_roles.includes(subRole);
-                                        return (
-                                            <SubRoleButton
-                                                key={subRole}
-                                                $selected={isSelected}
-                                                $subRole={subRole}
-                                                onClick={() => {
-                                                    const current = activeUser.sub_roles || [];
-                                                    const next = isSelected 
-                                                        ? current.filter(s => s !== subRole)
-                                                        : [...current, subRole];
-                                                    handleSubRoleChange(activeUser.id, next);
-                                                }}
-                                                title={subRole.toUpperCase()}
-                                            >
-                                                {getSubRoleIcon(subRole)}
-                                            </SubRoleButton>
-                                        );
-                                    })}
-                                </SubRoleGrid>
-                            </SubRoleSection>
-                        </EditorBody>
-                    </RoleEditorContainer>
-                </ModalOverlay>
-            )}
+              <SubRoleSection>
+                <SectionTitle>
+                  <Briefcase size={13} /> Functional Role Group
+                </SectionTitle>
 
-            <DeleteModal 
-                isOpen={isDeleteModalOpen}
-                onClose={closeDeleteModal}
-                onConfirm={confirmDelete}
-                title="Confirm Account Deletion"
-                message="Are you sure you want to delete this user? This action cannot be undone and will remove all their data."
-                itemName={userToDelete?.full_name || userToDelete?.username}
-                isLoading={false}
-            />
-        </StyledContainer>
-    );
+                <SubRoleGrid>
+                  {SUB_ROLE_OPTIONS.map((entry) => {
+                    const isSelected = Array.isArray(activeUser.sub_roles)
+                      ? activeUser.sub_roles.includes(entry.key)
+                      : false;
+                    const Icon = entry.icon;
+
+                    return (
+                      <SubRoleButton
+                        key={entry.key}
+                        $selected={isSelected}
+                        $color={entry.color}
+                        onClick={() => {
+                          const current = Array.isArray(activeUser.sub_roles) ? activeUser.sub_roles : [];
+                          const next = isSelected
+                            ? current.filter((role: string) => role !== entry.key)
+                            : [...current, entry.key];
+                          handleSubRoleChange(activeUser.id, next);
+                        }}
+                      >
+                        <Icon size={15} />
+                        <span>{entry.label}</span>
+                      </SubRoleButton>
+                    );
+                  })}
+                </SubRoleGrid>
+              </SubRoleSection>
+
+              <Divider />
+
+              <DrawerFooter>
+                <DrawerDeleteButton
+                  type="button"
+                  onClick={() => openDeleteModal(activeUser)}
+                  title="Delete this user"
+                >
+                  <Trash2 size={14} />
+                  Delete User
+                </DrawerDeleteButton>
+              </DrawerFooter>
+            </EditorBody>
+          </RoleEditorContainer>
+        </ModalOverlay>
+      ) : null}
+
+      <DeleteModal
+        isOpen={isDeleteModalOpen}
+        onClose={closeDeleteModal}
+        onConfirm={confirmDelete}
+        title="Confirm Account Deletion"
+        message="Are you sure you want to delete this user? This action cannot be undone and will remove all their data."
+        itemName={userToDelete?.full_name || userToDelete?.username}
+        isLoading={false}
+      />
+    </StyledContainer>
+  );
 };
 
-// --- Styled Components ---
+const fadeIn = keyframes`
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+`;
 
 const slideDown = keyframes`
-  from { opacity: 0; transform: translateY(-10px) scale(0.95); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateX(105%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 `;
 
 const StyledContainer = styled.div`
-  max-width: 1400px;
+  max-width: 1460px;
   margin: 0 auto;
-  padding-bottom: 40px;
-  animation: fadeIn 0.4s ease-out;
-  color: var(--text-primary);
+  padding: 6px 4px 32px;
+  color: #eaf2ff;
+  animation: ${fadeIn} 0.35s ease;
 `;
 
-const HeaderSection = styled.div`
+const HeaderSection = styled.section`
+  border: 1px solid rgba(117, 149, 255, 0.28);
+  background:
+    radial-gradient(circle at 8% -10%, rgba(89, 187, 255, 0.22), transparent 40%),
+    radial-gradient(circle at 92% 8%, rgba(120, 98, 255, 0.2), transparent 40%),
+    linear-gradient(155deg, #081126, #0a1735 52%, #071025);
+  border-radius: 16px;
+  padding: 1rem 1.1rem;
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 2rem;
-  
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 1rem;
+
+  @media (max-width: 860px) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+`;
+
+const HeaderMeta = styled.div`
   h2 {
-    font-size: 2rem;
-    font-weight: 800;
-    color: var(--text-primary);
+    margin: 0;
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 0.5rem;
-    svg { color: var(--accent-primary); }
+    gap: 10px;
+    font-size: 1.7rem;
+    font-weight: 800;
+    color: #f3f8ff;
   }
-  p { color: var(--text-secondary); font-size: 1.1rem; }
+
+  p {
+    margin: 8px 0 0;
+    color: rgba(219, 232, 255, 0.9);
+    font-size: 0.95rem;
+    line-height: 1.45;
+  }
 `;
 
-const MainCard = styled.div`
-  background: var(--bg-secondary);
-  border-radius: 16px;
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-md);
-  overflow: visible; 
-`;
-
-const CardHeader = styled.div`
-  padding: 1.5rem;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
+const HeaderTag = styled.div`
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
-  h3 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-  svg { color: var(--text-secondary); }
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(112, 227, 190, 0.38);
+  background: rgba(28, 103, 80, 0.24);
+  color: #a8ffe0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 9px;
 `;
 
-const CardBody = styled.div`
-   padding: 0; 
+const HeaderActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+`;
+
+const OutlineActionButton = styled.button`
+  border: 1px solid rgba(119, 220, 255, 0.42);
+  background: rgba(18, 36, 78, 0.74);
+  color: #ddf5ff;
+  border-radius: 10px;
+  padding: 0.56rem 0.86rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: rgba(146, 232, 255, 0.78);
+    box-shadow: 0 0 0 1px rgba(118, 218, 255, 0.26);
+  }
+`;
+
+const MainCard = styled.section`
+  border-radius: 18px;
+  border: 1px solid rgba(120, 147, 255, 0.24);
+  background:
+    radial-gradient(circle at 88% 2%, rgba(86, 167, 255, 0.18), transparent 40%),
+    linear-gradient(162deg, #081227, #06102a 48%, #050b1a);
+  box-shadow: 0 14px 30px rgba(2, 8, 25, 0.56);
+  overflow: hidden;
+`;
+
+const PanelHead = styled.div`
+  padding: 1.05rem 1.2rem;
+  border-bottom: 1px solid rgba(122, 145, 245, 0.24);
+`;
+
+const TitleBlock = styled.div`
+  h3 {
+    margin: 0;
+    color: #f7fbff;
+    font-size: 1.6rem;
+    font-weight: 780;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: rgba(215, 228, 255, 0.87);
+    font-size: 0.9rem;
+  }
+`;
+
+const StatsGrid = styled.div`
+  padding: 0.95rem 1.1rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.65rem;
+
+  @media (max-width: 1220px) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  @media (max-width: 780px) {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  @media (max-width: 520px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const StatCard = styled.div`
+  border-radius: 12px;
+  padding: 0.68rem 0.74rem;
+  border: 1px solid
+    ${(props: any) =>
+      props.$tone === 'student'
+        ? 'rgba(96, 165, 250, 0.52)'
+        : props.$tone === 'teacher'
+          ? 'rgba(36, 205, 174, 0.5)'
+          : props.$tone === 'nt'
+            ? 'rgba(245, 158, 11, 0.52)'
+            : props.$tone === 'functional'
+              ? 'rgba(153, 102, 255, 0.5)'
+              : 'rgba(153, 176, 255, 0.36)'};
+  background:
+    ${(props: any) =>
+      props.$tone === 'student'
+        ? 'linear-gradient(165deg, rgba(32, 68, 122, 0.66), rgba(18, 41, 82, 0.64))'
+        : props.$tone === 'teacher'
+          ? 'linear-gradient(165deg, rgba(10, 80, 70, 0.64), rgba(7, 53, 47, 0.62))'
+          : props.$tone === 'nt'
+            ? 'linear-gradient(165deg, rgba(109, 68, 14, 0.64), rgba(62, 39, 7, 0.62))'
+            : props.$tone === 'functional'
+              ? 'linear-gradient(165deg, rgba(53, 30, 110, 0.66), rgba(33, 16, 74, 0.62))'
+              : 'linear-gradient(165deg, rgba(21, 40, 80, 0.64), rgba(14, 27, 58, 0.62))'};
+
+  span {
+    display: block;
+    font-size: 0.78rem;
+    color: rgba(225, 236, 255, 0.88);
+    margin-bottom: 7px;
+  }
+
+  strong {
+    font-size: 1.52rem;
+    line-height: 1;
+    color: #faffff;
+    font-weight: 800;
+  }
+`;
+
+const ControlsGrid = styled.div`
+  display: grid;
+  grid-template-columns: minmax(260px, 1.35fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 0.72rem;
+  padding: 0 1.1rem 1rem;
+
+  @media (max-width: 1120px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const ControlLabel = styled.label`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(201, 220, 255, 0.92);
+  margin-bottom: 6px;
 `;
 
 const SearchWrapper = styled.div`
-    position: relative;
-    width: 300px;
-    svg {
-        position: absolute;
-        left: 12px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: var(--text-secondary);
-    }
+  width: 100%;
 `;
 
-const FilterRow = styled.div`
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-`;
+const SearchField = styled.div`
+  min-height: 50px;
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(129, 156, 255, 0.34);
+  background: rgba(10, 22, 50, 0.86);
+  color: #f0f7ff;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0.86rem;
 
-const FilterSelect = styled.select`
-    padding: 8px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: 0.85rem;
-    min-width: 160px;
-    cursor: pointer;
-    &:focus { border-color: var(--accent-primary); outline: none; }
+  svg {
+    flex: 0 0 auto;
+    color: rgba(204, 226, 255, 0.86);
+  }
+
+  &:focus-within {
+    border-color: rgba(120, 226, 255, 0.62);
+    box-shadow: 0 0 0 1px rgba(120, 226, 255, 0.24);
+  }
 `;
 
 const SearchInput = styled.input`
-    width: 100%;
-    padding: 10px 10px 10px 36px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    &:focus { border-color: var(--accent-primary); outline: none; }
+  width: 100%;
+  min-height: 44px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #f0f7ff;
+  padding: 0.6rem 0;
+  font-size: 0.9rem;
+  line-height: 1.2;
+
+  &::placeholder {
+    color: rgba(197, 214, 255, 0.72);
+  }
+
+  &:focus {
+    outline: none;
+  }
+`;
+
+const FiltersGroup = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+  gap: 0.58rem;
+  width: 100%;
+
+  @media (max-width: 1200px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 720px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const FilterField = styled.div`
+  width: 100%;
+  min-width: 0;
+`;
+
+const FilterSelect = styled.select`
+  width: 100%;
+  min-height: 50px;
+  border-radius: 10px;
+  border: 1px solid rgba(130, 158, 255, 0.32);
+  background: rgba(10, 22, 50, 0.86);
+  color: #f4f8ff;
+  padding: 0.7rem 0.86rem;
+  font-size: 0.9rem;
+  min-width: 0;
+  line-height: 1.2;
+
+  option {
+    background: #0b1738;
+    color: #f4f8ff;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: rgba(116, 224, 255, 0.62);
+    box-shadow: 0 0 0 1px rgba(116, 224, 255, 0.24);
+  }
+`;
+
+const TableWrap = styled.div`
+  padding: 0 1.1rem 0.7rem;
+  overflow-x: auto;
 `;
 
 const Table = styled.table`
-    width: 100%;
-    border-collapse: collapse;
-    th {
-        text-align: left;
-        padding: 1rem 1.5rem;
-        color: var(--text-secondary);
-        font-weight: 600;
-        border-bottom: 1px solid var(--border-color);
-        background: var(--bg-tertiary);
-    }
-    td {
-        padding: 1rem 1.5rem;
-        border-bottom: 1px solid var(--border-color);
-        color: var(--text-primary);
-        vertical-align: middle;
-    }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--bg-tertiary); }
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 760px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(123, 144, 233, 0.22);
+
+  thead th {
+    text-align: left;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: rgba(215, 227, 255, 0.95);
+    background: linear-gradient(180deg, rgba(22, 37, 74, 0.95), rgba(16, 29, 62, 0.94));
+    border-bottom: 1px solid rgba(124, 145, 236, 0.28);
+    padding: 0.76rem 0.85rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  thead th:nth-child(2),
+  thead th:nth-child(3) {
+    text-align: center;
+  }
+
+  tbody td {
+    border-bottom: 1px solid rgba(95, 116, 194, 0.24);
+    padding: 0.78rem 0.85rem;
+    color: #edf4ff;
+    vertical-align: middle;
+    background: rgba(9, 19, 43, 0.88);
+  }
+
+  tbody tr:hover td {
+    background: rgba(14, 28, 62, 0.96);
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody td:nth-child(2),
+  tbody td:nth-child(3) {
+    text-align: center;
+  }
+`;
+
+const EmptyTableCell = styled.div`
+  text-align: center;
+  padding: 32px 12px;
+  color: rgba(206, 220, 255, 0.9);
 `;
 
 const UserProfile = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 `;
 
 const Avatar = styled.img`
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    object-fit: cover;
-    border: 2px solid var(--border-color);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(132, 236, 255, 0.3);
+  box-shadow: 0 0 16px rgba(102, 206, 255, 0.16);
 `;
 
-const UserName = styled.div`
-    font-weight: 600;
-    color: var(--text-primary);
+const UserNameButton = styled.button`
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: #f7fbff;
+  font-weight: 700;
+  font-size: 0.91rem;
+
+  &:hover {
+    color: #ffffff;
+    text-decoration: underline;
+    text-decoration-color: rgba(146, 241, 255, 0.9);
+    text-underline-offset: 2px;
+  }
 `;
 
 const UserHandle = styled.div`
-    font-size: 0.85rem;
-    color: var(--text-secondary);
+  color: rgba(201, 220, 255, 0.86);
+  font-size: 0.8rem;
 `;
 
 const SchoolId = styled.span`
-    background: var(--bg-tertiary);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-family: monospace;
-    font-size: 0.9rem;
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  min-width: 110px;
+  border-radius: 8px;
+  border: 1px solid rgba(129, 156, 255, 0.32);
+  background: rgba(16, 30, 63, 0.76);
+  color: #eaf2ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.8rem;
+  margin: 0 auto;
 `;
 
-const ActionWrapper = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 16px;
+const MutedMeta = styled.span`
+  color: rgba(205, 220, 255, 0.82);
+  font-size: 0.78rem;
 `;
 
-// --- New Role Design ---
-
-const RoleDisplay = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 8px;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: ${props => props.$active ? 'var(--bg-tertiary)' : 'transparent'};
-    
-    &:hover {
-        background: var(--bg-tertiary);
-        border-color: var(--border-color);
-        
-        // Show edit icon on hover
-        div:last-child {
-            opacity: 1;
-            transform: translateX(0);
-        }
-    }
+const RolesCellFrame = styled.div`
+  width: 100%;
+  border: 1px solid rgba(123, 147, 236, 0.26);
+  background: rgba(13, 28, 57, 0.8);
+  color: #eef6ff;
+  border-radius: 10px;
+  padding: 0.42rem 0.5rem;
 `;
 
-const RoleScroller = styled.div`
-    display: flex;
-    gap: 12px;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    max-width: ${ROLE_PAGE_WIDTH};
-    padding-bottom: 2px;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border-color) transparent;
-    overscroll-behavior-x: contain;
-
-    &::-webkit-scrollbar {
-        height: 6px;
-    }
-
-    &::-webkit-scrollbar-track {
-        background: transparent;
-    }
-
-    &::-webkit-scrollbar-thumb {
-        background: transparent;
-        border-radius: 999px;
-    }
-
-    &:hover::-webkit-scrollbar-thumb {
-        background: var(--border-color);
-    }
+const ChipGroup = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
 `;
 
-const RolePage = styled.div`
-    display: flex;
-    align-items: center;
-    gap: ${ROLE_ICON_GAP}px;
-    scroll-snap-align: start;
-    flex: 0 0 auto;
-    min-width: ${ROLE_PAGE_WIDTH};
+const RoleChip = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  border: 1px solid ${(props: any) => `${props.$color}a0`};
+  background: ${(props: any) => `${props.$color}2e`};
+  color: #f8fdff;
+  box-shadow: 0 0 10px ${(props: any) => props.$glow};
+  padding: 3px 8px;
+
+  span {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  svg {
+    color: #ffffff;
+    stroke-width: 2.1;
+  }
 `;
 
-const RoleBadge = styled.span`
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: ${props => `${getRoleColor(props.$role)}15`};
-    color: ${props => getRoleColor(props.$role)};
-    border: 1px solid ${props => `${getRoleColor(props.$role)}30`};
-    transition: all 0.2s;
-    
-    &:hover {
-        background: ${props => `${getRoleColor(props.$role)}25`};
-        transform: scale(1.1);
-    }
-    
-    svg { opacity: 0.9; }
-`;
-
-const SubRoleBadge = styled.span`
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: ${props => `${getSubRoleColor(props.$subRole)}15`};
-    color: ${props => getSubRoleColor(props.$subRole)};
-    border: 1px solid ${props => `${getSubRoleColor(props.$subRole)}30`};
-    
-    svg { opacity: 0.9; }
-`;
-
-const EditIconWrapper = styled.div`
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--accent-primary);
-    color: white;
-    opacity: ${props => props.$active ? 1 : 0};
-    transform: ${props => props.$active ? 'translateX(0)' : 'translateX(-5px)'};
-    transition: all 0.2s;
-    margin-left: 4px;
+const SubRoleChip = styled(RoleChip)`
+  span {
+    font-size: 0.72rem;
+  }
 `;
 
 const ModalOverlay = styled.div`
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-    z-index: 2000;
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(3, 8, 21, 0.42) 0%, rgba(3, 8, 21, 0.72) 60%, rgba(3, 8, 21, 0.82) 100%);
+  backdrop-filter: blur(2.5px);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 16px;
+  z-index: 2100;
+
+  @media (max-width: 900px) {
+    padding: 0;
+  }
 `;
 
 const RoleEditorContainer = styled.div`
-    width: 360px;
-    max-width: 95vw;
-    max-height: 85vh;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 12px;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
-    animation: ${slideDown} 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
+  width: clamp(340px, 26vw, 520px);
+  max-width: 100%;
+  height: calc(100vh - 32px);
+  max-height: 100%;
+  background: linear-gradient(165deg, rgba(9, 19, 44, 0.98), rgba(7, 14, 34, 0.98));
+  border: 1px solid rgba(122, 147, 232, 0.34);
+  border-radius: 14px;
+  box-shadow: 0 16px 36px rgba(0, 5, 16, 0.58);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: ${slideDown} 0.2s ease;
+
+  @media (max-width: 900px) {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
 `;
 
 const EditorHeader = styled.div`
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 16px;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border-color);
-    font-weight: 600;
+  padding: 0.8rem 0.95rem;
+  border-bottom: 1px solid rgba(121, 145, 232, 0.26);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  span {
     font-size: 0.9rem;
-    color: var(--text-primary);
+    font-weight: 700;
+    color: #f5faff;
+  }
 `;
 
 const CloseButton = styled.button`
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
-    &:hover { background: rgba(0,0,0,0.05); color: var(--text-primary); }
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(136, 161, 245, 0.3);
+  background: rgba(15, 27, 56, 0.85);
+  color: rgba(225, 237, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 `;
 
 const EditorBody = styled.div`
-    padding: 16px;
-    overflow-y: auto;
+  padding: 0.9rem;
+  flex: 1 1 auto;
+  overflow-y: auto;
+`;
+
+const EditorUserInfo = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 149, 233, 0.28);
+  background: rgba(15, 29, 61, 0.84);
+
+  strong {
+    display: block;
+    color: #f7fbff;
+    font-size: 0.9rem;
+  }
+
+  span {
+    display: block;
+    color: rgba(199, 218, 255, 0.88);
+    font-size: 0.8rem;
+    margin-top: 1px;
+  }
+`;
+
+const EditorAvatar = styled.img`
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(125, 233, 255, 0.34);
 `;
 
 const SectionLabel = styled.div`
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
-    font-weight: 600;
-    margin-bottom: 8px;
-    text-transform: uppercase;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(188, 209, 255, 0.88);
+  margin-bottom: 7px;
+  font-weight: 700;
 `;
 
 const RoleOptionsGrid = styled.div`
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 `;
 
-const RoleOptionCard = styled.div`
-    position: relative;
-    display: flex;
-    flex-direction: column;
+const RoleOptionCard = styled.button`
+  position: relative;
+  border-radius: 11px;
+  border: 1px solid ${(props: any) => (props.$selected ? `${props.$color}aa` : 'rgba(129, 151, 236, 0.28)')};
+  background: ${(props: any) => (props.$selected ? `${props.$color}26` : 'rgba(13, 25, 53, 0.82)')};
+  color: #f5fbff;
+  padding: 0.66rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+
+  .icon-box {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 12px;
-    border-radius: 10px;
-    border: 2px solid ${props => props.$selected ? getRoleColor(props.$role) : 'var(--border-color)'};
-    background: ${props => props.$selected ? `${getRoleColor(props.$role)}10` : 'var(--bg-primary)'};
-    cursor: pointer;
-    transition: all 0.2s ease;
+    background: ${(props: any) => (props.$selected ? `${props.$color}cc` : 'rgba(26, 42, 84, 0.88)')};
+    color: #ffffff;
+  }
 
-    &:hover {
-        border-color: ${props => props.$selected ? getRoleColor(props.$role) : 'var(--text-secondary)'};
-        transform: translateY(-2px);
-    }
-
-    .icon-box {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        background: ${props => props.$selected ? getRoleColor(props.$role) : 'var(--bg-tertiary)'};
-        color: ${props => props.$selected ? 'white' : 'var(--text-secondary)'};
-        transition: all 0.2s;
-    }
-
-    .label {
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: ${props => props.$selected ? getRoleColor(props.$role) : 'var(--text-primary)'};
-    }
+  .label {
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
 `;
 
-const CheckCircle = styled(Check)`
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    color: currentColor;
+const SelectedMark = styled(Check)`
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  color: #d9fff4;
 `;
 
 const Divider = styled.div`
-    height: 1px;
-    background: var(--border-color);
-    margin: 16px 0;
+  margin: 14px 0;
+  height: 1px;
+  background: rgba(123, 148, 236, 0.24);
 `;
 
 const SubRoleSection = styled.div`
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 `;
 
 const SectionTitle = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-    letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: rgba(193, 212, 255, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 `;
 
 const SubRoleGrid = styled.div`
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    justify-content: flex-start;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
 `;
 
-const SubRoleButton = styled.div`
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: 12px;
-    border: 2px solid ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--border-color)'};
-    background: ${props => props.$selected ? `${getSubRoleColor(props.$subRole)}20` : 'var(--bg-primary)'};
-    color: ${props => props.$selected ? getSubRoleColor(props.$subRole) : 'var(--text-secondary)'};
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+const SubRoleButton = styled.button`
+  border-radius: 10px;
+  border: 1px solid ${(props: any) => (props.$selected ? `${props.$color}a8` : 'rgba(122, 146, 233, 0.28)')};
+  background: ${(props: any) => (props.$selected ? `${props.$color}24` : 'rgba(14, 27, 56, 0.82)')};
+  color: #f3f8ff;
+  padding: 0.58rem 0.62rem;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
 
-    &:hover {
-        border-color: ${props => getSubRoleColor(props.$subRole)};
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px ${props => `${getSubRoleColor(props.$subRole)}20`};
-    }
+  span {
+    font-size: 0.82rem;
+    font-weight: 700;
+  }
 
-    svg {
-        width: 20px;
-        height: 20px;
-        transition: transform 0.2s;
-    }
-
-    &:active {
-        transform: scale(0.95);
-    }
+  svg {
+    color: #ffffff;
+    stroke-width: 2;
+  }
 `;
 
+const DrawerFooter = styled.div`
+  margin-top: 10px;
+`;
 
-const DeleteButton = styled.button`
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: 6px;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    background: rgba(239, 68, 68, 0.1);
-    color: #ef4444;
-    cursor: pointer;
-    transition: all 0.2s;
-    
-    &:hover {
-        background: rgba(239, 68, 68, 0.2);
-        color: #dc2626;
-        border-color: rgba(239, 68, 68, 0.5);
-        transform: translateY(-1px);
-    }
-    
-    &:active {
-        transform: translateY(0);
-    }
+const DrawerDeleteButton = styled.button`
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 119, 147, 0.56);
+  background: linear-gradient(145deg, rgba(120, 23, 49, 0.74), rgba(81, 14, 34, 0.76));
+  color: #ffe2ea;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 0.84rem;
+  padding: 0.62rem 0.75rem;
+  cursor: pointer;
+
+  &:hover {
+    background: linear-gradient(145deg, rgba(145, 27, 59, 0.82), rgba(95, 16, 41, 0.84));
+    border-color: rgba(255, 145, 169, 0.78);
+  }
+`;
+
+const PaginationRow = styled.div`
+  padding: 0 1.1rem 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+`;
+
+const PageMeta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: rgba(220, 233, 255, 0.9);
+
+  strong {
+    color: #ffffff;
+    font-weight: 800;
+  }
+
+  span {
+    color: rgba(196, 214, 255, 0.85);
+  }
+`;
+
+const PagerButton = styled.button`
+  min-width: 72px;
+  border-radius: 9px;
+  border: 1px solid rgba(120, 151, 255, 0.34);
+  background: rgba(14, 28, 62, 0.88);
+  color: #eef6ff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: rgba(128, 230, 255, 0.66);
+    background: rgba(20, 40, 80, 0.92);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 `;
 
 export default ManageUsersView;

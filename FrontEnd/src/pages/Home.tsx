@@ -9,23 +9,14 @@ import {
   Shield,
   ClipboardCheck,
   Settings,
-  LogOut,
-  User,
-  LayoutDashboard,
   MessageSquare,
-  ShieldAlert,
-  CreditCard,
-  UserCheck
 } from "lucide-react";
 
-import Loader from "../components/Loader";
 import PageSkeleton from "../components/loaders/PageSkeleton";
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
 import ModernSidebar from "../components/common/ModernSidebar";
-import ChatBot from "../components/ChatBot";
-import NotificationBell from "../components/common/NotificationBell";
 
 const RecordsView = lazy(() => import("../components/views/RecordsView"));
 const AnnouncementsView = lazy(() => import("../components/views/student/AnnouncementsView"));
@@ -34,7 +25,8 @@ const TransparencyView = lazy(() => import("../components/views/student/Transpar
 const EvaluationView = lazy(() => import("../components/views/student/EvaluationView"));
 const SettingsView = lazy(() => import("../components/views/student/SettingsView"));
 const FeedbackView = lazy(() => import("../components/views/student/FeedbackView"));
-const ManageStudentsView = lazy(() => import("../components/views/admin/ManageStudentsView"));
+const ChatBot = lazy(() => import("../components/ChatBot"));
+const NotificationBell = lazy(() => import("../components/common/NotificationBell"));
 const styled = baseStyled as any;
 
 const Home = () => {
@@ -82,14 +74,6 @@ const Home = () => {
     { id: "evaluation", icon: ClipboardCheck, label: "Evaluation" },
     { id: "feedback", icon: MessageSquare, label: "Feedback" },
     { id: "settings", icon: Settings, label: "Settings" },
-  ];
-
-  const osasNavItems = [
-    { id: "manage_students", icon: ShieldAlert, label: "Sanctions" },
-  ];
-
-  const treasuryNavItems = [
-    { id: "manage_students", icon: CreditCard, label: "Payments" },
   ];
 
   const getNavItems = () => {
@@ -148,9 +132,9 @@ const Home = () => {
           <Route path="transparency" element={<TransparencyView />} />
           <Route path="evaluation" element={<EvaluationView />} />
           <Route path="feedback" element={<FeedbackView />} />
-          <Route path="manage_students" element={<ManageStudentsView mode="nt" />} />
-          <Route path="sanctions" element={<ManageStudentsView mode="osas" />} />
-          <Route path="payments" element={<ManageStudentsView mode="treasury" />} />
+          <Route path="manage_students" element={<Navigate to="../records" replace />} />
+          <Route path="sanctions" element={<Navigate to="../records" replace />} />
+          <Route path="payments" element={<Navigate to="../records" replace />} />
           <Route path="settings" element={<SettingsView currentUser={currentUser} />} />
           <Route path="/" element={<Navigate to="records" replace />} />
           <Route path="*" element={<Navigate to="records" replace />} />
@@ -160,11 +144,11 @@ const Home = () => {
   };
 
   if (authLoading && !currentUser) {
-    return <Loader fullScreen />;
+    return <PageSkeleton variant="portal" />;
   }
 
   if (!currentUser) {
-    return <Loader fullScreen />;
+    return <PageSkeleton variant="portal" />;
   }
 
   const hasOsas = currentUser?.sub_role?.toLowerCase() === 'osas';
@@ -189,8 +173,10 @@ const Home = () => {
               {heroSpotlights[currentSection]?.copy || "Welcome to your portal."}
             </HeroDescription>
             <HeroActions>
-              <NotificationBell />
-              <ChatBot placement="hero" />
+              <Suspense fallback={null}>
+                <NotificationBell />
+                <ChatBot placement="hero" />
+              </Suspense>
             </HeroActions>
           </HeroContent>
           <HeroSpotlight>

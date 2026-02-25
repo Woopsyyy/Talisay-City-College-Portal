@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import baseStyled from 'styled-components';
 const styled = baseStyled as any;
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import { 
   UserPlus, CalendarPlus, Filter, List, Trash2, CheckCircle, 
   MapPin, Clock, Users, BookOpen, User, Layers, Info, CalendarCheck, X, ArrowLeft

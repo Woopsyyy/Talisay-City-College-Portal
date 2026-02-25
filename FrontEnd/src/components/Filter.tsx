@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Filter } from 'lucide-react';
-import { AdminAPI } from '../services/api';
+import { AdminAPI } from 'services/apis/admin';
 
 export default function LevelSectionFilter() {
   const [selectedLevel, setSelectedLevel] = useState('all');

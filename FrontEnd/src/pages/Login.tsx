@@ -1,10 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import usePageStyle from "../hooks/usePageStyle";
-import { PublicAPI } from "../services/api";
-import { supabase } from "../supabaseClient";
+import { PublicAPI } from 'services/apis/public';
 import { Eye, EyeOff, ArrowRight, GraduationCap } from "lucide-react";
+import Loader from "../components/Loader";
+import {
+  isSupabaseUnavailableError,
+  writeLocalPortalOutageState,
+} from "../services/portalOutage";
+import { APP_POLLING_GUARD } from "../config/runtimeGuards";
 
 const Login = () => {
   usePageStyle("/css/login.css");
@@ -16,12 +21,13 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [stats, setStats] = useState({ totalStudents: 0, avatars: [] });
-  const realtimeRefreshTimerRef = useRef<number | null>(null);
   const navigate = useNavigate();
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (forceRefresh = false) => {
     try {
-      const data = await PublicAPI.getLandingPageStats();
+      const data = await PublicAPI.getLandingPageStats({
+        force_refresh: forceRefresh,
+      });
       setStats({
         totalStudents: Math.max(0, Number(data?.totalStudents) || 0),
         avatars: Array.isArray(data?.avatars) ? data.avatars : [],
@@ -37,44 +43,23 @@ const Login = () => {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
       fetchStats();
-    }, 3000);
+    }, APP_POLLING_GUARD.loginLandingStatsIntervalMs);
     return () => {
       clearInterval(intervalId);
     };
   }, [fetchStats]);
 
   useEffect(() => {
-    const queueRealtimeRefresh = () => {
-      if (realtimeRefreshTimerRef.current) return;
-      realtimeRefreshTimerRef.current = window.setTimeout(async () => {
-        realtimeRefreshTimerRef.current = null;
-        await fetchStats();
-      }, 250);
-    };
-
-    const usersChannel = supabase
-      .channel("login-landing-stats-users-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () =>
-        queueRealtimeRefresh(),
-      )
-      .subscribe();
-
-    return () => {
-      if (realtimeRefreshTimerRef.current) {
-        clearTimeout(realtimeRefreshTimerRef.current);
-        realtimeRefreshTimerRef.current = null;
-      }
-      supabase.removeChannel(usersChannel);
-    };
-  }, [fetchStats]);
-
-  useEffect(() => {
     if (user && !authLoading) {
-      const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role || "student"];
+      const rawRoles = Array.isArray(user.roles) && user.roles.length ? user.roles : [user.role || "student"];
+      const roles = rawRoles
+        .map((role) => String(role || "").trim().toLowerCase())
+        .filter(Boolean);
       if (roles.includes("admin")) navigate("/admin/dashboard");
-      else if (roles.includes("nt")) navigate("/nt/dashboard");
-      else if (roles.includes("teacher")) navigate("/teachers");
+      else if (roles.includes("nt") || roles.includes("staff")) navigate("/nt/dashboard");
+      else if (roles.includes("teacher") || roles.includes("faculty")) navigate("/teachers");
       else navigate("/home");
     }
   }, [user, authLoading, navigate]);
@@ -85,16 +70,27 @@ const Login = () => {
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (loading) return;
     setLoading(true);
     setError("");
 
     try {
-      const data = await login(username, password);
+      await login(username, password);
       // useAuth useEffect will handle navigation
     } catch (err: any) {
       console.error("Login error:", err);
+      if (isSupabaseUnavailableError(err)) {
+        writeLocalPortalOutageState({
+          active: true,
+          scenario: "supabase_offline",
+          started_at: new Date().toISOString(),
+          duration_minutes: 3,
+          severity: "critical",
+          resolved_at: null,
+          source: "runtime_probe",
+        });
+      }
       setError(err.message || "Invalid login credentials.");
-    } finally {
       setLoading(false);
     }
   };
@@ -108,8 +104,10 @@ const Login = () => {
     stats.totalStudents > 99 ? "99+" : String(Math.min(99, Math.max(0, stats.totalStudents)));
 
   return (
-    <div className="login-page-wrapper">
-      <div className="login-container-new">
+    <>
+      {loading && <Loader fullScreen />}
+      <div className="login-page-wrapper" aria-busy={loading}>
+        <div className="login-container-new">
         {/* Left Side: Form */}
         <div className="login-form-side">
           <div className="login-form-header">
@@ -156,6 +154,7 @@ const Login = () => {
                   type="button" 
                   className="password-toggle-btn"
                   onClick={() => setShowPassword(!showPassword)}
+                  disabled={loading}
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
@@ -214,7 +213,8 @@ const Login = () => {
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 };
 

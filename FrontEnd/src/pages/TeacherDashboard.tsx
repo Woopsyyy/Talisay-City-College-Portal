@@ -20,10 +20,7 @@ import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
 import ModernSidebar from "../components/common/ModernSidebar";
-import Loader from "../components/Loader";
 import PageSkeleton from "../components/loaders/PageSkeleton";
-import ChatBot from "../components/ChatBot";
-import NotificationBell from "../components/common/NotificationBell";
 
 
 const ScheduleView = lazy(() => import("../components/views/teacher/ScheduleView"));
@@ -36,6 +33,8 @@ const ManageStudentsView = lazy(() => import("../components/views/admin/ManageSt
 const IrregularStudyLoadView = lazy(() => import("../components/views/admin/IrregularStudyLoadView"));
 const FacultySanctionsView = lazy(() => import("../components/views/faculty/SanctionsView"));
 const FacultyPaymentsView = lazy(() => import("../components/views/faculty/PaymentsView"));
+const ChatBot = lazy(() => import("../components/ChatBot"));
+const NotificationBell = lazy(() => import("../components/common/NotificationBell"));
 const styled = baseStyled as any;
 
 const TeacherDashboard = () => {
@@ -231,7 +230,7 @@ const TeacherDashboard = () => {
   };
 
   if (authLoading && !currentUser) {
-    return <Loader fullScreen />;
+    return <PageSkeleton variant="portal" />;
   }
 
   const currentRoles = Array.isArray(currentUser?.roles) && currentUser.roles.length
@@ -264,8 +263,10 @@ const TeacherDashboard = () => {
               {heroSpotlights[currentSection]?.copy || "Welcome to your dashboard."}
             </HeroDescription>
             <HeroActions>
-              <NotificationBell />
-              <ChatBot placement="hero" />
+              <Suspense fallback={null}>
+                <NotificationBell />
+                <ChatBot placement="hero" />
+              </Suspense>
             </HeroActions>
           </HeroContent>
           <HeroSpotlight>

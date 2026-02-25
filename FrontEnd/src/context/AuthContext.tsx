@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { AuthAPI, getAvatarUrl, subscribeToUnauthorized } from '../services/api';
+import Toast from '../components/common/Toast';
+import { AuthAPI } from '../services/apis/auth';
+import { getAvatarUrl } from '../services/apis/avatar';
+import { subscribeToUnauthorized } from '../services/apiEvents';
 import {
   refreshActiveUserPresence,
   startActiveUserPresence,
   stopActiveUserPresence,
 } from '../services/activeUsers';
+import { supabase } from '../supabaseClient';
+import { APP_POLLING_GUARD, SESSION_RUNTIME_GUARD } from '../config/runtimeGuards';
 
 type AuthUser = {
   id?: number;
@@ -35,6 +40,17 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+const AUTH_DEFAULT_AVATAR = '/images/tcc-logo.png';
+
+const isSampleAvatarUrl = (value: string) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === 'images/sample.jpg' ||
+    normalized === '/images/sample.jpg' ||
+    normalized.endsWith('/images/sample.jpg')
+  );
+};
 
 const isDefaultProfileImage = (userData: AuthUser | null) => {
   const imagePath = String(userData?.image_path || "")
@@ -70,12 +86,21 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [avatarUrl, setAvatarUrl] = useState<string>(() => {
     try {
-      return localStorage.getItem('tcc_avatar') || '/images/sample.jpg';
+      return localStorage.getItem('tcc_avatar') || AUTH_DEFAULT_AVATAR;
     } catch (e) {
-      return '/images/sample.jpg';
+      return AUTH_DEFAULT_AVATAR;
     }
   });
   const [avatarRequired, setAvatarRequired] = useState<boolean>(() => isDefaultProfileImage(user));
+  const [idleToast, setIdleToast] = useState<{
+    show: boolean;
+    message: string;
+    type: 'warning' | 'success' | 'error';
+  }>({
+    show: false,
+    message: '',
+    type: 'warning',
+  });
 
   const [activeRole, setActiveRole] = useState<string | null>(() => {
     return localStorage.getItem('tcc_active_role') || null;
@@ -85,24 +110,48 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     return localStorage.getItem('tcc_active_sub_role') || null;
   });
 
+  const clearSessionHiddenMarker = useCallback(() => {
+    try {
+      localStorage.removeItem(SESSION_RUNTIME_GUARD.tabHiddenAtStorageKey);
+    } catch (_) {}
+  }, []);
+
+  const markSessionHiddenNow = useCallback(() => {
+    try {
+      localStorage.setItem(
+        SESSION_RUNTIME_GUARD.tabHiddenAtStorageKey,
+        String(Date.now()),
+      );
+    } catch (_) {}
+  }, []);
+
   const updateAvatar = useCallback(async (userData: AuthUser | null) => {
     if (!userData) {
-      setAvatarUrl('/images/sample.jpg');
+      setAvatarUrl(AUTH_DEFAULT_AVATAR);
       setAvatarRequired(false);
       localStorage.removeItem('tcc_avatar');
       return;
     }
     setAvatarRequired(isDefaultProfileImage(userData));
 
-    if (userData.avatar_url) {
-      setAvatarUrl(userData.avatar_url);
-      localStorage.setItem('tcc_avatar', userData.avatar_url);
-    } else if (userData.image_path) {
+    const rawAvatarUrl = String(userData.avatar_url || '').trim();
+    if (rawAvatarUrl && !isSampleAvatarUrl(rawAvatarUrl)) {
+      setAvatarUrl(rawAvatarUrl);
+      localStorage.setItem('tcc_avatar', rawAvatarUrl);
+      return;
+    }
+
+    if (userData.image_path) {
       const url = await getAvatarUrl(userData.id, userData.image_path);
-      const cacheBusted = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      const resolved = isSampleAvatarUrl(url) ? AUTH_DEFAULT_AVATAR : url;
+      const cacheBusted = resolved + (resolved.includes('?') ? '&' : '?') + 't=' + Date.now();
       setAvatarUrl(cacheBusted);
       localStorage.setItem('tcc_avatar', cacheBusted);
+      return;
     }
+
+    setAvatarUrl(AUTH_DEFAULT_AVATAR);
+    localStorage.setItem('tcc_avatar', AUTH_DEFAULT_AVATAR);
   }, []);
 
   const switchRole = useCallback((role: string) => {
@@ -117,12 +166,53 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     // but the user said "upper part is the main role", so we keep both.
   }, []);
 
+  const login = useCallback(async (username: string, password: string) => {
+    const data = await AuthAPI.login(username, password);
+    setUser(data.user);
+    if (data.user) {
+      localStorage.setItem('tcc_user', JSON.stringify(data.user));
+    } else {
+      localStorage.removeItem('tcc_user');
+    }
+    try {
+      const nonce = String(data?.session_nonce || "").trim();
+      if (nonce) {
+        localStorage.setItem(SESSION_RUNTIME_GUARD.sessionNonceStorageKey, nonce);
+      } else {
+        localStorage.removeItem(SESSION_RUNTIME_GUARD.sessionNonceStorageKey);
+      }
+    } catch (_) {}
+    clearSessionHiddenMarker();
+    await updateAvatar(data.user);
+    return data;
+  }, [clearSessionHiddenMarker, updateAvatar]);
+
+  const logout = useCallback(async () => {
+    try {
+      await AuthAPI.logout();
+    } finally {
+      stopActiveUserPresence();
+      setUser(null);
+      setAvatarUrl(AUTH_DEFAULT_AVATAR);
+      setActiveRole(null);
+      setActiveSubRole(null);
+      setAvatarRequired(false);
+      localStorage.removeItem('tcc_user');
+      localStorage.removeItem('tcc_avatar');
+      localStorage.removeItem('tcc_active_role');
+      localStorage.removeItem('tcc_active_sub_role');
+      localStorage.removeItem(SESSION_RUNTIME_GUARD.sessionNonceStorageKey);
+      clearSessionHiddenMarker();
+    }
+  }, [clearSessionHiddenMarker]);
+
   const checkAuth = useCallback(async () => {
     try {
       const data = await AuthAPI.checkSession();
       if (data.authenticated) {
         setUser(data.user);
         localStorage.setItem('tcc_user', JSON.stringify(data.user));
+        clearSessionHiddenMarker();
         await updateAvatar(data.user);
       } else {
         setUser(null);
@@ -130,15 +220,32 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
         localStorage.removeItem('tcc_avatar');
         localStorage.removeItem('tcc_active_role');
         localStorage.removeItem('tcc_active_sub_role');
+        clearSessionHiddenMarker();
       }
     } catch (error) {
       console.error('Auth check failed:', error);
     } finally {
       setLoading(false);
     }
-  }, [updateAvatar]);
+  }, [clearSessionHiddenMarker, updateAvatar]);
 
   useEffect(() => {
+    const path = String(window.location?.pathname || "").trim();
+    const hasSupabaseSessionToken = (() => {
+      try {
+        return Object.keys(localStorage).some(
+          (key) => key.startsWith("sb-") && key.endsWith("-auth-token"),
+        );
+      } catch (_) {
+        return false;
+      }
+    })();
+    const shouldSkipInitialCheck = path === "/" && !user && !hasSupabaseSessionToken;
+    if (shouldSkipInitialCheck) {
+      setLoading(false);
+      return;
+    }
+
     checkAuth();
   }, [checkAuth]);
 
@@ -165,6 +272,71 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
 
   useEffect(() => {
     if (!user?.id) {
+      clearSessionHiddenMarker();
+      return;
+    }
+
+    let forcedLogoutQueued = false;
+    const forceLogoutIfHiddenTooLong = () => {
+      let hiddenAt = 0;
+      try {
+        hiddenAt = Number(localStorage.getItem(SESSION_RUNTIME_GUARD.tabHiddenAtStorageKey) || 0);
+      } catch (_) {
+        hiddenAt = 0;
+      }
+
+      if (!Number.isFinite(hiddenAt) || hiddenAt <= 0) return false;
+
+      const elapsedMs = Date.now() - hiddenAt;
+      if (elapsedMs < SESSION_RUNTIME_GUARD.autoLogoutAfterMs) return false;
+      if (forcedLogoutQueued) return true;
+
+      forcedLogoutQueued = true;
+      clearSessionHiddenMarker();
+      setIdleToast({
+        show: true,
+        type: "warning",
+        message:
+          "This session was inactive for more than 15 minutes while the tab was hidden or closed. Please sign in again.",
+      });
+      void logout();
+      return true;
+    };
+
+    if (forceLogoutIfHiddenTooLong()) {
+      return;
+    }
+    clearSessionHiddenMarker();
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        markSessionHiddenNow();
+        return;
+      }
+      if (forceLogoutIfHiddenTooLong()) return;
+      clearSessionHiddenMarker();
+    };
+
+    const handlePageHide = () => {
+      markSessionHiddenNow();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      if (!document.hidden) {
+        clearSessionHiddenMarker();
+      }
+    };
+  }, [clearSessionHiddenMarker, logout, markSessionHiddenNow, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
       stopActiveUserPresence();
       return;
     }
@@ -172,7 +344,7 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     startActiveUserPresence(user);
     const heartbeatTimer = window.setInterval(() => {
       refreshActiveUserPresence();
-    }, 20000);
+    }, APP_POLLING_GUARD.activeUserHeartbeatIntervalMs);
 
     return () => {
       clearInterval(heartbeatTimer);
@@ -184,28 +356,35 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
   useEffect(() => {
     if (!user) return;
 
-    let warningTimer: any;
-    let logoutTimer: any;
-    const WARNING_TIMEOUT = 14 * 60 * 1000; // 14 minutes
-    const LOGOUT_TIMEOUT = 1 * 60 * 1000; // 1 minute after warning
+    let warningTimer: number | undefined;
+    let logoutTimer: number | undefined;
+    let lastServerTouchAt = 0;
+    const WARNING_TIMEOUT = SESSION_RUNTIME_GUARD.warningAfterMs;
+    const LOGOUT_TIMEOUT = Math.max(
+      1,
+      SESSION_RUNTIME_GUARD.autoLogoutAfterMs - SESSION_RUNTIME_GUARD.warningAfterMs,
+    );
+    const warningMinutes = Math.round(WARNING_TIMEOUT / 60000);
+    const logoutMinutes = Math.max(1, Math.round(LOGOUT_TIMEOUT / 60000));
+
+    const hideIdleToast = () => {
+      setIdleToast((prev) => (prev.show ? { ...prev, show: false } : prev));
+    };
 
     const handleInactivityWarning = () => {
-      const isConfirmed = window.confirm(
-        "Your session has been idle for 14 minutes. Do you want to stay logged in?"
-      );
-      
-      if (isConfirmed) {
-        resetTimers(); // User clicks OK, reset inactivity
-      } else {
-        // User clicks Cancel, execute logout immediately
-        clearTimers();
-        logout();
-      }
+      setIdleToast({
+        show: true,
+        type: 'warning',
+        message:
+          `Your session has been idle for ${warningMinutes} minutes. Move your mouse or press any key within ${logoutMinutes} minutes to stay logged in.`,
+      });
+      logoutTimer = window.setTimeout(handleAutoLogout, LOGOUT_TIMEOUT);
     };
 
     const handleAutoLogout = () => {
       clearTimers();
-      logout();
+      hideIdleToast();
+      void logout();
     };
 
     const clearTimers = () => {
@@ -215,21 +394,29 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
 
     const resetTimers = () => {
       clearTimers();
-      warningTimer = setTimeout(() => {
-        handleInactivityWarning();
-        logoutTimer = setTimeout(handleAutoLogout, LOGOUT_TIMEOUT);
-      }, WARNING_TIMEOUT);
+      hideIdleToast();
+      warningTimer = window.setTimeout(handleInactivityWarning, WARNING_TIMEOUT);
     };
 
     const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
 
+    const touchServerGuard = () => {
+      const now = Date.now();
+      if (now - lastServerTouchAt < SESSION_RUNTIME_GUARD.serverTouchMinGapMs) {
+        return;
+      }
+      lastServerTouchAt = now;
+      void AuthAPI.touchSessionGuard("activity_heartbeat");
+    };
+
     const resetOnInteraction = () => {
-      // Don't reset if the warning is actively showing to prevent accidental bypass
       resetTimers();
+      touchServerGuard();
     };
 
     events.forEach(event => window.addEventListener(event, resetOnInteraction));
     resetTimers(); // Initialize
+    touchServerGuard();
 
     return () => {
       events.forEach(event => window.removeEventListener(event, resetOnInteraction));
@@ -240,51 +427,81 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
   }, [user]);
 
   useEffect(() => {
+    const userId = Number(user?.id);
+    if (!Number.isFinite(userId) || userId <= 0) return;
+
+    let forcedLogoutQueued = false;
+    const channel = supabase
+      .channel(`tcc-session-guard-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "status_logs",
+          filter: `target_user_id=eq.${userId}`,
+        },
+        (payload: any) => {
+          if (forcedLogoutQueued) return;
+          const row = payload?.new || {};
+          const action = String(row?.action || "").trim().toLowerCase();
+          if (action !== SESSION_RUNTIME_GUARD.sessionRotationAction) return;
+
+          const metadata =
+            row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+              ? row.metadata
+              : {};
+          const incomingNonce = String(
+            metadata?.new_session_nonce || metadata?.session_nonce || "",
+          ).trim();
+
+          let localNonce = "";
+          try {
+            localNonce = String(
+              localStorage.getItem(SESSION_RUNTIME_GUARD.sessionNonceStorageKey) || "",
+            ).trim();
+          } catch (_) {}
+
+          if (!incomingNonce || !localNonce || incomingNonce === localNonce) return;
+          forcedLogoutQueued = true;
+          setIdleToast({
+            show: true,
+            type: "warning",
+            message:
+              "This account was signed in from another IP/device. For security, this older session is now logged out.",
+          });
+          window.setTimeout(() => {
+            void logout();
+          }, 1200);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [logout, user?.id]);
+
+  useEffect(() => {
     const unsubscribe = subscribeToUnauthorized(() => {
       setUser(null);
-      setAvatarUrl('/images/sample.jpg');
+      setAvatarUrl(AUTH_DEFAULT_AVATAR);
       setActiveRole(null);
       try {
         localStorage.removeItem('tcc_user');
         localStorage.removeItem('tcc_avatar');
         localStorage.removeItem('tcc_active_role');
         localStorage.removeItem('tcc_active_sub_role');
+        localStorage.removeItem(SESSION_RUNTIME_GUARD.sessionNonceStorageKey);
+        clearSessionHiddenMarker();
         setAvatarRequired(false);
       } catch (_) {}
     });
+
     return () => {
-      unsubscribe();
+      if (unsubscribe) unsubscribe();
     };
-  }, []);
-
-  const login = async (username: string, password: string) => {
-    const data = await AuthAPI.login(username, password);
-    setUser(data.user);
-    if (data.user) {
-      localStorage.setItem('tcc_user', JSON.stringify(data.user));
-    } else {
-      localStorage.removeItem('tcc_user');
-    }
-    await updateAvatar(data.user);
-    return data;
-  };
-
-  const logout = async () => {
-    try {
-      await AuthAPI.logout();
-    } finally {
-      stopActiveUserPresence();
-      setUser(null);
-      setAvatarUrl('/images/sample.jpg');
-      setActiveRole(null);
-      setActiveSubRole(null);
-      setAvatarRequired(false);
-      localStorage.removeItem('tcc_user');
-      localStorage.removeItem('tcc_avatar');
-      localStorage.removeItem('tcc_active_role');
-      localStorage.removeItem('tcc_active_sub_role');
-    }
-  };
+  }, [clearSessionHiddenMarker]);
 
   const value: AuthContextValue = {
     user,
@@ -301,5 +518,20 @@ export const AuthProvider = ({ children }: React.PropsWithChildren) => {
     isAuthenticated: !!user,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      {idleToast.show ? (
+        <Toast
+          message={idleToast.message}
+          type={idleToast.type}
+          duration={Math.max(
+            65000,
+            SESSION_RUNTIME_GUARD.autoLogoutAfterMs - SESSION_RUNTIME_GUARD.warningAfterMs + 2000,
+          )}
+          onClose={() => setIdleToast((prev) => ({ ...prev, show: false }))}
+        />
+      ) : null}
+    </AuthContext.Provider>
+  );
 };

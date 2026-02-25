@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import baseStyled from "styled-components";
-import { TeacherAPI } from "../../../services/api";
+import { TeacherAPI } from 'services/apis/teacher';
 import {
   Megaphone,
   Calendar,

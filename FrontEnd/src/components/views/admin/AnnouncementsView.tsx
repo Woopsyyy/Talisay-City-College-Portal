@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
 import { Plus, X, Megaphone, Calendar, Users, Edit2, Trash2, Send, Filter, AlertCircle } from 'lucide-react';
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import DeleteModal from '../../common/DeleteModal';
 import Toast from '../../common/Toast';
 import PageSkeleton from '../../loaders/PageSkeleton';

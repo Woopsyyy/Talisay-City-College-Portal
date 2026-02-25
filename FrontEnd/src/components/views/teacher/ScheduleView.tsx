@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import baseStyled from 'styled-components';
 import { useNavigate } from 'react-router-dom';
-import { TeacherAPI } from '../../../services/api';
+import { TeacherAPI } from 'services/apis/teacher';
 import { Calendar, Clock, MapPin, BookOpen, User } from 'lucide-react';
 import PageSkeleton from '../../loaders/PageSkeleton';
 const styled = baseStyled as any;

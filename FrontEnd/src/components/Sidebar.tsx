@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AuthAPI, getAvatarUrl } from '../services/api';
+import { AuthAPI } from '../services/apis/auth';
+import { getAvatarUrl } from '../services/apis/avatar';
 
 const Sidebar = ({ currentUser, currentView, onViewChange }) => {
   const navigate = useNavigate();

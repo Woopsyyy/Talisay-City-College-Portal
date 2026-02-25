@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from "react";
 import { Send, X, Sparkles, RotateCcw } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
-import { StudentAPI, PublicAPI } from "../services/api";
+import { StudentAPI } from "../services/apis/student";
+import { PublicAPI } from "../services/apis/public";
 import "./ChatBot.css";
 
 type ChatBotProps = {
@@ -15,7 +16,7 @@ const ChatBot = ({ placement = "floating" }: ChatBotProps) => {
   const isHeroPlacement = placement === "hero";
 
   const initialGreeting =
-    "👋 Hello! I'm your TCC Assistant.\n\nYou can ask about:\n• Toggle dark/light mode\n• Current date and time\n• Building count\n\nLog in to access your personal information (grades, sanctions, section, and profile).";
+    "👋 Hello! I'm your TCC Assistant.\n\nYou can ask about:\n• Toggle dark/light mode\n• Current date and time\n• Building count\n• Announcements and profile settings\n• Password reset and profile picture requests\n\nLog in to access your personal information (grades, sanctions, section, and profile).";
 
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([
@@ -277,6 +278,52 @@ const ChatBot = ({ placement = "floating" }: ChatBotProps) => {
     }
 
     if (
+      q.includes("reset password") ||
+      q.includes("change password") ||
+      q.includes("forgot password")
+    ) {
+      if (!currentUser) {
+        return "🔐 Log in first, then go to **Settings → Account Request** to request a password reset.";
+      }
+      return "🔐 Open **Settings**, then submit a **Password Reset Request**. Admin approval is required before your new password can be applied.";
+    }
+
+    if (
+      q.includes("profile picture") ||
+      q.includes("avatar") ||
+      q.includes("photo")
+    ) {
+      if (!currentUser) {
+        return "🖼️ Log in first, then use **Settings → Profile Picture Request**.";
+      }
+      return "🖼️ Open **Settings** and submit a **Profile Picture Update Request**. Once approved, upload your actual photo to replace the sample image.";
+    }
+
+    if (
+      q.includes("privacy") ||
+      q.includes("data safe") ||
+      q.includes("security")
+    ) {
+      return "🔒 Privacy mode is strict: this assistant only returns your own account data and blocks requests about other users.";
+    }
+
+    if (
+      q.includes("announcement") ||
+      q.includes("notice") ||
+      q.includes("update")
+    ) {
+      return "📣 Open the **Announcements** page in your dashboard to view targeted updates based on your role.";
+    }
+
+    if (
+      q.includes("support") ||
+      q.includes("help desk") ||
+      q.includes("report issue")
+    ) {
+      return "🛠️ For account or portal issues, use **Feedback** in your dashboard and include your username, role, and issue details for faster support.";
+    }
+
+    if (
       q.includes("time") ||
       q.includes("date") ||
       q.includes("today") ||
@@ -302,9 +349,9 @@ const ChatBot = ({ placement = "floating" }: ChatBotProps) => {
       q.includes("tabang yawa")
     ) {
       if (!currentUser) {
-        return "🤖 **I can help you with:**\n\n✓ Toggle dark/light mode\n✓ Current date and time\n✓ Building count\n\nLog in to access your personal information.";
+        return "🤖 **I can help you with:**\n\n✓ Toggle dark/light mode\n✓ Current date and time\n✓ Building count\n✓ Announcements and support guidance\n\nLog in to access personal data and account requests.";
       }
-      return "🤖 **I can help you with:**\n\n✓ Check your sanctions/violations\n✓ View your enrollment status\n✓ Check your section and class info\n✓ Access your profile information\n✓ Get current date and time\n✓ Toggle dark/light mode";
+      return "🤖 **I can help you with:**\n\n✓ Check sanctions/violations\n✓ View section and class info\n✓ Access profile information\n✓ Request password or profile picture updates\n✓ Open announcements and support guidance\n✓ Toggle dark/light mode and check date/time";
     }
 
     if (
@@ -347,8 +394,9 @@ const ChatBot = ({ placement = "floating" }: ChatBotProps) => {
     ? [
         { label: "My Sanctions", query: "Do I have any sanctions?" },
         { label: "My Section", query: "What is my section?" },
+        { label: "Reset Password", query: "How do I reset password?" },
         { label: "Toggle Theme", query: "Toggle dark mode" },
-        { label: "Help", query: "What can you help me with?" },
+        { label: "Privacy", query: "How is my data protected?" },
       ]
     : [
         { label: "Buildings", query: "How many buildings?" },

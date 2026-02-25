@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styled from "styled-components";
-import { CheckCircle2, Inbox, RefreshCw, Search, XCircle } from "lucide-react";
+import { CheckCircle2, Inbox, Search, XCircle } from "lucide-react";
 import { supabase } from "../../../supabaseClient";
-import { AdminAPI } from "../../../services/api";
+import { AdminAPI } from 'services/apis/admin';
+import { APP_POLLING_GUARD } from "../../../config/runtimeGuards";
 import Toast from "../../common/Toast";
+import PageSkeleton from "../../loaders/PageSkeleton";
 
 const formatRequestType = (value) => {
   const type = String(value || "").trim().toLowerCase();
@@ -41,12 +43,13 @@ const PendingApprovalsView = () => {
     });
   }, [requests, search]);
 
-  const loadRequests = useCallback(async ({ silent = false } = {}) => {
+  const loadRequests = useCallback(async ({ silent = false, forceRefresh = false } = {}) => {
     try {
       if (!silent) setLoadingRequests(true);
       const rows = await AdminAPI.getAccountRequests({
         status: "pending",
         limit: 500,
+        force_refresh: forceRefresh,
       });
       setRequests(Array.isArray(rows) ? rows : []);
     } catch (error) {
@@ -64,8 +67,9 @@ const PendingApprovalsView = () => {
   useEffect(() => {
     loadRequests();
     const intervalId = setInterval(() => {
+      if (document.hidden) return;
       loadRequests({ silent: true });
-    }, 30000);
+    }, APP_POLLING_GUARD.pendingApprovalsRefreshIntervalMs);
     return () => clearInterval(intervalId);
   }, [loadRequests]);
 
@@ -121,17 +125,13 @@ const PendingApprovalsView = () => {
     }
   };
 
-  const handleRefresh = async () => {
-    await loadRequests();
-  };
-
   const queueRealtimeRefresh = useCallback(() => {
     if (realtimeRefreshTimerRef.current) return;
     realtimeRefreshTimerRef.current = window.setTimeout(async () => {
       realtimeRefreshTimerRef.current = null;
       try {
         setRealtimeSyncing(true);
-        await loadRequests({ silent: true });
+        await loadRequests({ silent: true, forceRefresh: true });
       } finally {
         setRealtimeSyncing(false);
       }
@@ -168,14 +168,6 @@ const PendingApprovalsView = () => {
           <p>Review and process all pending account-related requests from users.</p>
         </div>
         <HeaderActions>
-          <SecondaryButton
-            type="button"
-            onClick={handleRefresh}
-            disabled={loadingRequests || realtimeSyncing}
-          >
-            <RefreshCw size={16} />
-            {loadingRequests || realtimeSyncing ? "Refreshing..." : "Refresh"}
-          </SecondaryButton>
           <PrimaryButton
             type="button"
             onClick={handleApproveAllRequests}
@@ -221,7 +213,9 @@ const PendingApprovalsView = () => {
           </ResultMeta>
           <RequestList>
             {loadingRequests ? (
-              <EmptyState>Loading pending requests...</EmptyState>
+              <InlineSkeletonWrap>
+                <PageSkeleton variant="list" compact />
+              </InlineSkeletonWrap>
             ) : filteredRequests.length === 0 ? (
               <EmptyState>No pending requests.</EmptyState>
             ) : (
@@ -479,6 +473,10 @@ const EmptyState = styled.div`
   color: var(--text-secondary);
   text-align: center;
   font-size: 0.9rem;
+`;
+
+const InlineSkeletonWrap = styled.div`
+  padding: 4px 0;
 `;
 
 const PrimaryButton = styled.button`

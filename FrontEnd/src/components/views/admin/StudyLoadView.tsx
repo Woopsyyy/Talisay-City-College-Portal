@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import baseStyled from 'styled-components';
 const styled = baseStyled as any;
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import Toast from '../../common/Toast';
 import { BookOpen, GraduationCap, Download, Layers, Calendar, ArrowLeft, Hash, Users, Clock, AlertCircle, PlusCircle, Trash2, Search, Save } from 'lucide-react';
 import PageSkeleton from '../../loaders/PageSkeleton';

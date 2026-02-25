@@ -1,0 +1,10 @@
+project_id = "tfxuzkumdjxpmmjkcjcp"
+
+[functions."cached-dashboard-stats"]
+verify_jwt = false
+
+[functions."cached-portal-content"]
+verify_jwt = false
+
+[functions."session-guard"]
+verify_jwt = false

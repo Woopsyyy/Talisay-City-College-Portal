@@ -19,14 +19,11 @@ import {
   UserCheck,
   Users,
 } from "lucide-react";
-import Loader from "../components/Loader";
 import ClockCard from "../components/common/ClockCard";
 import RoleSidebarNavigator from "../components/common/RoleSidebarNavigator";
 import { GLOBAL_ROLE_SIDEBAR_MENUS } from "../components/common/roleSidebarMenus";
 import ModernSidebar from "../components/common/ModernSidebar";
 import PageSkeleton from "../components/loaders/PageSkeleton";
-import ChatBot from "../components/ChatBot";
-import NotificationBell from "../components/common/NotificationBell";
 
 const FacilitiesView = lazy(() => import("../components/views/admin/FacilitiesView"));
 const SectionsView = lazy(() => import("../components/views/admin/SectionsView"));
@@ -44,6 +41,8 @@ const StaffPaymentRecordsView = lazy(() => import("../components/views/staff/Pay
 const AnnouncementsView = lazy(() => import("../components/views/admin/AnnouncementsView"));
 const ProjectsView = lazy(() => import("../components/views/admin/ProjectsView"));
 const EvaluationManagementView = lazy(() => import("../components/views/admin/EvaluationView"));
+const ChatBot = lazy(() => import("../components/ChatBot"));
+const NotificationBell = lazy(() => import("../components/common/NotificationBell"));
 const styled = baseStyled as any;
 
 const NonTeachingDashboard = () => {
@@ -316,7 +315,7 @@ const NonTeachingDashboard = () => {
   };
 
   if (authLoading && !currentUser) {
-    return <Loader fullScreen />;
+    return <PageSkeleton variant="portal" />;
   }
 
   const currentRoles = (
@@ -363,8 +362,10 @@ const NonTeachingDashboard = () => {
               {heroSpotlights[currentSection]?.copy || "Manage campus operations."}
             </HeroDescription>
             <HeroActions>
-              <NotificationBell />
-              <ChatBot placement="hero" />
+              <Suspense fallback={null}>
+                <NotificationBell />
+                <ChatBot placement="hero" />
+              </Suspense>
             </HeroActions>
           </HeroContent>
           <HeroSpotlight>

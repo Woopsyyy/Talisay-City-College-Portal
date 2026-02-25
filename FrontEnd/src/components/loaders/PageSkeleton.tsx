@@ -126,6 +126,83 @@ const PageSkeleton = ({
     </Card>
   );
 
+  const renderPortal = () => (
+    <>
+      {renderHeader()}
+
+      <PortalHeroGrid>
+        <PortalMainCard>
+          <SkeletonBlock $w="34%" $h="14px" />
+          <SkeletonBlock $w="72%" $h="10px" />
+          <SkeletonBlock $w="100%" $h="172px" $radius="14px" />
+        </PortalMainCard>
+
+        <PortalSideStack>
+          <Card>
+            <SkeletonBlock $w="48%" $h="13px" />
+            <SkeletonBlock $w="80%" $h="10px" />
+            <SkeletonBlock $w="56%" $h="10px" />
+          </Card>
+          <Card>
+            <SkeletonBlock $w="52%" $h="13px" />
+            <SkeletonBlock $w="84%" $h="10px" />
+            <SkeletonBlock $w="60%" $h="10px" />
+          </Card>
+        </PortalSideStack>
+      </PortalHeroGrid>
+
+      <Grid $min="200px">
+        <Card>
+          <SkeletonBlock $w="56%" $h="12px" />
+          <SkeletonBlock $w="34%" $h="20px" />
+          <SkeletonBlock $w="82%" $h="10px" />
+        </Card>
+        <Card>
+          <SkeletonBlock $w="58%" $h="12px" />
+          <SkeletonBlock $w="36%" $h="20px" />
+          <SkeletonBlock $w="80%" $h="10px" />
+        </Card>
+        <Card>
+          <SkeletonBlock $w="50%" $h="12px" />
+          <SkeletonBlock $w="32%" $h="20px" />
+          <SkeletonBlock $w="74%" $h="10px" />
+        </Card>
+      </Grid>
+
+      <PortalBodyGrid>
+        <TableCard>
+          <TableRow $cols={4}>
+            <SkeletonBlock $w="74%" $h="12px" />
+            <SkeletonBlock $w="78%" $h="12px" />
+            <SkeletonBlock $w="62%" $h="12px" />
+            <SkeletonBlock $w="64%" $h="12px" />
+          </TableRow>
+          {Array.from({ length: compact ? 5 : 8 }).map((_, row) => (
+            <TableRow key={`portal-row-${row}`} $cols={4}>
+              <SkeletonBlock $w={row % 2 === 0 ? "88%" : "72%"} $h="12px" />
+              <SkeletonBlock $w={row % 3 === 0 ? "62%" : "78%"} $h="12px" />
+              <SkeletonBlock $w="44%" $h="12px" />
+              <SkeletonBlock $w="58%" $h="12px" />
+            </TableRow>
+          ))}
+        </TableCard>
+
+        <Column $gap="1rem">
+          <Card>
+            <SkeletonBlock $w="58%" $h="12px" />
+            <SkeletonBlock $w="100%" $h="120px" $radius="12px" />
+          </Card>
+          <Card>
+            <SkeletonBlock $w="44%" $h="12px" />
+            <SkeletonBlock $w="84%" $h="10px" />
+            <SkeletonBlock $w="66%" $h="10px" />
+            <SkeletonBlock $w="70%" $h="10px" />
+          </Card>
+        </Column>
+      </PortalBodyGrid>
+    </>
+  );
+
   const renderPage = () => (
     <>
       {renderHeader()}
@@ -146,6 +223,8 @@ const PageSkeleton = ({
             {renderTable()}
           </>
         );
+      case 'portal':
+        return renderPortal();
       case 'table':
         return (
           <>
@@ -235,6 +314,49 @@ const Grid = styled.div`
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(${(props) => props.$min || '240px'}, 1fr));
   gap: 1.25rem;
+`;
+
+const PortalHeroGrid = styled.div`
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 1.25rem;
+
+  @media (max-width: 1100px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+`;
+
+const PortalMainCard = styled.div`
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-shadow: var(--shadow-sm);
+  min-height: 260px;
+`;
+
+const PortalSideStack = styled.div`
+  display: grid;
+  gap: 1.25rem;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+
+  @media (max-width: 1100px) {
+    grid-template-rows: unset;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+`;
+
+const PortalBodyGrid = styled.div`
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 1.25rem;
+
+  @media (max-width: 1100px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 `;
 
 const Card = styled.div`

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import baseStyled from "styled-components";
 import { AlertTriangle, CheckCircle2, CreditCard, Filter, Search, Send, X } from "lucide-react";
-import { AdminAPI } from "../../../services/api";
+import { AdminAPI } from 'services/apis/admin';
 import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from "../../../utils/constants";
 import Toast from "../../common/Toast";
 import PageSkeleton from "../../loaders/PageSkeleton";

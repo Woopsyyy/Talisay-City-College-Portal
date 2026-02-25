@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import imageCompression from 'browser-image-compression';
-import { AuthAPI } from '../services/api';
+import { AuthAPI } from 'services/apis/auth';
 import usePageStyle from '../hooks/usePageStyle';
 
 type FieldStatus = {

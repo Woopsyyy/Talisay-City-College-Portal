@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import baseStyled from 'styled-components';
 import { AlertCircle, BookOpen, CheckCircle2, Search, UserRound } from 'lucide-react';
-import { StudentAPI, getAvatarUrl } from '../../../services/api';
+import { StudentAPI } from '../../../services/apis/student';
+import { getAvatarUrl } from '../../../services/apis/avatar';
 import PageSkeleton from '../../loaders/PageSkeleton';
 const styled = baseStyled as any;
 

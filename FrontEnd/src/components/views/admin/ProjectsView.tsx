@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
 import { Plus, Folder, Calendar, DollarSign, Trash2, X, Save, AlertCircle } from 'lucide-react';
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import Toast from '../../common/Toast';
 import DeleteModal from '../../common/DeleteModal';
 import PageSkeleton from '../../loaders/PageSkeleton';

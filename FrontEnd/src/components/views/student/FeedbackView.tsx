@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { StudentAPI } from '../../../services/api';
+import { StudentAPI } from 'services/apis/student';
 import { 
   Send, 
   MessageSquare, 

@@ -66,20 +66,13 @@ const Loader = ({ fullScreen = false }: LoaderProps) => {
           </svg>
         </div>
       </div>
-      {fullScreen && (
-        <div className="skeletonWrap" aria-hidden="true">
-          <div className="skeletonLine skeletonLineLg" />
-          <div className="skeletonLine skeletonLineMd" />
-          <div className="skeletonLine skeletonLineSm" />
-        </div>
-      )}
     </StyledWrapper>
   );
 };
 
 const StyledWrapper = styled.div<{ $fullScreen: boolean }>`
-  width: ${(props) => (props.$fullScreen ? "100vw" : "fit-content")};
-  height: ${(props) => (props.$fullScreen ? "100vh" : "fit-content")};
+  width: ${(props) => (props.$fullScreen ? "100%" : "fit-content")};
+  height: ${(props) => (props.$fullScreen ? "100%" : "fit-content")};
   position: ${(props) => (props.$fullScreen ? "fixed" : "relative")};
   inset: ${(props) => (props.$fullScreen ? "0" : "auto")};
   z-index: ${(props) => (props.$fullScreen ? "99999" : "1")};
@@ -88,6 +81,7 @@ const StyledWrapper = styled.div<{ $fullScreen: boolean }>`
   align-items: center;
   justify-content: center;
   gap: 22px;
+  overflow: ${(props) => (props.$fullScreen ? "hidden" : "visible")};
   background: ${(props) => (props.$fullScreen ? "rgba(11, 18, 32, 0.72)" : "transparent")};
   backdrop-filter: ${(props) => (props.$fullScreen ? "blur(4px)" : "none")};
 
@@ -197,51 +191,6 @@ const StyledWrapper = styled.div<{ $fullScreen: boolean }>`
     }
     100% {
       transform: translateX(-350px);
-    }
-  }
-
-  .skeletonWrap {
-    width: min(84vw, 540px);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 16px 18px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.16);
-  }
-
-  .skeletonLine {
-    height: 12px;
-    border-radius: 999px;
-    background: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0.14) 25%,
-      rgba(255, 255, 255, 0.34) 37%,
-      rgba(255, 255, 255, 0.14) 63%
-    );
-    background-size: 400% 100%;
-    animation: skeletonPulse 1.3s ease-in-out infinite;
-  }
-
-  .skeletonLineLg {
-    width: 100%;
-  }
-
-  .skeletonLineMd {
-    width: 78%;
-  }
-
-  .skeletonLineSm {
-    width: 58%;
-  }
-
-  @keyframes skeletonPulse {
-    0% {
-      background-position: 100% 50%;
-    }
-    100% {
-      background-position: 0 50%;
     }
   }
 `;

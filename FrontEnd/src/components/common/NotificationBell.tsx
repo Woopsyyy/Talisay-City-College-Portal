@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import baseStyled from "styled-components";
 import { Bell, Check, CheckCheck, X } from "lucide-react";
-import { NotificationAPI } from "../../services/api";
+import { NotificationAPI } from 'services/apis/notification';
+import { APP_POLLING_GUARD } from "../../config/runtimeGuards";
 
 const styled = baseStyled as any;
 
 const MAX_UNREAD_ITEMS = 12;
+const REALTIME_REFRESH_DEBOUNCE_MS = 400;
 
 const formatRelativeTime = (value) => {
   if (!value) return "Just now";
@@ -47,14 +49,18 @@ const NotificationBell = () => {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [readAllBusy, setReadAllBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
 
   const unreadCount = unread.length;
   const hasUnread = unreadCount > 0;
 
-  const refreshUnread = async (silent = false) => {
+  const refreshUnread = async (silent = false, forceRefresh = false) => {
     if (!silent) setLoading(true);
     try {
-      const rows = await NotificationAPI.getUnread({ limit: MAX_UNREAD_ITEMS });
+      const rows = await NotificationAPI.getUnread({
+        limit: MAX_UNREAD_ITEMS,
+        force_refresh: forceRefresh,
+      });
       setUnread(Array.isArray(rows) ? rows : []);
     } catch (error) {
       console.warn("Failed to refresh notifications:", error?.message || error);
@@ -67,14 +73,26 @@ const NotificationBell = () => {
   useEffect(() => {
     refreshUnread(false);
 
+    const queueRealtimeRefresh = () => {
+      if (realtimeRefreshTimerRef.current != null) return;
+      realtimeRefreshTimerRef.current = window.setTimeout(() => {
+        realtimeRefreshTimerRef.current = null;
+        refreshUnread(true, true);
+      }, REALTIME_REFRESH_DEBOUNCE_MS);
+    };
+
     const stopRealtime = NotificationAPI.subscribeToInbox(() => {
-      refreshUnread(true);
+      queueRealtimeRefresh();
     });
     const intervalId = window.setInterval(() => {
       refreshUnread(true);
-    }, 20000);
+    }, APP_POLLING_GUARD.notificationUnreadIntervalMs);
 
     return () => {
+      if (realtimeRefreshTimerRef.current != null) {
+        window.clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = null;
+      }
       stopRealtime();
       window.clearInterval(intervalId);
     };

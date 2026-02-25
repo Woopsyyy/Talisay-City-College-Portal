@@ -3,7 +3,7 @@ import baseStyled from "styled-components";
 import { Camera, Save, Upload } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import { useAuth } from "../../context/AuthContext";
-import { AuthAPI } from "../../services/api";
+import { AuthAPI } from "../../services/apis/auth";
 
 const styled = baseStyled as any;
 

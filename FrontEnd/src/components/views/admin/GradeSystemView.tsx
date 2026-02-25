@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import baseStyled from 'styled-components';
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import { formatOrdinal } from '../../../utils/formatting';
 import { BookOpen, Filter, Calendar, Layers, Trash2, Search, User, Award, AlertCircle } from 'lucide-react';
 import Toast from '../../common/Toast';
@@ -10,10 +10,9 @@ const styled = baseStyled as any;
 
 const GradeSystemView = () => {
   const [loading, setLoading] = useState(true);
-  
-  
+  const [assignmentsReady, setAssignmentsReady] = useState(false);
+
   const [grades, setGrades] = useState([]);
-  const [students, setStudents] = useState([]);
   const [userAssignments, setUserAssignments] = useState([]);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   
@@ -29,24 +28,63 @@ const GradeSystemView = () => {
   const [selectedSection, setSelectedSection] = useState('');
 
   useEffect(() => {
-    fetchData();
+    fetchAssignments();
   }, []);
 
-  const fetchData = async () => {
+  useEffect(() => {
+    if (!assignmentsReady) return;
+    fetchGrades();
+  }, [assignmentsReady, selectedYear, selectedSection, userAssignments]);
+
+  const fetchAssignments = async () => {
     try {
       setLoading(true);
-      const [gradesData, studentsData, assignmentsData] = await Promise.all([
-        AdminAPI.getGrades().catch(() => []),
-        AdminAPI.getUsers({ role: 'student' }).catch(() => []),
-        AdminAPI.getUserAssignments().catch(() => [])
-      ]);
+      const assignmentsData = await AdminAPI.getUserAssignments({ active_only: true }).catch(() => []);
+      const normalizedAssignments = Array.isArray(assignmentsData) ? assignmentsData : [];
+      setUserAssignments(normalizedAssignments);
 
-      setGrades(Array.isArray(gradesData) ? gradesData : []);
-      setStudents(Array.isArray(studentsData) ? studentsData : []);
-      setUserAssignments(Array.isArray(assignmentsData) ? assignmentsData : []);
+      const years = Array.from(
+        new Set(
+          normalizedAssignments
+            .map((row) => String(row?.year || row?.year_level || '').trim())
+            .filter(Boolean),
+        ),
+      ).sort((a, b) => Number(a) - Number(b) || String(a).localeCompare(String(b)));
+
+      if (years.length > 0) {
+        setSelectedYear((previous) => previous || String(years[0]));
+      }
     } catch (err) {
       console.error("Error loading grade system data:", err);
       setToast({ show: true, message: "Failed to load grade data.", type: 'error' });
+    } finally {
+      setAssignmentsReady(true);
+    }
+  };
+
+  const fetchGrades = async () => {
+    try {
+      setLoading(true);
+      if (userAssignments.length === 0) {
+        setGrades([]);
+        return;
+      }
+      const hasYearOptions = userAssignments.some((row) =>
+        String(row?.year || row?.year_level || '').trim(),
+      );
+      if (hasYearOptions && !selectedYear) {
+        return;
+      }
+
+      const gradesData = await AdminAPI.getGrades({
+        year: selectedYear || null,
+        section: selectedSection || null,
+      }).catch(() => []);
+      setGrades(Array.isArray(gradesData) ? gradesData : []);
+    } catch (err) {
+      console.error("Error loading filtered grades data:", err);
+      setToast({ show: true, message: "Failed to load grade data.", type: 'error' });
+      setGrades([]);
     } finally {
       setLoading(false);
     }
@@ -72,7 +110,7 @@ const GradeSystemView = () => {
       setLoading(true);
       
       await Promise.all(gradeIds.map(id => AdminAPI.deleteGrade(id)));
-      await fetchData(); 
+      await fetchGrades();
       setToast({ show: true, message: `All grades for ${studentName} deleted successfully.`, type: 'success' });
       closeDeleteModal();
     } catch (err) {
@@ -90,29 +128,20 @@ const GradeSystemView = () => {
   
 
   const availableYears = useMemo(
-    () => [...new Set(grades.map(g => g.year).filter(Boolean))].sort(),
-    [grades]
+    () =>
+      Array.from(
+        new Set(
+          userAssignments
+            .map((assignment) => String(assignment?.year || assignment?.year_level || '').trim())
+            .filter(Boolean),
+        ),
+      ).sort((a, b) => Number(a) - Number(b) || String(a).localeCompare(String(b))),
+    [userAssignments]
   );
   const availableSections = useMemo(
     () => [...new Set(userAssignments.map(a => a.section).filter(Boolean))].sort(),
     [userAssignments]
   );
-
-  const studentsById = useMemo(() => {
-    const map = new Map();
-    students.forEach(s => {
-      if (s.id != null) map.set(String(s.id), s);
-    });
-    return map;
-  }, [students]);
-
-  const studentsByUsername = useMemo(() => {
-    const map = new Map();
-    students.forEach(s => {
-      if (s.username) map.set(String(s.username), s);
-    });
-    return map;
-  }, [students]);
 
   const assignmentsByKey = useMemo(() => {
     const map = new Map();
@@ -129,17 +158,12 @@ const GradeSystemView = () => {
     grades.forEach(grade => {
       if (selectedYear && grade.year !== selectedYear) return;
 
-      const student =
+      const assignment =
         grade.user_id != null
-          ? studentsById.get(String(grade.user_id))
-          : studentsByUsername.get(String(grade.username || ''));
+          ? assignmentsByKey.get(`id:${String(grade.user_id)}`)
+          : assignmentsByKey.get(`un:${String(grade.username || '')}`);
 
       if (selectedSection) {
-        if (!student) return;
-        const assignment =
-          student.id != null
-            ? assignmentsByKey.get(`id:${String(student.id)}`)
-            : assignmentsByKey.get(`un:${String(student.username || '')}`);
         if (!assignment || assignment.section !== selectedSection) return;
       }
 
@@ -149,8 +173,8 @@ const GradeSystemView = () => {
       const studentKey = grade.user_id || grade.username;
       if (!grouped[yearKey][studentKey]) {
         let imagePath = null;
-        if (student && student.image_path) {
-          let rawPath = student.image_path;
+        if (assignment && assignment.image_path) {
+          let rawPath = assignment.image_path;
           if (rawPath.startsWith("/TCC/public/")) rawPath = rawPath.replace("/TCC/public/", "");
           else if (rawPath.startsWith("/TCC/database/pictures/")) rawPath = rawPath.replace("/TCC/database/pictures/", "database/pictures/");
 
@@ -158,8 +182,13 @@ const GradeSystemView = () => {
         }
 
         grouped[yearKey][studentKey] = {
-          studentObj: student,
-          displayName: grade.student_name || grade.username || (student ? (student.full_name || student.username) : "Unknown"),
+          studentObj: assignment || null,
+          displayName:
+            grade.student_name ||
+            assignment?.full_name ||
+            grade.username ||
+            assignment?.username ||
+            "Unknown",
           imagePath: imagePath,
           semesters: { "First Semester": [], "Second Semester": [] }
         };
@@ -170,7 +199,7 @@ const GradeSystemView = () => {
     });
 
     return grouped;
-  }, [grades, selectedYear, selectedSection, studentsById, studentsByUsername, assignmentsByKey]);
+  }, [grades, selectedYear, selectedSection, assignmentsByKey]);
 
   const calculateStats = (gradeList) => {
     let scoreSum = 0;

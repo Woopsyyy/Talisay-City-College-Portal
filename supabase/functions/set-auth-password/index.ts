@@ -17,6 +17,10 @@ type PasswordPayload = {
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const EDGE_ALLOWED_ORIGINS = String(Deno.env.get("EDGE_ALLOWED_ORIGINS") || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
@@ -43,6 +47,13 @@ const json = (status: number, body: Record<string, unknown>) =>
       "Content-Type": "application/json",
     },
   });
+
+const isOriginAllowed = (req: Request): boolean => {
+  if (EDGE_ALLOWED_ORIGINS.length === 0) return true;
+  const origin = String(req.headers.get("origin") || "").trim();
+  if (!origin) return true;
+  return EDGE_ALLOWED_ORIGINS.includes(origin);
+};
 
 const parseRoleString = (value: unknown): string[] => {
   if (Array.isArray(value)) {
@@ -203,6 +214,10 @@ const parsePayload = async (req: Request): Promise<{
 };
 
 Deno.serve(async (req: Request) => {
+  if (!isOriginAllowed(req)) {
+    return json(403, { error: "Origin not allowed." });
+  }
+
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }

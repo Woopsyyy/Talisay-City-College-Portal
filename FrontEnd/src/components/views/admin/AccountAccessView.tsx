@@ -1,9 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import styled from "styled-components";
-import { KeyRound, LockKeyhole, RefreshCw, Search, UserPlus } from "lucide-react";
+import styled, { keyframes } from "styled-components";
+import {
+  KeyRound,
+  LockKeyhole,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  UserPlus,
+  X,
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../../../supabaseClient";
-import { AdminAPI } from "../../../services/api";
+import { AdminAPI } from 'services/apis/admin';
+import { APP_POLLING_GUARD } from "../../../config/runtimeGuards";
 import Toast from "../../common/Toast";
+import PageSkeleton from "../../loaders/PageSkeleton";
 
 const DEFAULT_CREATE_FORM = {
   full_name: "",
@@ -25,6 +37,46 @@ const DEFAULT_EDIT_FORM = {
 };
 
 const USERS_PER_PAGE = 20;
+const ACCOUNT_ROLE_OPTIONS = [
+  { value: "student", label: "Student" },
+  { value: "teacher", label: "Teacher" },
+  { value: "faculty", label: "Faculty" },
+  { value: "dean", label: "Dean" },
+  { value: "nt", label: "Non-Teaching" },
+  { value: "staff", label: "Staff" },
+  { value: "osas", label: "OSAS" },
+  { value: "treasury", label: "Treasury" },
+];
+const ACCOUNT_ROLE_CANONICAL_MAP = {
+  student: "student",
+  teacher: "teacher",
+  faculty: "teacher",
+  dean: "teacher",
+  nt: "nt",
+  staff: "nt",
+  osas: "nt",
+  treasury: "nt",
+};
+const ROLE_FILTER_OPTIONS = [
+  { value: "all", label: "All roles" },
+  ...ACCOUNT_ROLE_OPTIONS,
+];
+
+const EXPIRY_FILTER_OPTIONS = [
+  { value: "all", label: "All expiration states" },
+  { value: "active", label: "Active only" },
+  { value: "expired", label: "Expired only" },
+  { value: "with_expiration", label: "With expiration date" },
+  { value: "no_expiration", label: "No expiration date" },
+];
+
+const SORT_OPTIONS = [
+  { value: "name_asc", label: "Name A-Z" },
+  { value: "name_desc", label: "Name Z-A" },
+  { value: "username_asc", label: "Username A-Z" },
+  { value: "expiry_soonest", label: "Expiry soonest" },
+  { value: "expiry_latest", label: "Expiry latest" },
+];
 
 const formatRole = (value) => {
   const role = String(value || "").trim().toLowerCase();
@@ -56,13 +108,77 @@ const toDateTimeLocalValue = (value) => {
   return local.toISOString().slice(0, 16);
 };
 
+const toCanonicalAccountRole = (value) => {
+  const role = String(value || "").trim().toLowerCase();
+  if (!role) return "student";
+  return ACCOUNT_ROLE_CANONICAL_MAP[role] || role;
+};
+
+const parseRoleTokens = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return [];
+
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => String(entry || "").trim().toLowerCase())
+          .filter(Boolean);
+      }
+    } catch (_) {
+      // fallback to plain token parsing
+    }
+  }
+
+  if (raw.includes(",")) {
+    return raw
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  return [raw];
+};
+
+const normalizeRoleToken = (value: unknown) => {
+  const role = String(value || "").trim().toLowerCase();
+  if (!role) return "";
+  if (role === "go" || role === "staff" || role === "non-teaching" || role === "non_teaching" || role === "nonteaching") {
+    return "nt";
+  }
+  return role;
+};
+
+const collectAccountRoleTokens = (user: any) => {
+  const tokens = [
+    ...parseRoleTokens(user?.role),
+    ...parseRoleTokens(user?.roles),
+    ...parseRoleTokens(user?.sub_role),
+    ...parseRoleTokens(user?.sub_roles),
+  ]
+    .map(normalizeRoleToken)
+    .filter(Boolean);
+  return new Set(tokens);
+};
+
 const AccountAccessView = () => {
+  const navigate = useNavigate();
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [savingCreate, setSavingCreate] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [realtimeSyncing, setRealtimeSyncing] = useState(false);
   const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [expiryFilter, setExpiryFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("name_asc");
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [targetUser, setTargetUser] = useState(null);
@@ -72,17 +188,123 @@ const AccountAccessView = () => {
   const [toast, setToast] = useState({ show: false, message: "", type: "success" });
   const realtimeRefreshTimerRef = useRef(null);
 
+  const nonAdminUsers = useMemo(() => {
+    return users.filter((user) => {
+      const primaryRole = String(user?.role || "").trim().toLowerCase();
+      const secondaryRoles = Array.isArray(user?.roles)
+        ? user.roles.map((entry) => String(entry || "").trim().toLowerCase())
+        : [];
+      return primaryRole !== "admin" && !secondaryRoles.includes("admin");
+    });
+  }, [users]);
+
   const filteredUsers = useMemo(() => {
     const keyword = String(search || "").trim().toLowerCase();
-    if (!keyword) return users;
-    return users.filter((user) => {
-      return (
-        String(user.full_name || "").toLowerCase().includes(keyword) ||
-        String(user.username || "").toLowerCase().includes(keyword) ||
-        String(user.school_id || "").toLowerCase().includes(keyword)
-      );
+    let rows = [...nonAdminUsers];
+
+    if (keyword) {
+      rows = rows.filter((user) => {
+        return (
+          String(user.full_name || "").toLowerCase().includes(keyword) ||
+          String(user.username || "").toLowerCase().includes(keyword) ||
+          String(user.school_id || "").toLowerCase().includes(keyword)
+        );
+      });
+    }
+
+    if (roleFilter !== "all") {
+      rows = rows.filter((user) => {
+        const tokens = collectAccountRoleTokens(user);
+        const selectedRole = String(roleFilter || "").trim().toLowerCase();
+        const canonicalRole = toCanonicalAccountRole(selectedRole);
+        return tokens.has(selectedRole) || tokens.has(canonicalRole);
+      });
+    }
+
+    if (expiryFilter === "active") {
+      rows = rows.filter((user) => !isExpired(user?.expires_at));
+    } else if (expiryFilter === "expired") {
+      rows = rows.filter((user) => isExpired(user?.expires_at));
+    } else if (expiryFilter === "with_expiration") {
+      rows = rows.filter((user) => Boolean(String(user?.expires_at || "").trim()));
+    } else if (expiryFilter === "no_expiration") {
+      rows = rows.filter((user) => !String(user?.expires_at || "").trim());
+    }
+
+    const compareText = (value) => String(value || "").trim().toLowerCase();
+    const expiryTime = (value) => {
+      const date = new Date(value || "");
+      if (Number.isNaN(date.getTime())) return Number.POSITIVE_INFINITY;
+      return date.getTime();
+    };
+
+    rows.sort((a, b) => {
+      if (sortBy === "name_desc") {
+        return compareText(b.full_name || b.username).localeCompare(compareText(a.full_name || a.username));
+      }
+      if (sortBy === "username_asc") {
+        return compareText(a.username).localeCompare(compareText(b.username));
+      }
+      if (sortBy === "expiry_soonest") {
+        return expiryTime(a.expires_at) - expiryTime(b.expires_at);
+      }
+      if (sortBy === "expiry_latest") {
+        return expiryTime(b.expires_at) - expiryTime(a.expires_at);
+      }
+      return compareText(a.full_name || a.username).localeCompare(compareText(b.full_name || b.username));
     });
-  }, [search, users]);
+
+    return rows;
+  }, [expiryFilter, nonAdminUsers, roleFilter, search, sortBy]);
+
+  const accountInsights = useMemo(() => {
+    const expiredCount = nonAdminUsers.filter((user) => isExpired(user?.expires_at)).length;
+    const withExpiryCount = nonAdminUsers.filter((user) => String(user?.expires_at || "").trim()).length;
+    const noExpiryCount = Math.max(0, nonAdminUsers.length - withExpiryCount);
+    const roleCount = new Set(
+      nonAdminUsers.map((user) => String(user?.role || "").trim().toLowerCase()).filter(Boolean),
+    ).size;
+
+    return [
+      {
+        id: "total",
+        label: "Total Non-admin Accounts",
+        value: nonAdminUsers.length,
+        hint: `${roleCount} role group(s)`,
+      },
+      {
+        id: "filtered",
+        label: "Filtered Results",
+        value: filteredUsers.length,
+        hint: "Updated instantly as filters change",
+      },
+      {
+        id: "expiry",
+        label: "Expired Accounts",
+        value: expiredCount,
+        hint: "Needs review or extension",
+      },
+      {
+        id: "no_expiry",
+        label: "No Expiration",
+        value: noExpiryCount,
+        hint: realtimeSyncing ? "Realtime sync in progress" : "Realtime sync active",
+      },
+    ];
+  }, [filteredUsers.length, nonAdminUsers, realtimeSyncing]);
+
+  const clearFilters = () => {
+    setSearch("");
+    setRoleFilter("all");
+    setExpiryFilter("all");
+    setSortBy("name_asc");
+  };
+
+  const hasFilterOverride =
+    String(search || "").trim().length > 0 ||
+    roleFilter !== "all" ||
+    expiryFilter !== "all" ||
+    sortBy !== "name_asc";
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE)),
@@ -106,7 +328,7 @@ const AccountAccessView = () => {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search]);
+  }, [expiryFilter, roleFilter, search, sortBy]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -136,10 +358,13 @@ const AccountAccessView = () => {
     setEditForm(DEFAULT_EDIT_FORM);
   };
 
-  const loadUsers = useCallback(async ({ silent = false } = {}) => {
+  const loadUsers = useCallback(async ({ silent = false, forceRefresh = false } = {}) => {
     try {
       if (!silent) setLoadingUsers(true);
-      const result = await AdminAPI.getUsers({ includePurgeSummary: true });
+      const result = await AdminAPI.getUsers({
+        includePurgeSummary: !silent,
+        force_refresh: forceRefresh,
+      });
       const rows = Array.isArray(result) ? result : result?.users;
       const deletedExpiredCount = Number(result?.deletedExpiredCount || 0);
       setUsers(Array.isArray(rows) ? rows : []);
@@ -164,8 +389,9 @@ const AccountAccessView = () => {
   useEffect(() => {
     loadUsers();
     const intervalId = setInterval(() => {
+      if (document.hidden) return;
       loadUsers({ silent: true });
-    }, 30000);
+    }, APP_POLLING_GUARD.accountAccessRefreshIntervalMs);
     return () => clearInterval(intervalId);
   }, [loadUsers]);
 
@@ -177,7 +403,7 @@ const AccountAccessView = () => {
       const result = await AdminAPI.createUserWithPassword({
         full_name: createForm.full_name,
         username: createForm.username,
-        role: createForm.role,
+        role: toCanonicalAccountRole(createForm.role),
         password: createForm.password,
         expires_at: createForm.expires_at || null,
       });
@@ -241,7 +467,7 @@ const AccountAccessView = () => {
       const updateResult = await AdminAPI.updateUserAccount(targetUser.id, {
         full_name: editForm.full_name,
         username: editForm.username,
-        role: editForm.role,
+        role: toCanonicalAccountRole(editForm.role),
         school_id: editForm.school_id,
         expires_at: editForm.expires_at || null,
       });
@@ -272,17 +498,13 @@ const AccountAccessView = () => {
     }
   };
 
-  const handleRefreshAll = async () => {
-    await loadUsers();
-  };
-
   const queueRealtimeRefresh = useCallback(() => {
     if (realtimeRefreshTimerRef.current) return;
     realtimeRefreshTimerRef.current = window.setTimeout(async () => {
       realtimeRefreshTimerRef.current = null;
       try {
         setRealtimeSyncing(true);
-        await loadUsers({ silent: true });
+        await loadUsers({ silent: true, forceRefresh: true });
       } finally {
         setRealtimeSyncing(false);
       }
@@ -315,17 +537,16 @@ const AccountAccessView = () => {
             Account Access Control
           </h2>
           <p>
-            Click any user row to open full account details and update admin-managed information.
+            Non-admin account management only. Admin users are handled in the dedicated Admin Accounts module.
           </p>
         </div>
         <HeaderActions>
           <SecondaryButton
             type="button"
-            onClick={handleRefreshAll}
-            disabled={loadingUsers || realtimeSyncing}
+            onClick={() => navigate("/admin/dashboard/admin_accounts")}
           >
-            <RefreshCw size={16} />
-            {loadingUsers || realtimeSyncing ? "Refreshing..." : "Refresh"}
+            <ShieldCheck size={16} />
+            Admin Accounts
           </SecondaryButton>
           <PrimaryButton type="button" onClick={() => setIsCreateModalOpen(true)}>
             <UserPlus size={16} />
@@ -342,15 +563,29 @@ const AccountAccessView = () => {
         />
       )}
 
-      <Card>
-        <CardHeader>
-          <div>
-            <h3>
-              <LockKeyhole size={18} />
-              User Accounts
-            </h3>
-            <p>Open a user card to edit username, full name, role, school ID, expiration, and password.</p>
-          </div>
+      <InsightGrid>
+        {accountInsights.map((item) => (
+          <InsightCard key={item.id}>
+            <small>{item.label}</small>
+            <strong>{item.value}</strong>
+            <span>{item.hint}</span>
+          </InsightCard>
+        ))}
+      </InsightGrid>
+
+      <FilterPanel>
+        <FilterPanelHeader>
+          <h3>
+            <SlidersHorizontal size={16} />
+            Filter Section
+          </h3>
+          <FilterPanelHint>
+            <Sparkles size={13} />
+            {hasFilterOverride ? "Custom filter set active" : "Default list view"}
+          </FilterPanelHint>
+        </FilterPanelHeader>
+
+        <FilterControls>
           <SearchBar>
             <Search size={16} />
             <input
@@ -360,6 +595,65 @@ const AccountAccessView = () => {
               onChange={(event) => setSearch(event.target.value)}
             />
           </SearchBar>
+
+          <FilterSelect
+            value={roleFilter}
+            onChange={(event) => setRoleFilter(event.target.value)}
+          >
+            {ROLE_FILTER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </FilterSelect>
+
+          <FilterSelect
+            value={expiryFilter}
+            onChange={(event) => setExpiryFilter(event.target.value)}
+          >
+            {EXPIRY_FILTER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </FilterSelect>
+
+          <FilterSelect
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value)}
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </FilterSelect>
+        </FilterControls>
+
+        <FilterActionsRow>
+          <small>
+            Showing <strong>{filteredUsers.length}</strong> of{" "}
+            <strong>{nonAdminUsers.length}</strong> non-admin accounts.
+          </small>
+          <SecondaryButton type="button" onClick={clearFilters} disabled={!hasFilterOverride}>
+            Reset Filters
+          </SecondaryButton>
+        </FilterActionsRow>
+      </FilterPanel>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <h3>
+              <LockKeyhole size={18} />
+              User Accounts (Non-admin)
+            </h3>
+            <p>Open a user card to edit username, full name, role, school ID, expiration, and password.</p>
+          </div>
+          <RealtimeBadge>
+            <Sparkles size={13} />
+            {realtimeSyncing ? "Syncing updates..." : "Realtime updates on"}
+          </RealtimeBadge>
         </CardHeader>
 
         <CardBody>
@@ -367,12 +661,16 @@ const AccountAccessView = () => {
             <span>
               {filteredUsers.length} account(s) | Showing {pageRange.from}-{pageRange.to}
             </span>
-            <small>Expired accounts are auto-removed when this view refreshes.</small>
+            <small>
+              {Math.max(0, users.length - nonAdminUsers.length)} admin account(s) are managed separately.
+            </small>
           </ResultMeta>
 
           <UserList>
             {loadingUsers ? (
-              <EmptyState>Loading users...</EmptyState>
+              <InlineSkeletonWrap>
+                <PageSkeleton variant="list" compact />
+              </InlineSkeletonWrap>
             ) : filteredUsers.length === 0 ? (
               <EmptyState>No users found.</EmptyState>
             ) : (
@@ -426,87 +724,101 @@ const AccountAccessView = () => {
         <ModalOverlay onClick={closeCreateModal}>
           <ModalCard onClick={(event) => event.stopPropagation()}>
             <ModalHeader>
-              <h3>
-                <UserPlus size={18} />
-                Create User Account
-              </h3>
-              <p>Fill in account details, then optionally set an account duration.</p>
+              <div>
+                <h3>
+                  <UserPlus size={18} />
+                  Create User Account
+                </h3>
+                <p>Fill in account details, then optionally set an account duration.</p>
+              </div>
+              <ModalCloseButton type="button" onClick={closeCreateModal}>
+                <X size={16} />
+              </ModalCloseButton>
             </ModalHeader>
 
             <ModalForm onSubmit={handleCreateUser}>
-              <Field>
-                <label>Full Name</label>
-                <input
-                  type="text"
-                  value={createForm.full_name}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, full_name: event.target.value }))
-                  }
-                  required
-                />
-              </Field>
-              <Field>
-                <label>Username</label>
-                <input
-                  type="text"
-                  value={createForm.username}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, username: event.target.value }))
-                  }
-                  required
-                />
-                <Hint>Student ID is auto-generated by the system.</Hint>
-              </Field>
-              <Field>
-                <label>Role</label>
-                <select
-                  value={createForm.role}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, role: event.target.value }))
-                  }
-                  required
-                >
-                  <option value="student">Student</option>
-                  <option value="teacher">Teacher</option>
-                  <option value="nt">Non-Teaching</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </Field>
-              <Field>
-                <label>Temporary Password</label>
-                <input
-                  type="password"
-                  value={createForm.password}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, password: event.target.value }))
-                  }
-                  required
-                />
-              </Field>
-              <Field>
-                <label>Confirm Password</label>
-                <input
-                  type="password"
-                  value={createForm.confirm_password}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, confirm_password: event.target.value }))
-                  }
-                  required
-                />
-              </Field>
-              <Field>
-                <label>Account Duration (Optional)</label>
-                <input
-                  type="datetime-local"
-                  value={createForm.expires_at}
-                  onChange={(event) =>
-                    setCreateForm((prev) => ({ ...prev, expires_at: event.target.value }))
-                  }
-                />
-                <Hint>
-                  If set, the account is automatically removed once the date/time is reached.
-                </Hint>
-              </Field>
+              <DrawerNote>
+                Student ID is auto-generated. Admin user creation is available in Admin Accounts only.
+              </DrawerNote>
+
+              <FormGrid>
+                <Field>
+                  <label>Full Name</label>
+                  <input
+                    type="text"
+                    value={createForm.full_name}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, full_name: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <label>Username</label>
+                  <input
+                    type="text"
+                    value={createForm.username}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, username: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <label>Role</label>
+                  <select
+                    value={createForm.role}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, role: event.target.value }))
+                    }
+                    required
+                  >
+                    {ACCOUNT_ROLE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Hint>Admin role is excluded here and managed in Admin Accounts.</Hint>
+                </Field>
+                <Field>
+                  <label>Account Duration (Optional)</label>
+                  <input
+                    type="datetime-local"
+                    value={createForm.expires_at}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, expires_at: event.target.value }))
+                    }
+                  />
+                </Field>
+              </FormGrid>
+
+              <SectionDivider>Credential Setup</SectionDivider>
+
+              <FormGrid>
+                <Field>
+                  <label>Temporary Password</label>
+                  <input
+                    type="password"
+                    value={createForm.password}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <label>Confirm Password</label>
+                  <input
+                    type="password"
+                    value={createForm.confirm_password}
+                    onChange={(event) =>
+                      setCreateForm((prev) => ({ ...prev, confirm_password: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+              </FormGrid>
 
               <ModalFooter>
                 <SecondaryButton type="button" onClick={closeCreateModal} disabled={savingCreate}>
@@ -525,102 +837,115 @@ const AccountAccessView = () => {
         <ModalOverlay onClick={closeEditModal}>
           <ModalCard onClick={(event) => event.stopPropagation()}>
             <ModalHeader>
-              <h3>
-                <KeyRound size={18} />
-                Edit User Account
-              </h3>
-              <p>
-                {targetUser
-                  ? `Update account details for ${targetUser.full_name || targetUser.username}.`
-                  : "Select a user first."}
-              </p>
+              <div>
+                <h3>
+                  <KeyRound size={18} />
+                  Edit User Account
+                </h3>
+                <p>
+                  {targetUser
+                    ? `Update account details for ${targetUser.full_name || targetUser.username}.`
+                    : "Select a user first."}
+                </p>
+              </div>
+              <ModalCloseButton type="button" onClick={closeEditModal}>
+                <X size={16} />
+              </ModalCloseButton>
             </ModalHeader>
 
             <ModalForm onSubmit={handleSaveUserDetails}>
-              <Field>
-                <label>Full Name</label>
-                <input
-                  type="text"
-                  value={editForm.full_name}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, full_name: event.target.value }))
-                  }
-                  required
-                />
-              </Field>
+              <DrawerNote>
+                Admin role edits are handled in Admin Accounts. Leave account duration blank for no expiration.
+              </DrawerNote>
 
-              <Field>
-                <label>Username</label>
-                <input
-                  type="text"
-                  value={editForm.username}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, username: event.target.value }))
-                  }
-                  required
-                />
-              </Field>
+              <FormGrid>
+                <Field>
+                  <label>Full Name</label>
+                  <input
+                    type="text"
+                    value={editForm.full_name}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, full_name: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <label>Username</label>
+                  <input
+                    type="text"
+                    value={editForm.username}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, username: event.target.value }))
+                    }
+                    required
+                  />
+                </Field>
+                <Field>
+                  <label>Role</label>
+                  <select
+                    value={editForm.role}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, role: event.target.value }))
+                    }
+                    required
+                  >
+                    {ACCOUNT_ROLE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Hint>Admin role is excluded here and managed in Admin Accounts.</Hint>
+                </Field>
+                <Field>
+                  <label>School ID</label>
+                  <input
+                    type="text"
+                    value={editForm.school_id}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, school_id: event.target.value }))
+                    }
+                  />
+                </Field>
+                <Field $full>
+                  <label>Account Duration (Optional)</label>
+                  <input
+                    type="datetime-local"
+                    value={editForm.expires_at}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, expires_at: event.target.value }))
+                    }
+                  />
+                </Field>
+              </FormGrid>
 
-              <Field>
-                <label>Role</label>
-                <select
-                  value={editForm.role}
-                  onChange={(event) => setEditForm((prev) => ({ ...prev, role: event.target.value }))}
-                  required
-                >
-                  <option value="student">Student</option>
-                  <option value="teacher">Teacher</option>
-                  <option value="nt">Non-Teaching</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </Field>
+              <SectionDivider>Password Reset (Optional)</SectionDivider>
 
-              <Field>
-                <label>School ID</label>
-                <input
-                  type="text"
-                  value={editForm.school_id}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, school_id: event.target.value }))
-                  }
-                />
-              </Field>
-
-              <Field>
-                <label>Account Duration (Optional)</label>
-                <input
-                  type="datetime-local"
-                  value={editForm.expires_at}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, expires_at: event.target.value }))
-                  }
-                />
-                <Hint>Leave empty to keep this account without expiration.</Hint>
-              </Field>
-
-              <Field>
-                <label>New Password (Optional)</label>
-                <input
-                  type="password"
-                  value={editForm.new_password}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, new_password: event.target.value }))
-                  }
-                  placeholder="Leave blank to keep current password"
-                />
-              </Field>
-
-              <Field>
-                <label>Confirm New Password</label>
-                <input
-                  type="password"
-                  value={editForm.confirm_password}
-                  onChange={(event) =>
-                    setEditForm((prev) => ({ ...prev, confirm_password: event.target.value }))
-                  }
-                  placeholder="Re-enter new password"
-                />
-              </Field>
+              <FormGrid>
+                <Field>
+                  <label>New Password</label>
+                  <input
+                    type="password"
+                    value={editForm.new_password}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, new_password: event.target.value }))
+                    }
+                    placeholder="Leave blank to keep current password"
+                  />
+                </Field>
+                <Field>
+                  <label>Confirm New Password</label>
+                  <input
+                    type="password"
+                    value={editForm.confirm_password}
+                    onChange={(event) =>
+                      setEditForm((prev) => ({ ...prev, confirm_password: event.target.value }))
+                    }
+                    placeholder="Re-enter new password"
+                  />
+                </Field>
+              </FormGrid>
 
               <ModalFooter>
                 <SecondaryButton type="button" onClick={closeEditModal} disabled={savingEdit}>
@@ -639,7 +964,7 @@ const AccountAccessView = () => {
 };
 
 const Container = styled.div`
-  max-width: 1300px;
+  max-width: 1320px;
   margin: 0 auto;
   color: var(--text-primary);
 `;
@@ -667,7 +992,7 @@ const Header = styled.div`
 
   p {
     margin: 0;
-    color: var(--text-secondary);
+    color: rgba(214, 225, 255, 0.86);
   }
 `;
 
@@ -677,17 +1002,157 @@ const HeaderActions = styled.div`
   flex-wrap: wrap;
 `;
 
+const InsightGrid = styled.section`
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+
+  @media (max-width: 1100px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 640px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const InsightCard = styled.article`
+  border: 1px solid rgba(132, 157, 233, 0.3);
+  border-radius: 13px;
+  background: linear-gradient(150deg, rgba(9, 17, 40, 0.92), rgba(13, 23, 51, 0.88));
+  padding: 11px 12px;
+  box-shadow: 0 12px 22px rgba(1, 4, 14, 0.35);
+
+  small {
+    display: block;
+    color: rgba(194, 210, 255, 0.82);
+    font-size: 0.74rem;
+    margin-bottom: 8px;
+  }
+
+  strong {
+    display: block;
+    color: #f2f7ff;
+    font-size: 1.35rem;
+    line-height: 1;
+  }
+
+  span {
+    display: block;
+    margin-top: 8px;
+    color: rgba(198, 214, 255, 0.78);
+    font-size: 0.74rem;
+  }
+`;
+
+const FilterPanel = styled.section`
+  margin-bottom: 14px;
+  border: 1px solid rgba(130, 157, 235, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(8, 14, 36, 0.92), rgba(12, 22, 50, 0.9));
+  box-shadow: 0 14px 26px rgba(2, 6, 18, 0.42);
+  overflow: hidden;
+`;
+
+const FilterPanelHeader = styled.div`
+  padding: 13px 16px;
+  border-bottom: 1px solid rgba(129, 153, 227, 0.26);
+  background: rgba(19, 33, 70, 0.62);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+
+  h3 {
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.98rem;
+    color: #eaf1ff;
+  }
+`;
+
+const FilterPanelHint = styled.span`
+  border: 1px solid rgba(123, 191, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(55, 102, 185, 0.2);
+  color: rgba(220, 234, 255, 0.94);
+  padding: 4px 9px;
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+`;
+
+const FilterControls = styled.div`
+  padding: 13px 16px;
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.3fr 1fr;
+  gap: 10px;
+
+  @media (max-width: 1100px) {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  @media (max-width: 700px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const FilterSelect = styled.select`
+  width: 100%;
+  border: 1px solid rgba(128, 154, 224, 0.44);
+  border-radius: 10px;
+  background: rgba(7, 14, 36, 0.84);
+  color: #ebf2ff;
+  padding: 10px 11px;
+  font-size: 0.86rem;
+
+  option {
+    background: #0d1734;
+    color: #edf3ff;
+  }
+`;
+
+const FilterActionsRow = styled.div`
+  padding: 10px 16px;
+  border-top: 1px solid rgba(130, 154, 226, 0.24);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+
+  small {
+    color: rgba(206, 220, 255, 0.86);
+    font-size: 0.78rem;
+  }
+
+  strong {
+    color: #f3f8ff;
+  }
+
+  @media (max-width: 780px) {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+`;
+
 const Card = styled.section`
   border: 1px solid var(--border-color);
   border-radius: 14px;
-  background: var(--bg-secondary);
+  background: linear-gradient(160deg, rgba(8, 15, 36, 0.94), rgba(12, 21, 48, 0.9));
+  box-shadow: 0 16px 28px rgba(2, 5, 16, 0.38);
   overflow: hidden;
 `;
 
 const CardHeader = styled.div`
   padding: 16px 18px;
   border-bottom: 1px solid var(--border-color);
-  background: var(--bg-tertiary);
+  background: rgba(18, 31, 66, 0.76);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -708,9 +1173,22 @@ const CardHeader = styled.div`
 
   p {
     margin: 0;
-    color: var(--text-secondary);
+    color: rgba(208, 221, 255, 0.84);
     font-size: 0.9rem;
   }
+`;
+
+const RealtimeBadge = styled.span`
+  border: 1px solid rgba(115, 193, 250, 0.42);
+  border-radius: 999px;
+  background: rgba(56, 103, 190, 0.2);
+  color: rgba(225, 238, 255, 0.96);
+  font-size: 0.74rem;
+  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
 `;
 
 const CardBody = styled.div`
@@ -721,7 +1199,7 @@ const ResultMeta = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  color: var(--text-secondary);
+  color: rgba(209, 221, 255, 0.86);
   font-size: 0.85rem;
   margin-bottom: 10px;
   gap: 10px;
@@ -733,11 +1211,8 @@ const ResultMeta = styled.div`
 
 const SearchBar = styled.div`
   position: relative;
-  min-width: 320px;
-
-  @media (max-width: 900px) {
-    min-width: 0;
-  }
+  width: 100%;
+  min-width: 0;
 
   svg {
     position: absolute;
@@ -749,12 +1224,16 @@ const SearchBar = styled.div`
 
   input {
     width: 100%;
-    border: 1px solid var(--border-color);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    border-radius: 8px;
+    border: 1px solid rgba(128, 154, 224, 0.44);
+    background: rgba(7, 14, 36, 0.84);
+    color: #f3f7ff;
+    border-radius: 10px;
     padding: 10px 11px 10px 34px;
     font-size: 0.92rem;
+  }
+
+  input::placeholder {
+    color: rgba(188, 204, 245, 0.86);
   }
 `;
 
@@ -776,6 +1255,7 @@ const UserRowButton = styled.button`
   align-items: center;
   text-align: left;
   background: transparent;
+  color: #e8f1ff;
   cursor: pointer;
   transition: background 0.2s ease;
 
@@ -800,12 +1280,15 @@ const UserInfo = styled.div`
   gap: 4px;
 
   strong {
+    color: #f5f9ff;
     font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.25;
   }
 `;
 
 const MetaLine = styled.span`
-  color: var(--text-secondary);
+  color: rgba(204, 218, 255, 0.87);
   font-size: 0.83rem;
   word-break: break-word;
 `;
@@ -818,8 +1301,8 @@ const MetaBadges = styled.div`
 
 const RoleBadge = styled.span`
   border: 1px solid var(--border-color);
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
+  background: rgba(55, 98, 186, 0.24);
+  color: #e6efff;
   border-radius: 999px;
   padding: 4px 8px;
   font-size: 0.75rem;
@@ -828,8 +1311,8 @@ const RoleBadge = styled.span`
 
 const ExpiryBadge = styled.span<{ $expired: boolean }>`
   border: 1px solid ${(props) => (props.$expired ? "rgba(239,68,68,0.35)" : "var(--border-color)")};
-  background: ${(props) => (props.$expired ? "rgba(239,68,68,0.12)" : "var(--bg-tertiary)")};
-  color: ${(props) => (props.$expired ? "#ef4444" : "var(--text-secondary)")};
+  background: ${(props) => (props.$expired ? "rgba(239,68,68,0.15)" : "rgba(53, 78, 130, 0.28)")};
+  color: ${(props) => (props.$expired ? "#ff8a8a" : "#dfeaff")};
   border-radius: 999px;
   padding: 4px 8px;
   font-size: 0.75rem;
@@ -840,7 +1323,8 @@ const RowHint = styled.span`
   border: 1px solid var(--border-color);
   border-radius: 999px;
   padding: 5px 10px;
-  color: var(--text-secondary);
+  color: rgba(218, 229, 255, 0.95);
+  background: rgba(56, 79, 131, 0.2);
   font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
@@ -848,9 +1332,13 @@ const RowHint = styled.span`
 
 const EmptyState = styled.div`
   padding: 18px;
-  color: var(--text-secondary);
+  color: rgba(207, 220, 255, 0.9);
   text-align: center;
   font-size: 0.9rem;
+`;
+
+const InlineSkeletonWrap = styled.div`
+  padding: 4px 0;
 `;
 
 const PaginationRow = styled.div`
@@ -867,7 +1355,7 @@ const PaginationRow = styled.div`
 `;
 
 const PaginationMeta = styled.span`
-  color: var(--text-secondary);
+  color: rgba(205, 218, 255, 0.9);
   font-size: 0.85rem;
 `;
 
@@ -896,15 +1384,17 @@ const PageButton = styled.button`
   }
 `;
 
-const Field = styled.div`
+const Field = styled.div<{ $full?: boolean }>`
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
+  min-width: 0;
+  ${(props) => (props.$full ? "grid-column: 1 / -1;" : "")}
 
   label {
     font-size: 0.85rem;
-    color: var(--text-secondary);
+    color: rgba(215, 227, 255, 0.92);
     font-weight: 600;
   }
 
@@ -913,43 +1403,77 @@ const Field = styled.div`
     width: 100%;
     border: 1px solid var(--border-color);
     background: var(--bg-primary);
-    color: var(--text-primary);
+    color: #f2f6ff;
     border-radius: 8px;
     padding: 10px 11px;
     font-size: 0.92rem;
   }
+
+  input::placeholder {
+    color: rgba(188, 203, 242, 0.85);
+  }
+
+  select option {
+    background: #0d1734;
+    color: #edf3ff;
+  }
 `;
 
 const Hint = styled.small`
-  color: var(--text-secondary);
+  color: rgba(203, 218, 255, 0.9);
   font-size: 0.78rem;
+`;
+
+const slideInRight = keyframes`
+  from {
+    transform: translateX(100%);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 `;
 
 const ModalOverlay = styled.div`
   position: fixed;
   inset: 0;
   z-index: 1800;
-  background: rgba(10, 15, 25, 0.55);
-  backdrop-filter: blur(2px);
+  background: rgba(7, 11, 22, 0.6);
+  backdrop-filter: blur(3px);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
 `;
 
 const ModalCard = styled.div`
-  width: min(640px, 100%);
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
+  width: min(560px, 94vw);
+  height: 100vh;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
-  border-radius: 14px;
+  border-radius: 16px 0 0 16px;
+  border-right: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: ${slideInRight} 0.22s ease-out;
+
+  @media (max-width: 760px) {
+    width: 100vw;
+    border-radius: 0;
+    border-left: none;
+  }
 `;
 
 const ModalHeader = styled.div`
-  padding: 16px 18px;
+  padding: 14px 14px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-tertiary);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 
   h3 {
     display: flex;
@@ -961,20 +1485,78 @@ const ModalHeader = styled.div`
 
   p {
     margin: 0;
-    color: var(--text-secondary);
+    color: rgba(206, 220, 255, 0.9);
     font-size: 0.9rem;
   }
 `;
 
+const ModalCloseButton = styled.button`
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-secondary);
+  }
+`;
+
 const ModalForm = styled.form`
-  padding: 16px 18px;
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+const DrawerNote = styled.p`
+  margin: 0;
+  border: 1px solid rgba(120, 154, 241, 0.28);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(35, 72, 160, 0.22), rgba(24, 112, 148, 0.18));
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: rgba(219, 232, 255, 0.93);
+`;
+
+const SectionDivider = styled.h4`
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(164, 195, 255, 0.92);
+  font-weight: 700;
+  padding-top: 4px;
+`;
+
+const FormGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+
+  @media (max-width: 760px) {
+    grid-template-columns: 1fr;
+  }
 `;
 
 const ModalFooter = styled.div`
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: auto;
+  padding: 10px 0 2px;
+  border-top: 1px solid rgba(124, 150, 217, 0.22);
+  position: sticky;
+  bottom: 0;
+  background: linear-gradient(180deg, rgba(8, 14, 33, 0.58), rgba(8, 14, 33, 0.94));
 `;
 
 const PrimaryButton = styled.button`

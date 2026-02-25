@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { AdminAPI, getAvatarUrl } from '../../../services/api';
+import { AdminAPI } from '../../../services/apis/admin';
+import { getAvatarUrl } from '../../../services/apis/avatar';
 import { ClipboardCheck, ToggleLeft, AlertTriangle, User, FileText, X, Save, Plus, Trash2 } from 'lucide-react';
 import Toast from '../../common/Toast';
 import PageSkeleton from '../../loaders/PageSkeleton';

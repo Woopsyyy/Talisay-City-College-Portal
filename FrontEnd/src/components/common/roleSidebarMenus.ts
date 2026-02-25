@@ -53,12 +53,13 @@ export const GLOBAL_ROLE_SIDEBAR_MENUS: SidebarRoleMenu[] = [
     label: "Admin",
     icon: ShieldCheck,
     navItems: [
-      { id: "overview", label: "Overview", path: "/admin/dashboard/overview", icon: LayoutDashboard },
+      { id: "overview", label: "Dashboard", path: "/admin/dashboard/overview", icon: LayoutDashboard },
       { id: "manage_user", label: "Manage Users", path: "/admin/dashboard/manage_user", icon: UserCog },
       { id: "account_access", label: "Account Access", path: "/admin/dashboard/account_access", icon: KeyRound },
       { id: "pending_approval", label: "Pending Approval", path: "/admin/dashboard/pending_approval", icon: Inbox },
       { id: "status_logs", label: "Status Logs", path: "/admin/dashboard/status_logs", icon: Activity },
-      { id: "server_maintenance", label: "Server Maintenance", path: "/admin/dashboard/server-maintenance", icon: Settings },
+      { id: "day_off", label: "Day Off", path: "/admin/dashboard/day_off", icon: CalendarCheck },
+      { id: "server_maintenance", label: "Server Actions", path: "/admin/dashboard/server-maintenance", icon: Settings },
     ],
   },
   {

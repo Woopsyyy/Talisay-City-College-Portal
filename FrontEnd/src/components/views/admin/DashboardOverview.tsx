@@ -13,17 +13,9 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-} from "recharts";
-import { AdminAPI } from "../../../services/api";
+import { AdminAPI } from 'services/apis/admin';
 import { getActiveUsersSnapshot, subscribeToActiveUsers } from "../../../services/activeUsers";
 import PageSkeleton from "../../loaders/PageSkeleton";
-import { useTheme } from "../../../context/ThemeContext";
 
 const styled = baseStyled as any;
 
@@ -65,8 +57,60 @@ const INITIAL_METRICS: DashboardMetrics = {
   studyLoad: 0,
 };
 
+const buildLinePath = (values: number[], width: number, height: number, padding = 10): string => {
+  if (!values.length) return "";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1, max - min);
+  const innerWidth = Math.max(1, width - padding * 2);
+  const innerHeight = Math.max(1, height - padding * 2);
+
+  return values
+    .map((value, index) => {
+      const x = padding + (values.length <= 1 ? innerWidth / 2 : (index / (values.length - 1)) * innerWidth);
+      const y = padding + innerHeight - ((value - min) / span) * innerHeight;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+};
+
+const Sparkline = ({
+  values,
+  stroke,
+}: {
+  values: number[];
+  stroke: string;
+}) => {
+  const path = useMemo(() => buildLinePath(values, 320, 112, 10), [values]);
+  return (
+    <svg viewBox="0 0 320 112" preserveAspectRatio="none" aria-hidden="true">
+      <path d={path} fill="none" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+};
+
+const DualSeriesChart = ({
+  students,
+  teachers,
+}: {
+  students: number[];
+  teachers: number[];
+}) => {
+  const studentPath = useMemo(() => buildLinePath(students, 640, 240, 16), [students]);
+  const teacherPath = useMemo(() => buildLinePath(teachers, 640, 240, 16), [teachers]);
+
+  return (
+    <svg viewBox="0 0 640 240" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="16" y1="42" x2="624" y2="42" stroke="var(--dash-border)" strokeDasharray="4 4" />
+      <line x1="16" y1="120" x2="624" y2="120" stroke="var(--dash-border)" strokeDasharray="4 4" />
+      <line x1="16" y1="198" x2="624" y2="198" stroke="var(--dash-border)" strokeDasharray="4 4" />
+      <path d={studentPath} fill="none" stroke="var(--dash-success)" strokeWidth="2.3" strokeLinecap="round" />
+      <path d={teacherPath} fill="none" stroke="var(--dash-danger)" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+};
+
 const DashboardOverview = () => {
-  const { theme } = useTheme();
   const [metrics, setMetrics] = useState<DashboardMetrics>(INITIAL_METRICS);
   const [loading, setLoading] = useState(true);
   const [activeUsers, setActiveUsers] = useState(() => getActiveUsersSnapshot());
@@ -74,24 +118,6 @@ const DashboardOverview = () => {
     const now = new Date().getFullYear();
     return `${now}-${now + 1}`;
   });
-
-  const tooltipStyle = useMemo(
-    () =>
-      theme === "dark"
-        ? {
-            background: "#111827",
-            border: "1px solid #253044",
-            borderRadius: "12px",
-            color: "#e5ebff",
-          }
-        : {
-            background: "#ffffff",
-            border: "1px solid #dce2f3",
-            borderRadius: "12px",
-            color: "#1e293b",
-          },
-    [theme],
-  );
 
   useEffect(() => {
     fetchDashboardMetrics();
@@ -305,24 +331,10 @@ const DashboardOverview = () => {
                     <ValueHint>Current Count</ValueHint>
 
                     <ChartWrap>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={card.series}>
-                          <Tooltip contentStyle={tooltipStyle} />
-                          <Line
-                            type="monotone"
-                            dataKey="value"
-                            stroke={rising ? "var(--dash-success)" : "var(--dash-danger)"}
-                            strokeWidth={2.4}
-                            dot={false}
-                            activeDot={{
-                              r: 4,
-                              fill: "var(--dash-accent)",
-                              stroke: "var(--dash-surface)",
-                              strokeWidth: 2,
-                            }}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <Sparkline
+                        values={card.series.map((point) => Number(point.value || 0))}
+                        stroke={rising ? "var(--dash-success)" : "var(--dash-danger)"}
+                      />
                     </ChartWrap>
                   </InsightCardWrap>
                 );
@@ -363,27 +375,10 @@ const DashboardOverview = () => {
               </StatRow>
 
               <OperationChartWrap>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={operationsSeries}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--dash-border)" />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Line
-                      type="monotone"
-                      dataKey="students"
-                      stroke="var(--dash-success)"
-                      strokeWidth={2.2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: "var(--dash-accent)" }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="teachers"
-                      stroke="var(--dash-danger)"
-                      strokeWidth={1.9}
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                <DualSeriesChart
+                  students={operationsSeries.map((row) => Number(row.students || 0))}
+                  teachers={operationsSeries.map((row) => Number(row.teachers || 0))}
+                />
               </OperationChartWrap>
 
               <ActionRow>

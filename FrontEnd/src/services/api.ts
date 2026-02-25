@@ -1,4 +1,12 @@
 import { supabase } from "../supabaseClient";
+import {
+  beginApiRequest,
+  endApiRequest,
+  emitUnauthorized,
+  subscribeToApiLoading as subscribeToApiLoadingBus,
+  subscribeToUnauthorized as subscribeToUnauthorizedBus,
+} from "./apiEvents";
+import { SESSION_RUNTIME_GUARD } from "../config/runtimeGuards";
 
 type LooseRecord = Record<string, any>;
 type ApiError = Error & {
@@ -16,6 +24,7 @@ declare global {
 }
 
 const SESSION_KEY = "tcc_user";
+const SESSION_NONCE_KEY = SESSION_RUNTIME_GUARD.sessionNonceStorageKey;
 const AVATAR_BUCKET = import.meta.env.VITE_SUPABASE_AVATAR_BUCKET || "avatars";
 const BACKUP_BUCKET = import.meta.env.VITE_SUPABASE_BACKUP_BUCKET || AVATAR_BUCKET;
 const BACKUP_PREFIX = String(import.meta.env.VITE_SUPABASE_BACKUP_PREFIX || "backups")
@@ -26,36 +35,49 @@ const DEFAULT_AVATAR = "/images/sample.jpg";
 const USER_SAFE_SELECT =
   "id,username,full_name,role,roles,sub_role,sub_roles,school_id,image_path,created_at,updated_at";
 
-let activeRequests = 0;
-const loadingSubscribers = new Set<(active: boolean) => void>();
-const unauthorizedSubscribers = new Set<() => void>();
+const DASHBOARD_STATS_CLIENT_DEDUPE_MS = 3000;
+let dashboardStatsInFlight: Promise<any> | null = null;
+let dashboardStatsHotCache: { value: any; atMs: number } | null = null;
+const CACHED_PORTAL_CONTENT_FUNCTION = "cached-portal-content";
+const IP_LOOKUP_EDGE_FUNCTION = String(import.meta.env.VITE_IP_LOOKUP_EDGE_FN || "").trim();
+const BLOCKED_IPS_SETTING_KEY = "blocked_login_ips";
+const SESSION_GUARD_EDGE_FUNCTION = String(
+  import.meta.env.VITE_SESSION_GUARD_EDGE_FN || SESSION_RUNTIME_GUARD.serverEdgeFunctionName,
+).trim();
+export const subscribeToApiLoading = subscribeToApiLoadingBus;
+export const subscribeToUnauthorized = subscribeToUnauthorizedBus;
 
-const emitLoading = () => {
-  const active = activeRequests > 0;
-  loadingSubscribers.forEach((callback) => {
-    try {
-      callback(active);
-    } catch (_) {}
-  });
+type SessionGuardAction = "start" | "touch" | "validate" | "logout";
+type SessionGuardResponse = {
+  valid?: boolean;
+  expired?: boolean;
+  rotated?: boolean;
+  reason?: string | null;
+  session_nonce?: string | null;
+  expires_at?: string | null;
+  [key: string]: any;
 };
 
-const emitUnauthorized = () => {
-  unauthorizedSubscribers.forEach((callback) => {
-    try {
-      callback();
-    } catch (_) {}
-  });
+const sessionGuardRuntime = {
+  inFlight: null as Promise<SessionGuardResponse | null> | null,
+  lastValidatedAtMs: 0,
+  lastTouchedAtMs: 0,
+  lastSessionNonce: "",
 };
 
-export const subscribeToApiLoading = (callback: (active: boolean) => void) => {
-  loadingSubscribers.add(callback);
-  callback(activeRequests > 0);
-  return () => loadingSubscribers.delete(callback);
+const resetSessionGuardRuntime = () => {
+  sessionGuardRuntime.inFlight = null;
+  sessionGuardRuntime.lastValidatedAtMs = 0;
+  sessionGuardRuntime.lastTouchedAtMs = 0;
+  sessionGuardRuntime.lastSessionNonce = "";
 };
 
-export const subscribeToUnauthorized = (callback: () => void) => {
-  unauthorizedSubscribers.add(callback);
-  return () => unauthorizedSubscribers.delete(callback);
+const readSessionNonce = () => {
+  try {
+    return String(localStorage.getItem(SESSION_NONCE_KEY) || "").trim();
+  } catch (_) {
+    return "";
+  }
 };
 
 const asError = (input: any, fallback = "Request failed"): ApiError => {
@@ -144,24 +166,423 @@ const isAmbiguousColumnError = (error, columnName = "") => {
   return message.includes(`"${target}"`) || message.includes(target);
 };
 
+const isServerSessionExpired = (payload: SessionGuardResponse | null) => {
+  if (!payload || typeof payload !== "object") return false;
+  const reason = String(payload?.reason || "")
+    .trim()
+    .toLowerCase();
+  return (
+    payload.valid === false ||
+    Boolean(payload.expired) ||
+    reason === "inactivity_timeout" ||
+    reason === "session_expired" ||
+    reason === "session_rotated" ||
+    reason === "session_nonce_mismatch"
+  );
+};
+
+const formatServerSessionExpiredMessage = (payload: SessionGuardResponse | null) => {
+  const expiresAtRaw = String(payload?.expires_at || "").trim();
+  const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : null;
+  const hasExpiry = Boolean(expiresAt && !Number.isNaN(expiresAt.getTime()));
+  if (hasExpiry) {
+    return `Session expired after 15 minutes of inactivity. Last valid session window ended at ${expiresAt?.toLocaleString()}. Please sign in again.`;
+  }
+  return "Session expired after 15 minutes of inactivity. Please sign in again.";
+};
+
+const forceUnauthorizedSignOut = async (message: string) => {
+  await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+  clearStoredUser();
+  emitUnauthorized();
+  const error = new Error(message) as ApiError;
+  error.status = 401;
+  error.code = "session_expired";
+  throw error;
+};
+
+async function ensureServerSessionGuard(options: LooseRecord = {}) {
+  if (options?.skipSessionGuard) return;
+  if (!SESSION_GUARD_EDGE_FUNCTION) return;
+
+  const nonce = readSessionNonce();
+  if (!nonce) return;
+
+  const now = Date.now();
+  const validateGapMs = Math.max(1000, Number(SESSION_RUNTIME_GUARD.serverValidateMinGapMs) || 12_000);
+  const touchGapMs = Math.max(1000, Number(SESSION_RUNTIME_GUARD.serverTouchMinGapMs) || 55_000);
+  const shouldTouch = Boolean(options?.sessionGuardTouch);
+  const nonceChanged = sessionGuardRuntime.lastSessionNonce !== nonce;
+
+  const needsValidation =
+    nonceChanged ||
+    shouldTouch ||
+    now - sessionGuardRuntime.lastValidatedAtMs >= validateGapMs;
+
+  if (!needsValidation) return;
+
+  if (!sessionGuardRuntime.inFlight) {
+    const action: SessionGuardAction =
+      shouldTouch || nonceChanged || now - sessionGuardRuntime.lastTouchedAtMs >= touchGapMs
+        ? "touch"
+        : "validate";
+    sessionGuardRuntime.inFlight = callServerSessionGuard(action, {
+      session_nonce: nonce,
+      reason: String(options?.sessionGuardReason || "").trim() || null,
+    }).finally(() => {
+      sessionGuardRuntime.inFlight = null;
+    });
+  }
+
+  const guardResult = await sessionGuardRuntime.inFlight.catch(async (error) => {
+    const status = Number((error as ApiError)?.status || 0);
+    if (status === 401 || status === 403) {
+      await forceUnauthorizedSignOut("Session authorization failed. Please sign in again.");
+    }
+    return null;
+  });
+
+  sessionGuardRuntime.lastValidatedAtMs = Date.now();
+  sessionGuardRuntime.lastSessionNonce = nonce;
+
+  if (!guardResult) return;
+
+  const canonicalNonce = String(guardResult?.session_nonce || "").trim();
+  if (canonicalNonce && canonicalNonce !== nonce) {
+    writeSessionNonce(canonicalNonce);
+  }
+  if (canonicalNonce) {
+    sessionGuardRuntime.lastSessionNonce = canonicalNonce;
+  }
+
+  if (isServerSessionExpired(guardResult)) {
+    await forceUnauthorizedSignOut(formatServerSessionExpiredMessage(guardResult));
+  }
+
+  if (shouldTouch || String(guardResult?.reason || "").trim().toLowerCase() === "touch") {
+    sessionGuardRuntime.lastTouchedAtMs = Date.now();
+  }
+}
 
 const withApi = async (fn: () => Promise<any>, options: LooseRecord = {}) => {
   const { silent = false } = options;
   if (!silent) {
-    activeRequests += 1;
-    emitLoading();
+    beginApiRequest();
   }
 
   try {
+    await ensureServerSessionGuard(options);
     return await fn();
   } catch (error) {
     throw asError(error);
   } finally {
     if (!silent) {
-      activeRequests = Math.max(0, activeRequests - 1);
-      emitLoading();
+      endApiRequest();
     }
   }
+};
+
+const getSessionAccessToken = async (forceRefresh = false): Promise<string> => {
+  if (forceRefresh) {
+    const { error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError) {
+      throw formatSupabaseError(refreshError, "Failed to refresh auth session.");
+    }
+  }
+
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) {
+    throw formatSupabaseError(sessionError, "Failed to load auth session.");
+  }
+
+  const token = String(sessionData?.session?.access_token || "").trim();
+  if (!token) {
+    throw new Error("No active authenticated session.");
+  }
+  return token;
+};
+
+const invokeEdgeFunctionWithAuthRetry = async <T>(
+  functionName: string,
+  body: LooseRecord = {},
+): Promise<T> => {
+  const invokeOnce = async (token: string) => {
+    supabase.functions.setAuth(token);
+    return await supabase.functions.invoke(functionName, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: String(import.meta.env.VITE_SUPABASE_ANON_KEY || ""),
+      },
+      body,
+    });
+  };
+
+  const parseInvokeError = async (error: any, fallbackMessage = "Edge function error") => {
+    const context = error?.context;
+    const statusCode =
+      Number(context?.status || 0) || Number(error?.status || 0) || null;
+    let message =
+      String(error?.message || "").trim() || fallbackMessage;
+
+    if (context?.json) {
+      const payload = await context.json().catch(() => null) as
+        | { error?: unknown; message?: unknown }
+        | null;
+      const detailed =
+        (typeof payload?.error === "string" && payload.error.trim()) ||
+        (typeof payload?.message === "string" && payload.message.trim()) ||
+        "";
+      if (detailed) message = detailed;
+    }
+
+    const invokeError = new Error(message) as ApiError;
+    invokeError.status = statusCode || undefined;
+    return invokeError;
+  };
+
+  let token = await getSessionAccessToken(false);
+  let { data, error } = await invokeOnce(token);
+
+  const firstStatus = Number((error as { context?: Response } | null)?.context?.status || 0) || 0;
+  if (error && firstStatus === 401) {
+    token = await getSessionAccessToken(true);
+    ({ data, error } = await invokeOnce(token));
+  }
+
+  if (error) {
+    throw await parseInvokeError(error);
+  }
+
+  return data as T;
+};
+
+async function callServerSessionGuard(action: SessionGuardAction, payload: LooseRecord = {}) {
+  if (!SESSION_GUARD_EDGE_FUNCTION) return null;
+
+  const nonce = String(payload?.session_nonce || readSessionNonce() || "").trim();
+  if (!nonce && action !== "validate" && action !== "logout") return null;
+
+  const ttlMinutes = Math.max(1, Math.round(SESSION_RUNTIME_GUARD.autoLogoutAfterMs / 60000));
+  try {
+    const response = await invokeEdgeFunctionWithAuthRetry<SessionGuardResponse>(
+      SESSION_GUARD_EDGE_FUNCTION,
+      {
+        action,
+        session_nonce: nonce || null,
+        ttl_minutes: ttlMinutes,
+        reason: String(payload?.reason || "").trim() || null,
+      },
+    );
+    return response && typeof response === "object" ? response : null;
+  } catch (error) {
+    const status = Number((error as ApiError)?.status || 0);
+    if (status === 401 || status === 403) {
+      throw error;
+    }
+    return null;
+  }
+}
+
+const invokeCachedPortalContent = async <T>(
+  resource: "announcements" | "evaluation_settings",
+  audience: "admin" | "teacher" | "student",
+  options: LooseRecord = {},
+): Promise<T> => {
+  const payload = await invokeEdgeFunctionWithAuthRetry<LooseRecord>(CACHED_PORTAL_CONTENT_FUNCTION, {
+    resource,
+    audience,
+    ttl_seconds: options?.ttl_seconds,
+    force_refresh: Boolean(options?.force_refresh),
+    page_path: typeof window !== "undefined" ? String(window.location?.pathname || "") : null,
+    page_query: typeof window !== "undefined" ? String(window.location?.search || "") : null,
+    view_name: String(options?.view_name || "").trim() || null,
+  });
+
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return (payload as { data: T }).data;
+  }
+
+  return payload as T;
+};
+
+const READ_CACHE_DEFAULT_TTL_MS = 60_000;
+const READ_CACHE_MAX_ENTRIES = 600;
+const readResponseCache = new Map<string, { expiresAtMs: number; value: unknown }>();
+const readResponseInFlight = new Map<string, Promise<unknown>>();
+let apiCachingConfigured = false;
+let apiAuthorizationConfigured = false;
+
+const cloneCacheValue = <T>(value: T): T => {
+  if (value == null) return value;
+
+  try {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
+  } catch (_) {
+    // fallback to JSON clone
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return value;
+  }
+};
+
+const stableSerialize = (value: unknown): string => {
+  const seen = new WeakSet<object>();
+
+  const normalize = (input: unknown): unknown => {
+    if (input == null || typeof input !== "object") return input;
+    if (input instanceof Date) return input.toISOString();
+    if (Array.isArray(input)) return input.map((item) => normalize(item));
+
+    if (seen.has(input as object)) return "[circular]";
+    seen.add(input as object);
+
+    const source = input as Record<string, unknown>;
+    return Object.keys(source)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = normalize(source[key]);
+        return acc;
+      }, {} as Record<string, unknown>);
+  };
+
+  try {
+    return JSON.stringify(normalize(value));
+  } catch (_) {
+    return String(value);
+  }
+};
+
+const makeReadCacheKey = (scope: string, args: unknown[] = []): string =>
+  `${String(scope || "").trim()}:${stableSerialize(args)}`;
+
+const pruneReadCacheIfNeeded = () => {
+  while (readResponseCache.size > READ_CACHE_MAX_ENTRIES) {
+    const firstKey = readResponseCache.keys().next().value;
+    if (!firstKey) break;
+    readResponseCache.delete(firstKey);
+  }
+};
+
+const getCachedReadValue = <T>(cacheKey: string): T | null => {
+  const entry = readResponseCache.get(cacheKey);
+  if (!entry) return null;
+
+  if (entry.expiresAtMs <= Date.now()) {
+    readResponseCache.delete(cacheKey);
+    return null;
+  }
+
+  return cloneCacheValue(entry.value as T);
+};
+
+const setCachedReadValue = <T>(cacheKey: string, value: T, ttlMs: number) => {
+  const boundedTtlMs = Number.isFinite(Number(ttlMs))
+    ? Math.max(0, Math.trunc(Number(ttlMs)))
+    : READ_CACHE_DEFAULT_TTL_MS;
+  if (boundedTtlMs <= 0) return;
+
+  readResponseCache.set(cacheKey, {
+    expiresAtMs: Date.now() + boundedTtlMs,
+    value: cloneCacheValue(value),
+  });
+  pruneReadCacheIfNeeded();
+};
+
+const invalidateReadCache = (scopes: string[] = []) => {
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    readResponseCache.clear();
+    readResponseInFlight.clear();
+    dashboardStatsHotCache = null;
+    dashboardStatsInFlight = null;
+    return;
+  }
+
+  const normalizedScopes = scopes
+    .map((scope) => String(scope || "").trim())
+    .filter(Boolean);
+  if (normalizedScopes.length === 0) return;
+
+  const shouldInvalidate = (cacheKey: string) =>
+    normalizedScopes.some((scope) => cacheKey === scope || cacheKey.startsWith(`${scope}:`));
+
+  for (const cacheKey of Array.from(readResponseCache.keys())) {
+    if (shouldInvalidate(cacheKey)) {
+      readResponseCache.delete(cacheKey);
+    }
+  }
+
+  for (const cacheKey of Array.from(readResponseInFlight.keys())) {
+    if (shouldInvalidate(cacheKey)) {
+      readResponseInFlight.delete(cacheKey);
+    }
+  }
+
+  if (
+    normalizedScopes.some((scope) =>
+      [
+        "admin.dashboard",
+        "admin.users",
+        "admin.subjects",
+        "admin.sections",
+        "admin.schedules",
+        "admin.studyload",
+        "admin.announcements",
+      ].some((prefix) => scope === prefix || scope.startsWith(prefix))
+    )
+  ) {
+    dashboardStatsHotCache = null;
+    dashboardStatsInFlight = null;
+  }
+};
+
+const withReadCache = async <T>({
+  scope,
+  args = [],
+  ttlMs = READ_CACHE_DEFAULT_TTL_MS,
+  query,
+  bypass = false,
+}: {
+  scope: string;
+  args?: unknown[];
+  ttlMs?: number;
+  query: () => Promise<T>;
+  bypass?: boolean;
+}): Promise<T> => {
+  const boundedTtlMs = Number.isFinite(Number(ttlMs))
+    ? Math.max(0, Math.trunc(Number(ttlMs)))
+    : READ_CACHE_DEFAULT_TTL_MS;
+
+  if (bypass || boundedTtlMs <= 0) {
+    return await query();
+  }
+
+  const cacheKey = makeReadCacheKey(scope, args);
+  const cached = getCachedReadValue<T>(cacheKey);
+  if (cached !== null) {
+    return cached;
+  }
+
+  const inFlight = readResponseInFlight.get(cacheKey);
+  if (inFlight) {
+    return inFlight as Promise<T>;
+  }
+
+  const requestPromise = query()
+    .then((result) => {
+      setCachedReadValue(cacheKey, result, boundedTtlMs);
+      return cloneCacheValue(result);
+    })
+    .finally(() => {
+      readResponseInFlight.delete(cacheKey);
+    });
+
+  readResponseInFlight.set(cacheKey, requestPromise as Promise<unknown>);
+  return requestPromise;
 };
 
 const readStoredUser = () => {
@@ -184,7 +605,30 @@ const clearStoredUser = () => {
   try {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem("tcc_avatar");
+    localStorage.removeItem(SESSION_NONCE_KEY);
   } catch (_) {}
+  resetSessionGuardRuntime();
+};
+
+const buildSessionNonce = () =>
+  `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+
+const writeSessionNonce = (nonce: unknown) => {
+  const value = String(nonce || "").trim();
+  try {
+    if (!value) {
+      localStorage.removeItem(SESSION_NONCE_KEY);
+      resetSessionGuardRuntime();
+      return;
+    }
+    localStorage.setItem(SESSION_NONCE_KEY, value);
+  } catch (_) {}
+  if (sessionGuardRuntime.lastSessionNonce !== value) {
+    sessionGuardRuntime.lastValidatedAtMs = 0;
+  }
+  sessionGuardRuntime.lastSessionNonce = value;
 };
 
 const normalizeLogRole = (value) => {
@@ -193,6 +637,16 @@ const normalizeLogRole = (value) => {
     .toLowerCase();
   return role === "go" ? "nt" : role;
 };
+
+const PROTECTED_SESSION_ROLES = new Set([
+  "admin",
+  "teacher",
+  "faculty",
+  "nt",
+  "staff",
+  "osas",
+  "treasury",
+]);
 
 const normalizeLogText = (value) => {
   const text = String(value ?? "").trim();
@@ -479,6 +933,86 @@ const normalizeUser = (row) => {
   };
 };
 
+const ROLE_ALIASES: Record<string, string[]> = {
+  admin: ["admin"],
+  student: ["student"],
+  teacher: ["teacher"],
+  faculty: ["faculty", "teacher"],
+  dean: ["dean", "teacher"],
+  nt: ["nt"],
+  go: ["go", "nt"],
+  staff: ["staff", "nt"],
+  "non-teaching": ["non-teaching", "nt"],
+  non_teaching: ["non_teaching", "nt"],
+  nonteaching: ["nonteaching", "nt"],
+  osas: ["osas", "nt"],
+  treasury: ["treasury", "nt"],
+};
+
+const expandRoleAliases = (value: unknown): string[] => {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return [];
+  const aliases = ROLE_ALIASES[normalized];
+  if (!aliases || aliases.length === 0) return [normalized];
+  return Array.from(new Set(aliases));
+};
+
+const getRoleTokenSet = (userLike: LooseRecord | null = readStoredUser()): Set<string> => {
+  const user = userLike && typeof userLike === "object" ? userLike : {};
+  const roleValues = normalizeRoles(user?.roles, user?.role || "");
+  const subRoleValues = normalizeSubRoles(user?.sub_roles, user?.sub_role);
+  const tokens = [...roleValues, ...subRoleValues];
+  const roleSet = new Set<string>();
+
+  tokens.forEach((token) => {
+    const raw = String(token || "")
+      .trim()
+      .toLowerCase();
+    if (!raw) return;
+    expandRoleAliases(raw).forEach((role) => roleSet.add(role));
+
+    const normalized = normalizeRole(raw);
+    if (normalized && normalized !== raw) {
+      expandRoleAliases(normalized).forEach((role) => roleSet.add(role));
+    }
+  });
+
+  return roleSet;
+};
+
+const assertRoleAccess = (allowedRoles: string[] = [], actionLabel = "access denied") => {
+  const requiredRoles = Array.from(
+    new Set(
+      (Array.isArray(allowedRoles) ? allowedRoles : [])
+        .flatMap((role) => {
+          const normalized = String(role || "")
+            .trim()
+            .toLowerCase();
+          if (!normalized) return [];
+          const canonical = normalizeRole(normalized) || normalized;
+          return [
+            ...expandRoleAliases(normalized),
+            ...expandRoleAliases(canonical),
+          ];
+        })
+        .filter(Boolean),
+    ),
+  );
+
+  if (!requiredRoles.length) return requireStoredUser();
+
+  const currentUser = requireStoredUser();
+  const currentRoles = getRoleTokenSet(currentUser);
+  const isAuthorized = requiredRoles.some((role) => currentRoles.has(role));
+  if (isAuthorized) return currentUser;
+
+  const authError = new Error(`Forbidden: ${actionLabel}.`) as ApiError;
+  authError.status = 403;
+  throw authError;
+};
+
 const normalizeYearLevel = (value) => {
   if (value == null) return "";
   const raw = String(value).trim();
@@ -551,6 +1085,140 @@ const normalizeAuthIdentityPart = (username, fallback = "user") => {
 const buildAuthLoginEmail = (username) => {
   const safe = normalizeAuthIdentityPart(username, "user");
   return `${safe}@local.tcc`;
+};
+
+const normalizeIpAddress = (value: unknown): string | null => {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (text.toLowerCase() === "unknown") return null;
+  if (text.length > 80) return null;
+  return text;
+};
+
+const fetchClientPublicIp = async (): Promise<{ ip: string | null; source: string }> => {
+  if (IP_LOOKUP_EDGE_FUNCTION) {
+    try {
+      const { data, error } = await supabase.functions.invoke(IP_LOOKUP_EDGE_FUNCTION, {
+        body: {},
+      });
+      if (!error) {
+        const payload =
+          data && typeof data === "object" && !Array.isArray(data)
+            ? (data as LooseRecord)
+            : {};
+        const edgeIp = normalizeIpAddress(
+          payload?.ip || payload?.client_ip || payload?.ip_address || payload?.address,
+        );
+        if (edgeIp) {
+          return {
+            ip: edgeIp,
+            source: "supabase_edge",
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
+  const endpoints = [
+    "https://api.ipify.org?format=json",
+    "https://api64.ipify.org?format=json",
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => {
+        controller.abort();
+      }, 3000);
+
+      const response = await fetch(endpoint, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) continue;
+      const payload = await response.json().catch(() => null);
+      const ip = normalizeIpAddress(payload?.ip);
+      if (ip) {
+        return {
+          ip,
+          source: endpoint.includes("api64") ? "ipify_v6" : "ipify_v4",
+        };
+      }
+    } catch (_) {}
+  }
+
+  return { ip: null, source: "unresolved" };
+};
+
+const normalizeBlockedIpEntries = (value: unknown): LooseRecord[] => {
+  const rows = Array.isArray(value) ? value : [];
+  const unique = new Map<string, LooseRecord>();
+
+  rows.forEach((row) => {
+    const data =
+      row && typeof row === "object" && !Array.isArray(row)
+        ? (row as LooseRecord)
+        : {};
+    const ip = normalizeIpAddress(data?.ip);
+    if (!ip) return;
+
+    unique.set(ip, {
+      ip,
+      reason: String(data?.reason || "").trim() || null,
+      blocked_at: String(data?.blocked_at || data?.created_at || new Date().toISOString()).trim(),
+      blocked_by: data?.blocked_by || null,
+      blocked_by_id: Number(data?.blocked_by_id || 0) || null,
+    });
+  });
+
+  return Array.from(unique.values()).sort((a, b) =>
+    String(b?.blocked_at || "").localeCompare(String(a?.blocked_at || "")),
+  );
+};
+
+const readBlockedIpEntries = async (): Promise<LooseRecord[]> => {
+  const { data, error } = await supabase
+    .from("evaluation_settings")
+    .select("setting_value")
+    .eq("setting_key", BLOCKED_IPS_SETTING_KEY)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingRelation(error) || isPermissionDeniedError(error)) {
+      return [];
+    }
+    throw formatSupabaseError(error, "Failed to read blocked IP settings.");
+  }
+
+  const rawValue = data?.setting_value;
+  if (rawValue == null) return [];
+
+  if (Array.isArray(rawValue)) {
+    return normalizeBlockedIpEntries(rawValue);
+  }
+
+  if (typeof rawValue === "string") {
+    const parsed = tryParseJson(rawValue);
+    return normalizeBlockedIpEntries(parsed);
+  }
+
+  return normalizeBlockedIpEntries(rawValue);
+};
+
+const findBlockedIpEntry = (entries: LooseRecord[], ip: unknown): LooseRecord | null => {
+  const normalizedIp = normalizeIpAddress(ip);
+  if (!normalizedIp) return null;
+
+  return (
+    (Array.isArray(entries) ? entries : []).find((row) => {
+      const rowIp = normalizeIpAddress(row?.ip);
+      return Boolean(rowIp && rowIp === normalizedIp);
+    }) || null
+  );
 };
 
 const syncAuthUser = async (userId, password, email = null) => {
@@ -1044,7 +1712,7 @@ const fetchSectionsByIds = async (ids) => {
   if (!unique.length) return new Map();
   const { data, error } = await supabase
     .from("sections")
-    .select("*")
+    .select(SECTION_SELECT_COLUMNS)
     .in("id", unique);
   if (error) throw formatSupabaseError(error);
   const map = new Map();
@@ -1057,7 +1725,7 @@ const fetchSubjectsByIds = async (ids) => {
   if (!unique.length) return new Map();
   const { data, error } = await supabase
     .from("subjects")
-    .select("*")
+    .select(SUBJECT_SELECT_COLUMNS)
     .in("id", unique);
   if (error) throw formatSupabaseError(error);
   const map = new Map();
@@ -1070,7 +1738,7 @@ const fetchBuildingsByIds = async (ids) => {
   if (!unique.length) return new Map();
   const { data, error } = await supabase
     .from("buildings")
-    .select("*")
+    .select(BUILDING_SELECT_COLUMNS)
     .in("id", unique);
   if (error) throw formatSupabaseError(error);
   const map = new Map();
@@ -1084,7 +1752,7 @@ const findSection = async (
   if (sectionId) {
     const { data, error } = await supabase
       .from("sections")
-      .select("*")
+      .select(SECTION_SELECT_COLUMNS)
       .eq("id", sectionId)
       .limit(1)
       .maybeSingle();
@@ -1095,7 +1763,10 @@ const findSection = async (
   if (!sectionName) return null;
 
   const normalizedYear = normalizeYearLevel(year);
-  let query = supabase.from("sections").select("*").ilike("section_name", sectionName);
+  let query = supabase
+    .from("sections")
+    .select(SECTION_SELECT_COLUMNS)
+    .ilike("section_name", sectionName);
   if (normalizedYear) query = query.eq("grade_level", normalizedYear);
   const { data, error } = await query.limit(1).maybeSingle();
   if (error) throw formatSupabaseError(error);
@@ -1107,7 +1778,7 @@ const findSubjectByCode = async (subjectCode) => {
   const code = String(subjectCode).trim();
   const { data, error } = await supabase
     .from("subjects")
-    .select("*")
+    .select(SUBJECT_SELECT_COLUMNS)
     .ilike("subject_code", code)
     .limit(1)
     .maybeSingle();
@@ -1501,6 +2172,150 @@ export const AuthAPI = {
         }
 
         const user = normalizeUser(profileRow);
+        const userRoles =
+          Array.isArray(user?.roles) && user.roles.length
+            ? user.roles.map((role: unknown) => normalizeRole(role)).filter(Boolean)
+            : [normalizeRole(user?.role || "student")].filter(Boolean);
+        const isAdminUser = userRoles.includes("admin");
+        const isProtectedUser = userRoles.some((role: string) => PROTECTED_SESSION_ROLES.has(role));
+        const sessionNonce = buildSessionNonce();
+        const userRoom =
+          [
+            user?.room,
+            user?.room_number,
+            user?.office_room,
+            user?.assigned_room,
+            user?.section,
+            user?.sub_role,
+          ]
+            .map((value) => String(value || "").trim())
+            .find(Boolean) || null;
+        const avatarUrl = await getAvatarUrl(user?.id, user?.image_path).catch(() => DEFAULT_AVATAR);
+
+        let currentLoginIp: string | null = null;
+        let previousKnownIp: string | null = null;
+        let previousSessionNonce: string | null = null;
+        let previousLoginCount = 0;
+        let ipChanged = false;
+        let ipCheckStatus = isProtectedUser ? "current_ip_missing" : "not_applicable";
+        let ipSource = "unresolved";
+        let blockedIpLookupStatus = "not_checked";
+
+        try {
+          const ipLookup = await fetchClientPublicIp();
+          currentLoginIp = ipLookup?.ip || null;
+          ipSource = String(ipLookup?.source || "unresolved");
+          blockedIpLookupStatus = currentLoginIp ? "ip_resolved" : "ip_missing";
+          if (isProtectedUser) {
+            ipCheckStatus = currentLoginIp ? "current_ip_resolved" : "current_ip_missing";
+          }
+        } catch (_) {
+          blockedIpLookupStatus = "ip_lookup_error";
+          if (isProtectedUser) {
+            ipCheckStatus = "ip_check_error";
+          }
+        }
+
+        if (currentLoginIp) {
+          let blockedIpEntry: LooseRecord | null = null;
+          try {
+            const blockedIps = await readBlockedIpEntries();
+            blockedIpEntry = findBlockedIpEntry(blockedIps, currentLoginIp);
+            blockedIpLookupStatus = blockedIpEntry ? "blocked" : "allowed";
+          } catch (_) {
+            blockedIpLookupStatus = "lookup_failed";
+          }
+
+          if (blockedIpEntry) {
+            const blockReason = String(blockedIpEntry?.reason || "").trim() || null;
+            await logStatusEvent({
+              action: "login_blocked_ip",
+              category: "security",
+              actor_user_id: user?.id,
+              actor_username: user?.username,
+              actor_role: user?.role,
+              target_user_id: user?.id,
+              target_username: user?.username,
+              target_role: user?.role,
+              message: `Blocked login attempt for "${user?.full_name || user?.username || "User"}" from IP ${currentLoginIp}.`,
+              metadata: {
+                client_ip: currentLoginIp,
+                reason: blockReason,
+                ip_source: ipSource,
+                blocked_ip_lookup_status: blockedIpLookupStatus,
+              },
+            });
+            await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+            clearStoredUser();
+            emitUnauthorized();
+            throw new Error(
+              blockReason
+                ? `Login blocked from IP ${currentLoginIp}. Reason: ${blockReason}.`
+                : `Login blocked from IP ${currentLoginIp}. Contact an administrator.`,
+            );
+          }
+        }
+
+        if (isProtectedUser) {
+          try {
+            const { data: previousLoginRows, error: previousLoginError } = await supabase
+              .from("status_logs")
+              .select("id,metadata,created_at")
+              .eq("action", "login")
+              .eq("category", "auth")
+              .eq("actor_user_id", user?.id || 0)
+              .order("created_at", { ascending: false })
+              .limit(20);
+
+            if (!previousLoginError) {
+              const safePreviousRows = Array.isArray(previousLoginRows) ? previousLoginRows : [];
+              previousLoginCount = safePreviousRows.length;
+              previousKnownIp =
+                safePreviousRows
+                  .map((row) => {
+                    const metadata =
+                      row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+                        ? row.metadata
+                        : {};
+                    return normalizeIpAddress(
+                      (metadata as LooseRecord)?.client_ip ||
+                        (metadata as LooseRecord)?.ip_address ||
+                        (metadata as LooseRecord)?.ip,
+                    );
+                  })
+                  .find(Boolean) || null;
+              previousSessionNonce =
+                safePreviousRows
+                  .map((row) => {
+                    const metadata =
+                      row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+                        ? row.metadata
+                        : {};
+                    const nonce = String(
+                      (metadata as LooseRecord)?.session_nonce ||
+                        (metadata as LooseRecord)?.new_session_nonce ||
+                        "",
+                    ).trim();
+                    return nonce || null;
+                  })
+                  .find(Boolean) || null;
+
+              ipChanged = Boolean(currentLoginIp && previousKnownIp && currentLoginIp !== previousKnownIp);
+              if (ipChanged) {
+                ipCheckStatus = "ip_changed";
+              } else if (currentLoginIp && previousKnownIp) {
+                ipCheckStatus = "ip_unchanged";
+              } else if (!previousKnownIp && safePreviousRows.length > 0) {
+                ipCheckStatus = "previous_ip_missing";
+              }
+            } else {
+              ipCheckStatus = "previous_lookup_failed";
+            }
+          } catch (_) {
+            ipCheckStatus = "ip_check_error";
+          }
+        }
+
         writeStoredUser(user);
 
         await logStatusEvent({
@@ -1513,10 +2328,125 @@ export const AuthAPI = {
           target_username: user?.username,
           target_role: user?.role,
           message: `${user?.full_name || user?.username || "User"} logged in.`,
-          metadata: { method: "password" },
+          metadata: {
+            method: "password",
+            client_ip: currentLoginIp,
+            previous_login_ip: previousKnownIp,
+            ip_check_status: ipCheckStatus,
+            ip_changed: ipChanged,
+            ip_source: ipSource,
+            blocked_ip_lookup_status: blockedIpLookupStatus,
+            full_name: user?.full_name || null,
+            room: userRoom,
+            avatar_url: avatarUrl || DEFAULT_AVATAR,
+            session_nonce: sessionNonce,
+          },
         });
 
-        return { success: true, user };
+        const shouldRotateSession = Boolean(
+          (isAdminUser && previousSessionNonce && previousSessionNonce !== sessionNonce) ||
+            (isProtectedUser && ipChanged && currentLoginIp),
+        );
+
+        if (shouldRotateSession) {
+          const rotationReason =
+            isAdminUser && previousSessionNonce && previousSessionNonce !== sessionNonce
+              ? "admin_single_session_enforced"
+              : "ip_changed";
+          await logStatusEvent({
+            action: SESSION_RUNTIME_GUARD.sessionRotationAction,
+            category: "auth",
+            actor_user_id: user?.id,
+            actor_username: user?.username,
+            actor_role: user?.role,
+            target_user_id: user?.id,
+            target_username: user?.username,
+            target_role: user?.role,
+            message:
+              rotationReason === "admin_single_session_enforced"
+                ? "New admin session established. Older admin sessions were asked to log out."
+                : "Session moved to a new IP. Older sessions were asked to log out.",
+            metadata: {
+              reason: rotationReason,
+              current_ip: currentLoginIp,
+              previous_ip: previousKnownIp,
+              previous_session_nonce: previousSessionNonce,
+              new_session_nonce: sessionNonce,
+              ip_check_status: ipCheckStatus,
+            },
+          });
+        }
+
+        if (isAdminUser) {
+          if (ipChanged) {
+            const alertMessage =
+              `Security alert: this admin account logged in from a different IP (${currentLoginIp}) than the previous login (${previousKnownIp}). ` +
+              `If this was not you, change your password immediately in Admin > Account Access.`;
+
+            await createUserNotification({
+              action: "security_ip_change_detected",
+              category: "auth",
+              target_user_id: user?.id,
+              target_role: "admin",
+              title: "Admin Security Alert",
+              message: alertMessage,
+              metadata: {
+                current_ip: currentLoginIp,
+                previous_ip: previousKnownIp,
+              },
+            });
+
+            await logStatusEvent({
+              action: "admin_login_ip_change_detected",
+              category: "auth",
+              actor_user_id: user?.id,
+              actor_username: user?.username,
+              actor_role: user?.role,
+              target_user_id: user?.id,
+              target_username: user?.username,
+              target_role: user?.role,
+              message: "Admin login IP change detected.",
+              metadata: {
+                current_ip: currentLoginIp,
+                previous_ip: previousKnownIp,
+              },
+            });
+          } else if (!currentLoginIp || (previousLoginCount > 0 && !previousKnownIp)) {
+            await createUserNotification({
+              action: "security_ip_check_incomplete",
+              category: "auth",
+              target_user_id: user?.id,
+              target_role: "admin",
+              title: "Admin Security Notice",
+              message:
+                "No IP address to flag off for this admin account during login verification. " +
+                "For safety, review recent activity and change your password in Admin > Account Access.",
+              metadata: {
+                current_ip: currentLoginIp,
+                previous_ip: previousKnownIp,
+                ip_check_status: ipCheckStatus,
+              },
+            });
+          }
+        }
+
+        writeSessionNonce(sessionNonce);
+        const startedGuard = await callServerSessionGuard("start", {
+          session_nonce: sessionNonce,
+          reason: "login",
+        }).catch(() => null);
+        if (startedGuard && isServerSessionExpired(startedGuard)) {
+          await forceUnauthorizedSignOut(formatServerSessionExpiredMessage(startedGuard));
+        }
+        sessionGuardRuntime.lastValidatedAtMs = Date.now();
+        sessionGuardRuntime.lastTouchedAtMs = Date.now();
+        return {
+          success: true,
+          user,
+          session_nonce: sessionNonce,
+          login_ip: currentLoginIp,
+          login_room: userRoom,
+        };
       }
 
       if (isMissingFunctionError(rpcError, "app_login")) {
@@ -1680,17 +2610,55 @@ export const AuthAPI = {
       }
 
       const user = normalizeUser(data);
+      let currentNonce = readSessionNonce();
+      if (!currentNonce) {
+        currentNonce = buildSessionNonce();
+        writeSessionNonce(currentNonce);
+      }
+
+      const guardSnapshot = await callServerSessionGuard("touch", {
+        session_nonce: currentNonce,
+        reason: "check_session",
+      }).catch(() => null);
+      if (guardSnapshot && isServerSessionExpired(guardSnapshot)) {
+        await forceUnauthorizedSignOut(formatServerSessionExpiredMessage(guardSnapshot));
+      }
+      sessionGuardRuntime.lastValidatedAtMs = Date.now();
+      sessionGuardRuntime.lastTouchedAtMs = Date.now();
+
       writeStoredUser(user);
       return { authenticated: true, user };
     }),
 
   logout: async () =>
     withApi(async () => {
+      const nonce = readSessionNonce();
+      await callServerSessionGuard("logout", {
+        session_nonce: nonce || null,
+        reason: "manual_logout",
+      }).catch(() => null);
       await supabase.auth.signOut();
       clearStoredUser();
       emitUnauthorized();
       return { success: true };
-    }, { silent: true }),
+    }, { silent: true, skipSessionGuard: true }),
+
+  touchSessionGuard: async (reason = "interaction") =>
+    withApi(async () => {
+      const nonce = readSessionNonce();
+      if (!nonce) return { success: false, skipped: true };
+
+      const snapshot = await callServerSessionGuard("touch", {
+        session_nonce: nonce,
+        reason,
+      });
+      if (snapshot && isServerSessionExpired(snapshot)) {
+        await forceUnauthorizedSignOut(formatServerSessionExpiredMessage(snapshot));
+      }
+      sessionGuardRuntime.lastValidatedAtMs = Date.now();
+      sessionGuardRuntime.lastTouchedAtMs = Date.now();
+      return { success: true, guard: snapshot || null };
+    }, { silent: true, skipSessionGuard: true }),
 
   check: async () => AuthAPI.checkSession(),
 };
@@ -1724,9 +2692,9 @@ export const PublicAPI = {
 
       const [usersCount, buildingsCount, subjectsCount, sectionsCount] = await Promise.all([
         supabase.from("users").select("id", { count: "exact", head: true }),
-        supabase.from("buildings").select("*", { count: "exact", head: true }),
-        supabase.from("subjects").select("*", { count: "exact", head: true }),
-        supabase.from("sections").select("*", { count: "exact", head: true }),
+        supabase.from("buildings").select("id", { count: "exact", head: true }),
+        supabase.from("subjects").select("id", { count: "exact", head: true }),
+        supabase.from("sections").select("id", { count: "exact", head: true }),
       ]);
 
       const firstError =
@@ -1746,7 +2714,7 @@ export const PublicAPI = {
       };
     }),
 
-  getLandingPageStats: async () =>
+  getLandingPageStats: async (_options: LooseRecord = {}) =>
     withApi(async () => {
       const { data: rpcData, error: rpcError } = await supabase.rpc("app_public_landing_stats");
       if (!rpcError) {
@@ -1822,6 +2790,70 @@ const mapAnnouncement = (row) => ({
   is_published: row.is_published == null ? 1 : row.is_published,
 });
 
+const ANNOUNCEMENT_SELECT_COLUMNS =
+  "id,title,content,year,department,major,author_id,target_role,priority,is_published,published_at,expires_at,created_at,updated_at";
+
+const USER_ASSIGNMENT_SELECT_COLUMNS =
+  "id,user_id,section_id,year_level,section,department,major,payment,amount_lacking,sanctions,sanction_reason,semester,school_year,student_status,status,updated_at";
+
+const GRADE_SELECT_COLUMNS =
+  "id,student_id,teacher_id,subject_id,section_id,subject_code,subject_name,school_year,semester,prelim_grade,midterm_grade,finals_grade,final_grade,remarks,updated_at";
+
+const STUDY_LOAD_SELECT_COLUMNS =
+  "id,student_id,subject_id,section_id,school_year,semester,enrollment_status,course,major,year_level,section,subject_code,subject_title,units,teacher,created_at,updated_at";
+
+const SECTION_SELECT_COLUMNS =
+  "id,section_name,grade_level,course,major,school_year,created_at,updated_at";
+
+const SUBJECT_SELECT_COLUMNS =
+  "id,subject_code,subject_name,title,units,year_level,semester,course,major,created_at,updated_at";
+
+const BUILDING_SELECT_COLUMNS =
+  "id,building_name,num_floors,rooms_per_floor,created_at,updated_at";
+
+const TEACHER_ASSIGNMENT_SELECT_COLUMNS =
+  "id,teacher_id,subject_id,section_id,status,updated_at";
+
+const TEACHER_ASSIGNMENT_EVAL_SELECT_COLUMNS =
+  "id,teacher_id,subject_id,section_id,section,status,updated_at";
+
+const SECTION_ASSIGNMENT_SELECT_COLUMNS =
+  "id,section_id,building_id,floor_number,room_number,updated_at";
+
+const EVALUATION_SETTING_SELECT_COLUMNS = "setting_key,setting_value";
+
+const SCHEDULE_SELECT_COLUMNS =
+  "id,section_id,teacher_assignment_id,day_of_week,day,time_start,time_end,subject_code,class_type";
+
+const fetchAnnouncementsForRoles = async (roles: string[] = []) => {
+  const normalizedRoles = Array.from(
+    new Set(
+      (roles || [])
+        .map((role) => normalizeNotificationTargetRole(role))
+        .filter(Boolean),
+    ),
+  );
+
+  const roleFilters = Array.from(new Set(["all", ...normalizedRoles]))
+    .map((role) => `target_role.eq.${role}`)
+    .join(",");
+
+  let query = supabase
+    .from("announcements")
+    .select(ANNOUNCEMENT_SELECT_COLUMNS)
+    .order("published_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(300);
+
+  if (roleFilters) {
+    query = query.or(roleFilters);
+  }
+
+  const { data, error } = await query;
+  if (error) throw formatSupabaseError(error);
+  return (data || []).map(mapAnnouncement);
+};
+
 const mapScheduleRows = async (scheduleRows) => {
   const rows = scheduleRows || [];
   if (!rows.length) return [];
@@ -1836,19 +2868,19 @@ const mapScheduleRows = async (scheduleRows) => {
       teacherAssignmentIds.length
         ? supabase
             .from("teacher_assignments")
-            .select("*")
+            .select(TEACHER_ASSIGNMENT_SELECT_COLUMNS)
             .in("id", teacherAssignmentIds)
         : Promise.resolve({ data: [], error: null }),
       sectionIds.length
         ? supabase
             .from("section_assignments")
-            .select("*")
+            .select(SECTION_ASSIGNMENT_SELECT_COLUMNS)
             .in("section_id", sectionIds)
         : Promise.resolve({ data: [], error: null }),
       subjectCodes.length
         ? supabase
             .from("subjects")
-            .select("*")
+            .select(SUBJECT_SELECT_COLUMNS)
             .in("subject_code", subjectCodes)
         : Promise.resolve({ data: [], error: null }),
     ]);
@@ -2192,23 +3224,45 @@ const fetchScopedRecordEvents = async (rpcName: string, args: LooseRecord = {}) 
 export const AdminAPI = {
   getUsers: async (filters: LooseRecord = {}) =>
     withApi(async () => {
-      const fetchUsers = async (): Promise<any[]> => {
-        const primarySelect = `${USER_SAFE_SELECT},expires_at`;
+      const shouldPurgeExpired = Boolean(filters?.includePurgeSummary);
+      const requestedRole = normalizeRole(filters?.role || "");
+      const shouldUseRoleScopedFetch = Boolean(requestedRole) && !shouldPurgeExpired;
+      const compact = Boolean(filters?.compact);
+
+      const fetchUsers = async (options: LooseRecord = {}): Promise<any[]> => {
+        const roleFilter = normalizeRole(options?.role || "");
+        const roleScoped = Boolean(options?.roleScoped) && Boolean(roleFilter);
+        const primarySelect = compact
+          ? "id,username,full_name,role,roles,sub_role,sub_roles,school_id,image_path,gender,expires_at"
+          : `${USER_SAFE_SELECT},expires_at`;
+        const fallbackSelect = compact
+          ? "id,username,full_name,role,roles,sub_role,sub_roles,school_id,image_path,gender"
+          : USER_SAFE_SELECT;
         let data: any[] | null = null;
         let error: any = null;
 
-        const primary = await supabase
+        let primaryQuery = supabase
           .from("users")
           .select(primarySelect)
           .order("full_name", { ascending: true });
+        if (roleScoped) {
+          primaryQuery = primaryQuery.or(`role.eq.${roleFilter},sub_role.eq.${roleFilter}`);
+        }
+
+        const primary = await primaryQuery;
         data = primary.data as any[] | null;
         error = primary.error;
 
         if (error && isMissingColumnError(error, "expires_at")) {
-          const fallback = await supabase
+          let fallbackQuery = supabase
             .from("users")
-            .select(USER_SAFE_SELECT)
+            .select(fallbackSelect)
             .order("full_name", { ascending: true });
+          if (roleScoped) {
+            fallbackQuery = fallbackQuery.or(`role.eq.${roleFilter},sub_role.eq.${roleFilter}`);
+          }
+
+          const fallback = await fallbackQuery;
           data = fallback.data;
           error = fallback.error;
         }
@@ -2216,31 +3270,37 @@ export const AdminAPI = {
         return (data || []).map(normalizeUser);
       };
 
-      let mapped: any[] = await fetchUsers();
-
-      const now = new Date();
-      const expiredUsers = mapped.filter((user) => {
-        if (!user?.expires_at) return false;
-        const expiresAt = new Date(user.expires_at);
-        return !Number.isNaN(expiresAt.getTime()) && expiresAt <= now;
+      let mapped: any[] = await fetchUsers({
+        role: requestedRole,
+        roleScoped: shouldUseRoleScopedFetch,
       });
+      let expiredUsers: any[] = [];
 
-      if (expiredUsers.length > 0) {
-        for (const user of expiredUsers) {
-          await deleteUserRecords(user.id, {
-            action: "account_expired_cleanup",
-            category: "account",
-            actor_username: "system",
-            actor_role: "system",
-            target_user: user,
-            message: `Expired account "${user.full_name || user.username || user.id}" was removed.`,
-            metadata: {
-              expires_at: user.expires_at || null,
-              source: "account_access_refresh",
-            },
-          });
+      if (shouldPurgeExpired) {
+        const now = new Date();
+        expiredUsers = mapped.filter((user) => {
+          if (!user?.expires_at) return false;
+          const expiresAt = new Date(user.expires_at);
+          return !Number.isNaN(expiresAt.getTime()) && expiresAt <= now;
+        });
+
+        if (expiredUsers.length > 0) {
+          for (const user of expiredUsers) {
+            await deleteUserRecords(user.id, {
+              action: "account_expired_cleanup",
+              category: "account",
+              actor_username: "system",
+              actor_role: "system",
+              target_user: user,
+              message: `Expired account "${user.full_name || user.username || user.id}" was removed.`,
+              metadata: {
+                expires_at: user.expires_at || null,
+                source: "account_access_refresh",
+              },
+            });
+          }
+          mapped = await fetchUsers();
         }
-        mapped = await fetchUsers();
       }
 
       if (filters?.includePurgeSummary) {
@@ -2250,17 +3310,24 @@ export const AdminAPI = {
         };
       }
 
-      if (!filters?.role) return mapped;
-      const role = normalizeRole(filters.role);
-      return mapped.filter((user) => user.roles.includes(role));
+      if (!requestedRole) return mapped;
+
+      let filtered = mapped.filter((user) => user.roles.includes(requestedRole));
+      if (filtered.length === 0 && shouldUseRoleScopedFetch) {
+        // Safety fallback for legacy rows where only roles/sub_roles arrays are populated.
+        const fullScan = await fetchUsers();
+        filtered = fullScan.filter((user) => user.roles.includes(requestedRole));
+      }
+
+      return filtered;
     }),
 
   getStatusLogs: async (filters: LooseRecord = {}) =>
     withApi(async () => {
       const limitValue = Number(filters?.limit);
       const limit = Number.isFinite(limitValue)
-        ? Math.min(1000, Math.max(20, Math.trunc(limitValue)))
-        : 500;
+        ? Math.min(500, Math.max(20, Math.trunc(limitValue)))
+        : 300;
 
       let query = supabase
         .from("status_logs")
@@ -2625,6 +3692,7 @@ export const AdminAPI = {
       });
 
       const actor = describeCurrentActor();
+      const actorUserId = normalizeLogUserId(readStoredUser()?.id);
       await createUserNotification({
         action: "account_update_admin",
         category: "account",
@@ -2775,6 +3843,81 @@ export const AdminAPI = {
       return { success: true };
     }),
 
+  setUserDayOffStatus: async (userId, status, options: LooseRecord = {}) =>
+    withApi(async () => {
+      const numericUserId = Number(userId);
+      const normalizedStatus = String(status || "")
+        .trim()
+        .toLowerCase();
+      const allowedStatuses = ["present", "on_leave", "on_holiday", "absent"];
+
+      if (!Number.isFinite(numericUserId) || numericUserId <= 0) {
+        throw new Error("Invalid user selected.");
+      }
+      if (!allowedStatuses.includes(normalizedStatus)) {
+        throw new Error("Invalid Day Off status selected.");
+      }
+
+      const targetUser = await fetchUserLogSnapshot(numericUserId).catch(() => null);
+      const normalizedRole = normalizeRole(targetUser?.role || "");
+      if (normalizedRole === "student") {
+        throw new Error("Day Off status is only available for staff, teacher, or admin users.");
+      }
+
+      const statusLabel =
+        normalizedStatus === "on_leave"
+          ? "On Leave"
+          : normalizedStatus === "on_holiday"
+            ? "On Holiday"
+            : normalizedStatus === "absent"
+              ? "Absent"
+              : "Present";
+      const note = String(options?.note || "").trim() || null;
+      const nowIso = new Date().toISOString();
+
+      // Optional persistence on users table if column exists; falls back to status logs if not.
+      await safeUserUpdate(numericUserId, {
+        day_off_status: normalizedStatus === "present" ? null : normalizedStatus,
+        updated_at: nowIso,
+      }).catch(() => null);
+
+      const action =
+        normalizedStatus === "present" ? "day_off_status_cleared" : "day_off_status_set";
+      await logStatusEvent({
+        action,
+        category: "attendance",
+        target_user_id: targetUser?.id || numericUserId,
+        target_username: targetUser?.username || null,
+        target_role: targetUser?.role || null,
+        message: `Day Off status for "${targetUser?.full_name || targetUser?.username || numericUserId}" was set to ${statusLabel}.`,
+        metadata: {
+          day_off_status: normalizedStatus,
+          note,
+          updated_at: nowIso,
+        },
+      });
+
+      const actor = describeCurrentActor();
+      await createUserNotification({
+        action,
+        category: "attendance",
+        target_user_id: targetUser?.id || numericUserId,
+        title: "Attendance status updated",
+        message: `Your attendance status was set to ${statusLabel} by ${actor.label}.`,
+        metadata: {
+          day_off_status: normalizedStatus,
+          note,
+          updated_at: nowIso,
+        },
+      });
+
+      return {
+        success: true,
+        user_id: numericUserId,
+        status: normalizedStatus,
+      };
+    }),
+
   deleteUser: async (userId) =>
     withApi(async () => {
       const numericUserId = Number(userId);
@@ -2790,8 +3933,20 @@ export const AdminAPI = {
       });
     }),
 
-  getDashboardStats: async () =>
-    withApi(async () => {
+  getDashboardStats: async () => {
+    const now = Date.now();
+    if (dashboardStatsInFlight) {
+      return dashboardStatsInFlight;
+    }
+
+    if (
+      dashboardStatsHotCache &&
+      now - dashboardStatsHotCache.atMs <= DASHBOARD_STATS_CLIENT_DEDUPE_MS
+    ) {
+      return dashboardStatsHotCache.value;
+    }
+
+    const requestPromise = withApi(async () => {
       const decodeBase64Url = (value: string) => {
         const normalized = String(value || "")
           .replace(/-/g, "+")
@@ -2842,33 +3997,70 @@ export const AdminAPI = {
       };
 
       const getDashboardStatsFromEdgeCache = async () => {
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          throw formatSupabaseError(sessionError, "Failed to load auth session for dashboard cache.");
-        }
+        const getFreshEdgeAccessToken = async () => {
+          const { data: initialSessionData, error: initialSessionError } = await supabase.auth.getSession();
+          if (initialSessionError) {
+            throw formatSupabaseError(
+              initialSessionError,
+              "Failed to load auth session for dashboard cache.",
+            );
+          }
 
-        const accessToken = sessionData?.session?.access_token;
-        if (!accessToken) {
-          throw new Error("No active authenticated session.");
-        }
-        if (!shouldUseEdgeFunctionToken(accessToken)) {
-          throw new Error("Skipping edge cache call: invalid or stale auth token.");
-        }
+          let accessToken = initialSessionData?.session?.access_token || "";
+          const tokenPayload = parseJwtPayload(accessToken);
+          const tokenExp = Number(tokenPayload?.exp);
+          const shouldRefreshEarly =
+            Number.isFinite(tokenExp) && tokenExp * 1000 <= Date.now() + 30000;
+
+          if (!accessToken || shouldRefreshEarly || !shouldUseEdgeFunctionToken(accessToken)) {
+            const { data: refreshedSessionData, error: refreshError } =
+              await supabase.auth.refreshSession();
+            if (!refreshError && refreshedSessionData?.session?.access_token) {
+              accessToken = refreshedSessionData.session.access_token;
+            }
+          }
+
+          if (!accessToken || !shouldUseEdgeFunctionToken(accessToken)) {
+            const { data: userData, error: userError } = await supabase.auth.getUser();
+            if (userError || !userData?.user?.id) {
+              throw new Error("Session is no longer valid. Please log in again.");
+            }
+            const { data: latestSessionData } = await supabase.auth.getSession();
+            accessToken = latestSessionData?.session?.access_token || "";
+          }
+
+          if (!accessToken || !shouldUseEdgeFunctionToken(accessToken)) {
+            throw new Error("Skipping edge cache call: invalid or stale auth token.");
+          }
+
+          return accessToken;
+        };
+
+        const accessToken = await getFreshEdgeAccessToken();
+        supabase.functions.setAuth(accessToken);
 
         const { data, error } = await supabase.functions.invoke("cached-dashboard-stats", {
-          body: {},
           headers: {
             Authorization: `Bearer ${accessToken}`,
+            apikey: String(import.meta.env.VITE_SUPABASE_ANON_KEY || ""),
+          },
+          body: {
+            page_path:
+              typeof window !== "undefined" ? String(window.location?.pathname || "") : null,
+            page_query:
+              typeof window !== "undefined" ? String(window.location?.search || "") : null,
+            view_name: "admin_dashboard_overview",
           },
         });
 
         if (error) {
+          const context = (error as { context?: Response })?.context;
+          const statusCode = Number(context?.status || 0) || null;
           let errorMessage =
             error?.message ||
             (typeof data?.error === "string" ? data.error : "") ||
             "Edge function error";
 
-          const context = (error as { context?: { json?: () => Promise<unknown> } })?.context;
           if (context?.json) {
             const body = await context.json().catch(() => null) as
               | { error?: unknown; message?: unknown }
@@ -2880,7 +4072,9 @@ export const AdminAPI = {
             if (detailed) errorMessage = detailed;
           }
 
-          throw new Error(errorMessage);
+          const invokeError = new Error(errorMessage) as ApiError;
+          invokeError.status = statusCode || undefined;
+          throw invokeError;
         }
 
         const payload =
@@ -2895,7 +4089,33 @@ export const AdminAPI = {
         return payload;
       };
 
-      const cachedStats = await getDashboardStatsFromEdgeCache().catch((error) => {
+      const cachedStats = await getDashboardStatsFromEdgeCache().catch(async (error) => {
+        const errorText = String(error?.message || error || "").trim();
+        const normalizedError = errorText.toLowerCase();
+        const isUnauthorizedCacheError =
+          normalizedError.includes("invalid jwt") ||
+          normalizedError.includes("unauthorized") ||
+          normalizedError.includes("access token");
+
+        await logStatusEvent({
+          action: isUnauthorizedCacheError
+            ? "dashboard_cache_unauthorized"
+            : "dashboard_cache_invoke_failed",
+          category: "cache",
+          message: isUnauthorizedCacheError
+            ? "Dashboard cache invoke rejected by function gateway."
+            : "Dashboard cache invoke failed; fallback query path was used.",
+          metadata: {
+            page_path:
+              typeof window !== "undefined" ? String(window.location?.pathname || "") : null,
+            page_query:
+              typeof window !== "undefined" ? String(window.location?.search || "") : null,
+            view_name: "admin_dashboard_overview",
+            error: errorText || null,
+            status: Number(error?.status || 0) || null,
+          },
+        }).catch(() => false);
+
         console.warn(
           "cached-dashboard-stats invoke failed; falling back to direct dashboard queries:",
           error?.message || error,
@@ -2950,10 +4170,10 @@ export const AdminAPI = {
         countExact("announcements"),
         countExact("study_load"),
         supabase.from("users").select(USER_SAFE_SELECT),
-        supabase.from("buildings").select("*"),
+        supabase.from("buildings").select(BUILDING_SELECT_COLUMNS),
         supabase
           .from("announcements")
-          .select("*")
+          .select(ANNOUNCEMENT_SELECT_COLUMNS)
           .order("published_at", { ascending: false })
           .limit(5),
       ]);
@@ -2982,13 +4202,37 @@ export const AdminAPI = {
         buildings: (buildingsResult.data || []).map(mapBuilding),
         recent_announcements: (announcementsResult.data || []).map(mapAnnouncement),
       };
-    }),
+    });
+
+    dashboardStatsInFlight = requestPromise
+      .then((result) => {
+        dashboardStatsHotCache = {
+          value: result,
+          atMs: Date.now(),
+        };
+        return result;
+      })
+      .finally(() => {
+        dashboardStatsInFlight = null;
+      });
+
+    return dashboardStatsInFlight;
+  },
 
   getAnnouncements: async () =>
     withApi(async () => {
+      const cachedRows = await invokeCachedPortalContent<LooseRecord[]>(
+        "announcements",
+        "admin",
+        { view_name: "admin_announcements" },
+      ).catch(() => null);
+      if (Array.isArray(cachedRows)) {
+        return cachedRows.map((row) => mapAnnouncement(row));
+      }
+
       const { data, error } = await supabase
         .from("announcements")
-        .select("*")
+        .select(ANNOUNCEMENT_SELECT_COLUMNS)
         .order("published_at", { ascending: false });
       if (error) throw formatSupabaseError(error);
       return (data || []).map(mapAnnouncement);
@@ -3082,6 +4326,18 @@ export const AdminAPI = {
 
   getEvaluationSettings: async () =>
     withApi(async () => {
+      const cachedSettings = await invokeCachedPortalContent<LooseRecord>(
+        "evaluation_settings",
+        "admin",
+        { view_name: "admin_evaluation_settings" },
+      ).catch(() => null);
+      if (cachedSettings && typeof cachedSettings === "object") {
+        return {
+          enabled: toBoolean(cachedSettings.enabled, true),
+          template: cachedSettings.template ?? null,
+        };
+      }
+
       const { data, error } = await supabase.from("evaluation_settings").select("*");
       if (error) throw formatSupabaseError(error);
 
@@ -3239,7 +4495,7 @@ export const AdminAPI = {
 
   deleteBuilding: async (identifier) =>
     withApi(async () => {
-      let query = supabase.from("buildings").select("*");
+      let query = supabase.from("buildings").select(BUILDING_SELECT_COLUMNS);
       if (Number.isFinite(Number(identifier))) {
         query = query.eq("id", Number(identifier));
       } else {
@@ -3439,22 +4695,64 @@ export const AdminAPI = {
       return { success: true };
     }),
 
-  getUserAssignments: async () =>
+  getUserAssignments: async (filters: LooseRecord = {}) =>
     withApi(async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from("user_assignments")
-        .select("*")
-        .order("updated_at", { ascending: false });
+        .select(USER_ASSIGNMENT_SELECT_COLUMNS);
+
+      const activeOnly = Boolean(filters?.active_only);
+      if (activeOnly) {
+        query = query.or("status.is.null,status.eq.active,status.eq.current,status.eq.enrolled");
+      }
+
+      const userIdFilter = parseNumber(filters?.user_id, null);
+      if (userIdFilter) {
+        query = query.eq("user_id", userIdFilter);
+      }
+
+      const sectionFilter = String(filters?.section || "").trim();
+      const sectionPattern = buildContainsPattern(sectionFilter);
+      if (sectionPattern) {
+        query = query.ilike("section", sectionPattern);
+      }
+
+      const departmentFilter = String(filters?.department || "").trim();
+      const departmentPattern = buildContainsPattern(departmentFilter);
+      if (departmentPattern) {
+        query = query.ilike("department", departmentPattern);
+      }
+
+      const schoolYearInput = String(filters?.school_year || "").trim();
+      if (schoolYearInput) {
+        query = query.eq("school_year", normalizeSchoolYearValue(schoolYearInput));
+      }
+
+      const yearFilter = normalizeYearLevel(filters?.year || filters?.year_level);
+      if (yearFilter) {
+        query = query.ilike("year_level", `%${yearFilter}%`);
+      }
+
+      const limitValue = Number(filters?.limit);
+      const limit = Number.isFinite(limitValue)
+        ? Math.min(5000, Math.max(20, Math.trunc(limitValue)))
+        : null;
+      if (limit) {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
       if (error) throw formatSupabaseError(error);
-      return mapUserAssignmentRows(data || []);
+
+      const mapped = await mapUserAssignmentRows(data || []);
+      return mapped.filter((assignment) => matchesAssignmentFilters(assignment, filters));
     }),
 
   getDisciplineRecords: async (filters: LooseRecord = {}) =>
     withApi(async () => {
-      const allAssignments = await AdminAPI.getUserAssignments();
-      const scopedAssignments = (allAssignments || []).filter((assignment) =>
-        matchesAssignmentFilters(assignment, filters),
-      );
+      const scopedAssignments = await AdminAPI.getUserAssignments(filters);
 
       const schoolYear = normalizeSchoolYearValue(filters?.school_year || currentSchoolYear());
       const events = await fetchScopedRecordEvents("app_get_discipline_records", {
@@ -3856,10 +5154,7 @@ export const AdminAPI = {
 
       const reason = String(payload?.reason || payload?.description || "General lacking payment")
         .trim();
-      const allAssignments = await AdminAPI.getUserAssignments();
-      const scopedAssignments = (allAssignments || []).filter((assignment) =>
-        matchesAssignmentFilters(assignment, filters),
-      );
+      const scopedAssignments = await AdminAPI.getUserAssignments(filters);
 
       if (!scopedAssignments.length) {
         throw new Error("No student records match the selected scope.");
@@ -4001,10 +5296,7 @@ export const AdminAPI = {
 
   getPaymentRecords: async (filters: LooseRecord = {}) =>
     withApi(async () => {
-      const allAssignments = await AdminAPI.getUserAssignments();
-      const scopedAssignments = (allAssignments || []).filter((assignment) =>
-        matchesAssignmentFilters(assignment, filters),
-      );
+      const scopedAssignments = await AdminAPI.getUserAssignments(filters);
 
       const schoolYearInput = String(filters?.school_year || "").trim();
       const schoolYear = schoolYearInput ? normalizeSchoolYearValue(schoolYearInput) : "";
@@ -4996,7 +6288,7 @@ export const AdminAPI = {
   getSectionsWithLoad: async () =>
     withApi(async () => {
       const [sectionsResult, loadResult] = await Promise.all([
-        supabase.from("sections").select("*"),
+        supabase.from("sections").select(SECTION_SELECT_COLUMNS),
         supabase.from("study_load").select("section_id"),
       ]);
 
@@ -5232,12 +6524,69 @@ export const AdminAPI = {
       return { success: true };
     }),
 
-  getGrades: async () =>
+  getGrades: async (filters: LooseRecord = {}) =>
     withApi(async () => {
-      const { data, error } = await supabase
+      const sectionIdFilterRaw = parseNumber(filters?.section_id, null);
+      const sectionNameFilter = String(filters?.section || "").trim();
+      const yearFilter = normalizeYearLevel(filters?.year || filters?.year_level || "");
+      const schoolYearFilterRaw = String(filters?.school_year || "").trim();
+      const schoolYearFilter = schoolYearFilterRaw
+        ? normalizeSchoolYearValue(schoolYearFilterRaw)
+        : "";
+      const studentIdFilter = parseNumber(filters?.user_id || filters?.student_id, null);
+
+      let sectionIdFilter = sectionIdFilterRaw;
+      if (!sectionIdFilter && sectionNameFilter) {
+        const section = await findSection({
+          sectionName: sectionNameFilter,
+          year: yearFilter || null,
+        });
+        if (!section?.id) return [];
+        sectionIdFilter = section.id;
+      }
+
+      let yearSectionIds: number[] = [];
+      if (!sectionIdFilter && yearFilter) {
+        const { data: sectionRows, error: sectionError } = await supabase
+          .from("sections")
+          .select("id")
+          .ilike("grade_level", `%${yearFilter}%`)
+          .limit(500);
+        if (sectionError) throw formatSupabaseError(sectionError);
+        yearSectionIds = (sectionRows || [])
+          .map((row) => parseNumber(row?.id, null))
+          .filter(Boolean);
+        if (yearSectionIds.length === 0) return [];
+      }
+
+      let query = supabase
         .from("grades")
-        .select("*")
+        .select(GRADE_SELECT_COLUMNS)
         .order("updated_at", { ascending: false });
+
+      if (sectionIdFilter) {
+        query = query.eq("section_id", sectionIdFilter);
+      } else if (yearSectionIds.length > 0) {
+        query = query.in("section_id", yearSectionIds);
+      }
+
+      if (schoolYearFilter) {
+        query = query.eq("school_year", schoolYearFilter);
+      }
+
+      if (studentIdFilter) {
+        query = query.eq("student_id", studentIdFilter);
+      }
+
+      const limitValue = Number(filters?.limit);
+      const limit = Number.isFinite(limitValue)
+        ? Math.min(5000, Math.max(20, Math.trunc(limitValue)))
+        : null;
+      if (limit) {
+        query = query.limit(limit);
+      }
+
+      const { data, error } = await query;
       if (error) throw formatSupabaseError(error);
 
       const rows = data || [];
@@ -6041,6 +7390,102 @@ export const AdminAPI = {
       return { enabled, frequency, day, time };
     }),
 
+  getBlockedIpList: async () =>
+    withApi(async () => {
+      return readBlockedIpEntries();
+    }),
+
+  blockIpAddress: async (payload: LooseRecord = {}) =>
+    withApi(async () => {
+      const ip = normalizeIpAddress(payload?.ip);
+      const reason = String(payload?.reason || "").trim() || null;
+      if (!ip) {
+        throw new Error("A valid IP address is required.");
+      }
+
+      const actor = describeCurrentActor();
+      const actorUserId = normalizeLogUserId(readStoredUser()?.id);
+      const existing = await readBlockedIpEntries();
+      const filtered = existing.filter((entry) => {
+        const entryIp = normalizeIpAddress(entry?.ip);
+        return !entryIp || entryIp !== ip;
+      });
+
+      const blockedAt = new Date().toISOString();
+      const entry: LooseRecord = {
+        ip,
+        reason,
+        blocked_at: blockedAt,
+        blocked_by: actor.label,
+        blocked_by_id: actorUserId,
+      };
+      const next = normalizeBlockedIpEntries([entry, ...filtered]);
+
+      await upsertSetting(
+        BLOCKED_IPS_SETTING_KEY,
+        JSON.stringify(next),
+        "Blocked IP addresses for portal login protection",
+      );
+
+      await logStatusEvent({
+        action: "ip_blocked",
+        category: "security",
+        message: `Blocked login access for IP ${ip}.`,
+        metadata: {
+          ip,
+          reason,
+          blocked_at: blockedAt,
+          blocked_by: actor.label,
+          blocked_by_id: actorUserId,
+        },
+      });
+
+      return {
+        success: true,
+        blocked: entry,
+        blocked_ips: next,
+      };
+    }),
+
+  unblockIpAddress: async (ipValue: unknown) =>
+    withApi(async () => {
+      const ip = normalizeIpAddress(ipValue);
+      if (!ip) {
+        throw new Error("A valid IP address is required.");
+      }
+
+      const actor = describeCurrentActor();
+      const actorUserId = normalizeLogUserId(readStoredUser()?.id);
+      const existing = await readBlockedIpEntries();
+      const next = existing.filter((entry) => {
+        const entryIp = normalizeIpAddress(entry?.ip);
+        return !entryIp || entryIp !== ip;
+      });
+
+      await upsertSetting(
+        BLOCKED_IPS_SETTING_KEY,
+        JSON.stringify(next),
+        "Blocked IP addresses for portal login protection",
+      );
+
+      await logStatusEvent({
+        action: "ip_unblocked",
+        category: "security",
+        message: `Removed IP ${ip} from blocked login list.`,
+        metadata: {
+          ip,
+          unblocked_at: new Date().toISOString(),
+          unblocked_by: actor.label,
+          unblocked_by_id: actorUserId,
+        },
+      });
+
+      return {
+        success: true,
+        blocked_ips: next,
+      };
+    }),
+
   sendMaintenanceReportNow: async (options: LooseRecord = {}) =>
     withApi(async () => {
       const report = await AdminAPI.runMaintenanceSuite({
@@ -6235,8 +7680,8 @@ export const AdminAPI = {
   getFeedbackStats: async () =>
     withApi(async () => {
       const [unread, replied] = await Promise.all([
-        supabase.from("feedbacks").select("*", { count: "exact", head: true }).eq("status", "unread"),
-        supabase.from("feedbacks").select("*", { count: "exact", head: true }).eq("status", "replied"),
+        supabase.from("feedbacks").select("id", { count: "exact", head: true }).eq("status", "unread"),
+        supabase.from("feedbacks").select("id", { count: "exact", head: true }).eq("status", "replied"),
       ]);
 
       if (unread.error || replied.error) {
@@ -6831,12 +8276,15 @@ export const StudentAPI = {
       const section = await resolveSectionFromAssignment(assignment);
       if (!section?.id && !section?.section_name) return [];
 
-      let query = supabase.from("study_load").select("*");
+      let query = supabase
+        .from("study_load")
+        .select(STUDY_LOAD_SELECT_COLUMNS);
       if (section?.id) {
         query = query.eq("section_id", section.id);
       } else {
         query = query.eq("section", section.section_name);
       }
+      query = query.or(`student_id.is.null,student_id.eq.${currentUser.id}`);
 
       const { data, error } = await query.order("subject_code", { ascending: true });
       if (error) throw formatSupabaseError(error);
@@ -6866,7 +8314,7 @@ export const StudentAPI = {
       const currentUser = requireStoredUser();
       const { data, error } = await supabase
         .from("grades")
-        .select("*")
+        .select(GRADE_SELECT_COLUMNS)
         .eq("student_id", currentUser.id)
         .order("updated_at", { ascending: false });
       if (error) throw formatSupabaseError(error);
@@ -6906,18 +8354,27 @@ export const StudentAPI = {
 
   getAnnouncements: async () =>
     withApi(async () => {
-      const currentUser = requireStoredUser();
-      const assignment = await getActiveAssignmentForUser(currentUser.id);
+      const cachedRows = await invokeCachedPortalContent<LooseRecord[]>(
+        "announcements",
+        "student",
+        { view_name: "student_announcements" },
+      ).catch(() => null);
+      if (Array.isArray(cachedRows)) {
+        return cachedRows.map((row) => mapAnnouncement(row));
+      }
 
-      const { data, error } = await supabase.from("announcements").select("*");
-      if (error) throw formatSupabaseError(error);
+      const currentUser = requireStoredUser();
+      const [assignment, rows] = await Promise.all([
+        getActiveAssignmentForUser(currentUser.id),
+        fetchAnnouncementsForRoles(["student"]),
+      ]);
 
       const department = String(assignment?.department || "").trim();
       const yearLevel = normalizeYearLevel(assignment?.year_level || "");
       const now = new Date();
       const priorityOrder = { high: 3, medium: 2, low: 1 };
 
-      const filtered = (data || [])
+      const filtered = (rows || [])
         .filter((row) => {
           const targetRole = String(row.target_role || "all").toLowerCase();
           if (!["all", "student"].includes(targetRole)) return false;
@@ -6979,7 +8436,21 @@ export const StudentAPI = {
 
   getEvaluationSettings: async () =>
     withApi(async () => {
-      const { data, error } = await supabase.from("evaluation_settings").select("*");
+      const cachedSettings = await invokeCachedPortalContent<LooseRecord>(
+        "evaluation_settings",
+        "student",
+        { view_name: "student_evaluation_settings" },
+      ).catch(() => null);
+      if (cachedSettings && typeof cachedSettings === "object") {
+        return {
+          enabled: toBoolean(cachedSettings.enabled, true),
+          template: cachedSettings.template ?? null,
+        };
+      }
+
+      const { data, error } = await supabase
+        .from("evaluation_settings")
+        .select(EVALUATION_SETTING_SELECT_COLUMNS);
       if (error) {
         if (isMissingRelation(error)) {
           return { enabled: true, template: null };
@@ -7054,7 +8525,7 @@ export const StudentAPI = {
         if (assignmentIds.length > 0) {
           const { data: teacherAssignments, error: assignmentError } = await supabase
             .from("teacher_assignments")
-            .select("*")
+            .select(TEACHER_ASSIGNMENT_EVAL_SELECT_COLUMNS)
             .in("id", assignmentIds)
             .eq("status", "active");
           if (assignmentError) {
@@ -7072,7 +8543,7 @@ export const StudentAPI = {
         fallbackQueries.push(
           supabase
             .from("teacher_assignments")
-            .select("*")
+            .select(TEACHER_ASSIGNMENT_EVAL_SELECT_COLUMNS)
             .eq("status", "active")
             .eq("section_id", section.id),
         );
@@ -7081,7 +8552,7 @@ export const StudentAPI = {
         fallbackQueries.push(
           supabase
             .from("teacher_assignments")
-            .select("*")
+            .select(TEACHER_ASSIGNMENT_EVAL_SELECT_COLUMNS)
             .eq("status", "active")
             .ilike("section", scopedSectionPattern || scopedSectionName),
         );
@@ -7113,7 +8584,10 @@ export const StudentAPI = {
         fetchUsersByIds(teacherIds),
         fetchSubjectsByIds(subjectIds),
         scheduleSubjectCodes.size > 0
-          ? supabase.from("subjects").select("*").in("subject_code", Array.from(scheduleSubjectCodes))
+          ? supabase
+              .from("subjects")
+              .select(SUBJECT_SELECT_COLUMNS)
+              .in("subject_code", Array.from(scheduleSubjectCodes))
           : Promise.resolve({ data: [], error: null }),
       ]);
 
@@ -7421,7 +8895,7 @@ export const TeacherAPI = {
       const currentUser = requireStoredUser();
       const { data: assignments, error: assignmentsError } = await supabase
         .from("teacher_assignments")
-        .select("*")
+        .select(TEACHER_ASSIGNMENT_SELECT_COLUMNS)
         .eq("teacher_id", currentUser.id)
         .order("updated_at", { ascending: false })
         .order("id", { ascending: false });
@@ -7442,7 +8916,7 @@ export const TeacherAPI = {
 
       const { data: schedules, error: schedulesError } = await supabase
         .from("schedules")
-        .select("*")
+        .select(SCHEDULE_SELECT_COLUMNS)
         .in("teacher_assignment_id", assignmentIds);
       if (schedulesError) throw formatSupabaseError(schedulesError);
 
@@ -7451,12 +8925,20 @@ export const TeacherAPI = {
 
   getAnnouncements: async () =>
     withApi(async () => {
+      const cachedRows = await invokeCachedPortalContent<LooseRecord[]>(
+        "announcements",
+        "teacher",
+        { view_name: "teacher_announcements" },
+      ).catch(() => null);
+      if (Array.isArray(cachedRows)) {
+        return cachedRows.map((row) => mapAnnouncement(row));
+      }
+
       const now = new Date();
       const priorityOrder = { high: 3, medium: 2, low: 1 };
-      const { data, error } = await supabase.from("announcements").select("*");
-      if (error) throw formatSupabaseError(error);
+      const rows = await fetchAnnouncementsForRoles(["teacher"]);
 
-      return (data || [])
+      return (rows || [])
         .filter((row) => {
           const targetRole = String(row.target_role || "all").toLowerCase();
           if (!["all", "teacher"].includes(targetRole)) return false;
@@ -7590,6 +9072,7 @@ export const TeacherAPI = {
 
   getGrades: async (params: LooseRecord = {}) =>
     withApi(async () => {
+      const currentUser = requireStoredUser();
       const section = await findSection({
         sectionId: params?.section_id,
         sectionName: params?.section,
@@ -7597,11 +9080,56 @@ export const TeacherAPI = {
       const subject = await findSubjectByCode(params?.subject);
       if (!section?.id || !subject?.id) return {};
 
+      const { data: myAssignments, error: myAssignmentsError } = await supabase
+        .from("teacher_assignments")
+        .select("id,section_id,subject_id,status")
+        .eq("teacher_id", currentUser.id)
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
+      if (myAssignmentsError) throw formatSupabaseError(myAssignmentsError);
+
+      let myAssignmentIds = Array.from(
+        new Set(
+          (myAssignments || [])
+            .filter((row) => !isInactiveAssignmentStatus(row?.status))
+            .map((row) => row.id)
+            .filter(Boolean),
+        ),
+      );
+      if (!myAssignmentIds.length) {
+        myAssignmentIds = Array.from(new Set((myAssignments || []).map((row) => row.id).filter(Boolean)));
+      }
+      if (!myAssignmentIds.length) return {};
+
+      const hasDirectAssignment = (myAssignments || []).some((row) => {
+        if (!row || isInactiveAssignmentStatus(row?.status)) return false;
+        if (row.subject_id !== subject.id) return false;
+        if (row.section_id == null) return false;
+        return Number(row.section_id) === Number(section.id);
+      });
+
+      let hasScheduleAssignment = false;
+      const resolvedSubjectCode = String(subject?.subject_code || params?.subject || "").trim();
+      if (!hasDirectAssignment && resolvedSubjectCode) {
+        const { data: scheduleRows, error: scheduleError } = await supabase
+          .from("schedules")
+          .select("id")
+          .eq("section_id", section.id)
+          .eq("subject_code", resolvedSubjectCode)
+          .in("teacher_assignment_id", myAssignmentIds)
+          .limit(1);
+        if (scheduleError) throw formatSupabaseError(scheduleError);
+        hasScheduleAssignment = Array.isArray(scheduleRows) && scheduleRows.length > 0;
+      }
+
+      if (!hasDirectAssignment && !hasScheduleAssignment) return {};
+
       const { data, error } = await supabase
         .from("grades")
-        .select("*")
+        .select(GRADE_SELECT_COLUMNS)
         .eq("section_id", section.id)
-        .eq("subject_id", subject.id);
+        .eq("subject_id", subject.id)
+        .eq("teacher_id", currentUser.id);
       if (error) throw formatSupabaseError(error);
 
       return (data || []).reduce((acc, row) => {
@@ -7643,7 +9171,7 @@ export const TeacherAPI = {
 
       const { data: scheduleRows, error: scheduleError } = await supabase
         .from("schedules")
-        .select("*")
+        .select(SCHEDULE_SELECT_COLUMNS)
         .in("teacher_assignment_id", assignmentIds);
       if (scheduleError) throw formatSupabaseError(scheduleError);
 
@@ -7782,6 +9310,9 @@ export const TeacherAPI = {
         .limit(1)
         .maybeSingle();
       if (existingError) throw formatSupabaseError(existingError);
+      if (existing && existing.teacher_id != null && Number(existing.teacher_id) !== Number(currentUser.id)) {
+        throw new Error("You can only modify grades that you encoded.");
+      }
 
       const prelimGrade = parseGradePoint(payload?.prelim, "Prelim grade");
       const midtermGrade = parseGradePoint(payload?.midterm, "Midterm grade");
@@ -7807,12 +9338,15 @@ export const TeacherAPI = {
       const gradeSummary = gradeSummaryParts.join(", ");
 
       if (existing) {
-        const { data, error } = await supabase
+        let updateQuery = supabase
           .from("grades")
           .update(gradePayload)
-          .eq("id", existing.id)
-          .select("*")
-          .single();
+          .eq("id", existing.id);
+        if (existing.teacher_id != null) {
+          updateQuery = updateQuery.eq("teacher_id", currentUser.id);
+        }
+
+        const { data, error } = await updateQuery.select("*").single();
         if (error) throw formatSupabaseError(error);
 
         await createUserNotification({
@@ -7875,6 +9409,26 @@ export const TeacherAPI = {
 
   updateGrade: async (id, payload) =>
     withApi(async () => {
+      const currentUser = requireStoredUser();
+      const numericGradeId = parseNumber(id, null);
+      if (!numericGradeId) {
+        throw new Error("Invalid grade selected.");
+      }
+
+      const { data: existingGrade, error: existingGradeError } = await supabase
+        .from("grades")
+        .select("id,teacher_id")
+        .eq("id", numericGradeId)
+        .limit(1)
+        .maybeSingle();
+      if (existingGradeError) throw formatSupabaseError(existingGradeError);
+      if (!existingGrade) {
+        throw new Error("Grade record was not found.");
+      }
+      if (existingGrade.teacher_id == null || Number(existingGrade.teacher_id) !== Number(currentUser.id)) {
+        throw new Error("You can only update grades that you encoded.");
+      }
+
       const prelimGrade = parseGradePoint(payload?.prelim, "Prelim grade");
       const midtermGrade = parseGradePoint(payload?.midterm, "Midterm grade");
       const finalsGrade = parseGradePoint(payload?.finals, "Finals grade");
@@ -7887,7 +9441,8 @@ export const TeacherAPI = {
           finals_grade: finalsGrade,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", id)
+        .eq("id", numericGradeId)
+        .eq("teacher_id", currentUser.id)
         .select("*")
         .single();
       if (error) throw formatSupabaseError(error);
@@ -7929,7 +9484,29 @@ export const TeacherAPI = {
 
   deleteGrade: async (id) =>
     withApi(async () => {
-      const { error } = await supabase.from("grades").delete().eq("id", id);
+      const currentUser = requireStoredUser();
+      const numericGradeId = parseNumber(id, null);
+      if (!numericGradeId) {
+        throw new Error("Invalid grade selected.");
+      }
+
+      const { data: existingGrade, error: existingGradeError } = await supabase
+        .from("grades")
+        .select("id,teacher_id")
+        .eq("id", numericGradeId)
+        .limit(1)
+        .maybeSingle();
+      if (existingGradeError) throw formatSupabaseError(existingGradeError);
+      if (!existingGrade) return { success: true };
+      if (existingGrade.teacher_id == null || Number(existingGrade.teacher_id) !== Number(currentUser.id)) {
+        throw new Error("You can only delete grades that you encoded.");
+      }
+
+      const { error } = await supabase
+        .from("grades")
+        .delete()
+        .eq("id", numericGradeId)
+        .eq("teacher_id", currentUser.id);
       if (error) throw formatSupabaseError(error);
       return { success: true };
     }),
@@ -7937,6 +9514,7 @@ export const TeacherAPI = {
   getStudentsBySection: async (sectionInput, explicitSectionId = null, explicitSubjectCode = null) =>
     withApi(async () => {
       await ensureAuthUidBoundForStoredUser();
+      const currentUser = requireStoredUser();
 
       const sectionInputObject = typeof sectionInput === "object" && sectionInput !== null
         ? sectionInput
@@ -7963,6 +9541,86 @@ export const TeacherAPI = {
       const scopedSectionName = String(section?.section_name || sectionName || "").trim();
       const scopedSectionPattern = buildContainsPattern(scopedSectionName);
       if (!section?.id && !scopedSectionName) return [];
+      const requestedSubject = subjectCode ? await findSubjectByCode(subjectCode) : null;
+
+      const { data: teacherAssignments, error: teacherAssignmentsError } = await supabase
+        .from("teacher_assignments")
+        .select("id,section_id,section,subject_id,status")
+        .eq("teacher_id", currentUser.id)
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false });
+      if (teacherAssignmentsError) throw formatSupabaseError(teacherAssignmentsError);
+
+      let activeTeacherAssignments = (teacherAssignments || []).filter(
+        (row) => !isInactiveAssignmentStatus(row?.status),
+      );
+      if (!activeTeacherAssignments.length) {
+        activeTeacherAssignments = teacherAssignments || [];
+      }
+      const teacherAssignmentIds = Array.from(
+        new Set(activeTeacherAssignments.map((row) => row?.id).filter(Boolean)),
+      );
+      if (!teacherAssignmentIds.length) return [];
+
+      let hasSectionAccess = false;
+      if (section?.id) {
+        hasSectionAccess = activeTeacherAssignments.some(
+          (row) => Number(row?.section_id) === Number(section.id),
+        );
+
+        if (!hasSectionAccess) {
+          const { data: sectionScheduleRows, error: sectionScheduleError } = await supabase
+            .from("schedules")
+            .select("id")
+            .eq("section_id", section.id)
+            .in("teacher_assignment_id", teacherAssignmentIds)
+            .limit(1);
+          if (sectionScheduleError && !isMissingRelation(sectionScheduleError)) {
+            throw formatSupabaseError(sectionScheduleError);
+          }
+          hasSectionAccess = Array.isArray(sectionScheduleRows) && sectionScheduleRows.length > 0;
+        }
+      } else if (scopedSectionName) {
+        const normalizedSectionName = scopedSectionName.toLowerCase();
+        hasSectionAccess = activeTeacherAssignments.some((row) => {
+          const assignedSectionName = String(row?.section || "")
+            .trim()
+            .toLowerCase();
+          return Boolean(assignedSectionName && assignedSectionName === normalizedSectionName);
+        });
+      }
+
+      if (!hasSectionAccess) return [];
+
+      if (subjectCode) {
+        let hasSubjectAccess = activeTeacherAssignments.some((row) => {
+          if (!requestedSubject?.id || Number(row?.subject_id) !== Number(requestedSubject.id)) {
+            return false;
+          }
+          if (!section?.id) return true;
+          if (row?.section_id == null) return false;
+          return Number(row.section_id) === Number(section.id);
+        });
+
+        if (!hasSubjectAccess) {
+          let scheduleSubjectQuery = supabase
+            .from("schedules")
+            .select("id")
+            .in("teacher_assignment_id", teacherAssignmentIds)
+            .eq("subject_code", String(requestedSubject?.subject_code || subjectCode).trim())
+            .limit(1);
+          if (section?.id) {
+            scheduleSubjectQuery = scheduleSubjectQuery.eq("section_id", section.id);
+          }
+          const { data: subjectScheduleRows, error: subjectScheduleError } = await scheduleSubjectQuery;
+          if (subjectScheduleError && !isMissingRelation(subjectScheduleError)) {
+            throw formatSupabaseError(subjectScheduleError);
+          }
+          hasSubjectAccess = Array.isArray(subjectScheduleRows) && subjectScheduleRows.length > 0;
+        }
+
+        if (!hasSubjectAccess) return [];
+      }
 
       if (subjectCode) {
         const { data: rpcStudents, error: rpcStudentsError } = await supabase.rpc(
@@ -8011,8 +9669,9 @@ export const TeacherAPI = {
         assignmentQueries.push(
           supabase
             .from("user_assignments")
-            .select("*")
+            .select("id,user_id,section_id,section,status,updated_at,student_status,year_level,department,school_year")
             .eq("section_id", section.id)
+            .or("status.is.null,status.eq.active,status.eq.current,status.eq.enrolled")
             .order("updated_at", { ascending: false })
             .order("id", { ascending: false }),
         );
@@ -8021,8 +9680,9 @@ export const TeacherAPI = {
         assignmentQueries.push(
           supabase
             .from("user_assignments")
-            .select("*")
+            .select("id,user_id,section_id,section,status,updated_at,student_status,year_level,department,school_year")
             .ilike("section", scopedSectionPattern || scopedSectionName)
+            .or("status.is.null,status.eq.active,status.eq.current,status.eq.enrolled")
             .order("updated_at", { ascending: false })
             .order("id", { ascending: false }),
         );
@@ -8069,7 +9729,7 @@ export const TeacherAPI = {
       let filteredUserIds = baseAssignments.map((row) => row.user_id);
 
       if (subjectCode) {
-        const subject = await findSubjectByCode(subjectCode);
+        const subject = requestedSubject;
         const normalizedSubjectCode = String(subject?.subject_code || subjectCode).trim();
         const selectClause = "id,student_id,section_id,section,subject_id,subject_code";
 
@@ -8183,7 +9843,7 @@ export const TeacherAPI = {
       const currentUser = requireStoredUser();
       const { data, error } = await supabase
         .from("teacher_evaluations")
-        .select("*")
+        .select("rating_overall,rating,comments,comment,created_at,semester")
         .eq("teacher_id", currentUser.id);
 
       if (error) {
@@ -8235,6 +9895,748 @@ export const TeacherAPI = {
       };
     }),
 };
+
+const CACHE_TTL_MS = {
+  PUBLIC_STATS: 120_000,
+  PUBLIC_LANDING: 300_000,
+  ADMIN_DASHBOARD: 20_000,
+  ADMIN_USERS: 30_000,
+  ADMIN_STATUS_LOGS: 15_000,
+  ADMIN_ACCOUNT_REQUESTS: 20_000,
+  ADMIN_ANNOUNCEMENTS: 45_000,
+  ADMIN_EVALUATION_SETTINGS: 300_000,
+  ADMIN_EVALUATION_SUMMARY: 120_000,
+  ADMIN_MASTER_DATA: 600_000,
+  ADMIN_ASSIGNMENTS: 90_000,
+  ADMIN_USER_ASSIGNMENTS: 45_000,
+  ADMIN_DISCIPLINE: 45_000,
+  ADMIN_DISCIPLINE_STUDENT: 30_000,
+  ADMIN_PAYMENTS: 45_000,
+  ADMIN_PAYMENTS_STUDENT: 30_000,
+  ADMIN_PROJECTS: 300_000,
+  ADMIN_STUDYLOAD_SECTIONS: 120_000,
+  ADMIN_STUDYLOAD_DETAILS: 60_000,
+  ADMIN_STUDYLOAD_IRREGULAR: 90_000,
+  ADMIN_STUDYLOAD_CUSTOM: 60_000,
+  ADMIN_GRADES: 60_000,
+  ADMIN_FEEDBACK: 30_000,
+  ADMIN_USER_SUGGESTIONS: 20_000,
+  ADMIN_MAINTENANCE: 30_000,
+  ADMIN_STORAGE_HEALTH: 45_000,
+  ADMIN_DATABASE_HEALTH: 45_000,
+  ADMIN_DUPLICATE_USERS: 120_000,
+  STUDENT_ACCOUNT_REQUESTS: 30_000,
+  STUDENT_ASSIGNMENT: 120_000,
+  STUDENT_STUDYLOAD: 180_000,
+  STUDENT_GRADES: 120_000,
+  STUDENT_ANNOUNCEMENTS: 60_000,
+  STUDENT_SECTION_PROJECTS: 180_000,
+  STUDENT_CAMPUS_PROJECTS: 300_000,
+  STUDENT_EVALUATION_SETTINGS: 300_000,
+  STUDENT_EVALUATION_TEACHERS: 180_000,
+  STUDENT_EVALUATION: 60_000,
+  STUDENT_FEEDBACK: 30_000,
+  TEACHER_SCHEDULE: 120_000,
+  TEACHER_ANNOUNCEMENTS: 60_000,
+  TEACHER_PROJECTS: 300_000,
+  TEACHER_GRADES: 60_000,
+  TEACHER_SECTIONS: 180_000,
+  TEACHER_SECTION_STUDENTS: 60_000,
+  TEACHER_EVALUATION_STATS: 120_000,
+  NOTIFICATIONS_UNREAD: 3_000,
+} as const;
+
+const configureApiCaching = () => {
+  if (apiCachingConfigured) return;
+  apiCachingConfigured = true;
+
+  const wrapReadMethod = (
+    api: LooseRecord,
+    methodName: string,
+    options: {
+      scope: string;
+      ttlMs: number;
+      bypassWhen?: (...args: any[]) => boolean;
+      getCacheArgs?: (...args: any[]) => unknown[];
+    },
+  ) => {
+    const original = api?.[methodName];
+    if (typeof original !== "function") return;
+
+    api[methodName] = async (...args: any[]) =>
+      withReadCache({
+        scope: options.scope,
+        ttlMs: options.ttlMs,
+        args: options.getCacheArgs ? options.getCacheArgs(...args) : args,
+        bypass: options.bypassWhen ? Boolean(options.bypassWhen(...args)) : false,
+        query: () => original(...args),
+      });
+  };
+
+  const wrapMutationMethod = (
+    api: LooseRecord,
+    methodName: string,
+    invalidateScopes: string[] = [],
+  ) => {
+    const original = api?.[methodName];
+    if (typeof original !== "function") return;
+
+    api[methodName] = async (...args: any[]) => {
+      const result = await original(...args);
+      invalidateReadCache(invalidateScopes);
+      return result;
+    };
+  };
+
+  const uniqueScopes = (...groups: string[][]): string[] =>
+    Array.from(new Set(groups.flat().filter(Boolean)));
+
+  const scopeGroups = {
+    dashboard: ["admin.dashboard"],
+    users: [
+      "admin.users",
+      "admin.userAssignments",
+      "admin.teacherAssignments",
+      "admin.userSuggestions",
+      "student.assignment",
+      "student.evaluation.teachers",
+      "teacher.sections",
+      "teacher.studentsBySection",
+      "teacher.schedule",
+    ],
+    announcements: ["admin.announcements", "student.announcements", "teacher.announcements"],
+    evaluation: [
+      "admin.evaluation.settings",
+      "admin.evaluation.lowestRated",
+      "student.evaluation.settings",
+      "student.evaluation.teachers",
+      "student.evaluation.latest",
+      "teacher.evaluation.stats",
+    ],
+    masterData: ["admin.subjects", "admin.sections", "admin.buildings"],
+    schedules: ["admin.schedules", "teacher.schedule", "teacher.sections", "teacher.studentsBySection"],
+    studyLoad: [
+      "admin.studyload.sections",
+      "admin.studyload.sectionDetails",
+      "admin.studyload.irregular",
+      "admin.studyload.custom",
+      "student.studyLoad",
+      "student.assignment",
+      "teacher.sections",
+      "teacher.studentsBySection",
+    ],
+    grades: ["admin.grades", "student.grades", "teacher.grades", "teacher.studentsBySection"],
+    projects: ["admin.projects", "student.projects.section", "student.projects.campus", "teacher.projects.campus"],
+    discipline: ["admin.discipline.records", "admin.discipline.byStudent", "admin.userAssignments"],
+    payments: ["admin.payments.records", "admin.payments.byStudent", "admin.userAssignments"],
+    feedback: ["admin.feedback.list", "admin.feedback.stats", "student.feedback.mine"],
+    accountRequests: ["admin.accountRequests", "student.accountRequests"],
+    maintenance: [
+      "admin.backups",
+      "admin.maintenance.scheduler",
+      "admin.maintenance.blockedIps",
+      "admin.maintenance.storageHealth",
+      "admin.maintenance.databaseHealth",
+      "admin.maintenance.duplicateUsers",
+    ],
+  };
+
+  // Public views
+  wrapReadMethod(PublicAPI, "getStats", {
+    scope: "public.stats",
+    ttlMs: CACHE_TTL_MS.PUBLIC_STATS,
+  });
+  wrapReadMethod(PublicAPI, "getLandingPageStats", {
+    scope: "public.landing",
+    ttlMs: CACHE_TTL_MS.PUBLIC_LANDING,
+    bypassWhen: (options: LooseRecord = {}) => Boolean(options?.force_refresh),
+  });
+
+  // Admin read-heavy pages
+  wrapReadMethod(AdminAPI, "getDashboardStats", {
+    scope: "admin.dashboard",
+    ttlMs: CACHE_TTL_MS.ADMIN_DASHBOARD,
+  });
+  wrapReadMethod(AdminAPI, "getUsers", {
+    scope: "admin.users",
+    ttlMs: CACHE_TTL_MS.ADMIN_USERS,
+    bypassWhen: (filters: LooseRecord = {}) =>
+      Boolean(filters?.includePurgeSummary || filters?.force_refresh),
+  });
+  wrapReadMethod(AdminAPI, "getStatusLogs", {
+    scope: "admin.statusLogs",
+    ttlMs: CACHE_TTL_MS.ADMIN_STATUS_LOGS,
+    bypassWhen: (filters: LooseRecord = {}) => Boolean(filters?.force_refresh),
+  });
+  wrapReadMethod(AdminAPI, "getAccountRequests", {
+    scope: "admin.accountRequests",
+    ttlMs: CACHE_TTL_MS.ADMIN_ACCOUNT_REQUESTS,
+    bypassWhen: (filters: LooseRecord = {}) => Boolean(filters?.force_refresh),
+  });
+  wrapReadMethod(AdminAPI, "getAnnouncements", {
+    scope: "admin.announcements",
+    ttlMs: CACHE_TTL_MS.ADMIN_ANNOUNCEMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getEvaluationSettings", {
+    scope: "admin.evaluation.settings",
+    ttlMs: CACHE_TTL_MS.ADMIN_EVALUATION_SETTINGS,
+  });
+  wrapReadMethod(AdminAPI, "getLowestRatedTeachers", {
+    scope: "admin.evaluation.lowestRated",
+    ttlMs: CACHE_TTL_MS.ADMIN_EVALUATION_SUMMARY,
+  });
+  wrapReadMethod(AdminAPI, "getBuildings", {
+    scope: "admin.buildings",
+    ttlMs: CACHE_TTL_MS.ADMIN_MASTER_DATA,
+  });
+  wrapReadMethod(AdminAPI, "getSections", {
+    scope: "admin.sections",
+    ttlMs: CACHE_TTL_MS.ADMIN_MASTER_DATA,
+  });
+  wrapReadMethod(AdminAPI, "getSectionAssignments", {
+    scope: "admin.sectionAssignments",
+    ttlMs: CACHE_TTL_MS.ADMIN_ASSIGNMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getUserAssignments", {
+    scope: "admin.userAssignments",
+    ttlMs: CACHE_TTL_MS.ADMIN_USER_ASSIGNMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getDisciplineRecords", {
+    scope: "admin.discipline.records",
+    ttlMs: CACHE_TTL_MS.ADMIN_DISCIPLINE,
+  });
+  wrapReadMethod(AdminAPI, "getDisciplineRecordForStudent", {
+    scope: "admin.discipline.byStudent",
+    ttlMs: CACHE_TTL_MS.ADMIN_DISCIPLINE_STUDENT,
+  });
+  wrapReadMethod(AdminAPI, "getPaymentRecords", {
+    scope: "admin.payments.records",
+    ttlMs: CACHE_TTL_MS.ADMIN_PAYMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getPaymentRecordForStudent", {
+    scope: "admin.payments.byStudent",
+    ttlMs: CACHE_TTL_MS.ADMIN_PAYMENTS_STUDENT,
+  });
+  wrapReadMethod(AdminAPI, "getSubjects", {
+    scope: "admin.subjects",
+    ttlMs: CACHE_TTL_MS.ADMIN_MASTER_DATA,
+  });
+  wrapReadMethod(AdminAPI, "getTeacherAssignments", {
+    scope: "admin.teacherAssignments",
+    ttlMs: CACHE_TTL_MS.ADMIN_ASSIGNMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getSchedules", {
+    scope: "admin.schedules",
+    ttlMs: CACHE_TTL_MS.ADMIN_ASSIGNMENTS,
+  });
+  wrapReadMethod(AdminAPI, "getProjects", {
+    scope: "admin.projects",
+    ttlMs: CACHE_TTL_MS.ADMIN_PROJECTS,
+  });
+  wrapReadMethod(AdminAPI, "getSectionsWithLoad", {
+    scope: "admin.studyload.sections",
+    ttlMs: CACHE_TTL_MS.ADMIN_STUDYLOAD_SECTIONS,
+  });
+  wrapReadMethod(AdminAPI, "getSectionLoadDetails", {
+    scope: "admin.studyload.sectionDetails",
+    ttlMs: CACHE_TTL_MS.ADMIN_STUDYLOAD_DETAILS,
+  });
+  wrapReadMethod(AdminAPI, "getIrregularStudents", {
+    scope: "admin.studyload.irregular",
+    ttlMs: CACHE_TTL_MS.ADMIN_STUDYLOAD_IRREGULAR,
+  });
+  wrapReadMethod(AdminAPI, "getStudentCustomStudyLoad", {
+    scope: "admin.studyload.custom",
+    ttlMs: CACHE_TTL_MS.ADMIN_STUDYLOAD_CUSTOM,
+  });
+  wrapReadMethod(AdminAPI, "getGrades", {
+    scope: "admin.grades",
+    ttlMs: CACHE_TTL_MS.ADMIN_GRADES,
+  });
+  wrapReadMethod(AdminAPI, "getFeedbacks", {
+    scope: "admin.feedback.list",
+    ttlMs: CACHE_TTL_MS.ADMIN_FEEDBACK,
+  });
+  wrapReadMethod(AdminAPI, "getFeedbackStats", {
+    scope: "admin.feedback.stats",
+    ttlMs: CACHE_TTL_MS.ADMIN_FEEDBACK,
+  });
+  wrapReadMethod(AdminAPI, "getUserSuggestions", {
+    scope: "admin.userSuggestions",
+    ttlMs: CACHE_TTL_MS.ADMIN_USER_SUGGESTIONS,
+  });
+  wrapReadMethod(AdminAPI, "getBackups", {
+    scope: "admin.backups",
+    ttlMs: CACHE_TTL_MS.ADMIN_MAINTENANCE,
+  });
+  wrapReadMethod(AdminAPI, "getMaintenanceScheduler", {
+    scope: "admin.maintenance.scheduler",
+    ttlMs: CACHE_TTL_MS.ADMIN_MAINTENANCE,
+  });
+  wrapReadMethod(AdminAPI, "getBlockedIpList", {
+    scope: "admin.maintenance.blockedIps",
+    ttlMs: CACHE_TTL_MS.ADMIN_MAINTENANCE,
+  });
+  wrapReadMethod(AdminAPI, "getStorageHealth", {
+    scope: "admin.maintenance.storageHealth",
+    ttlMs: CACHE_TTL_MS.ADMIN_STORAGE_HEALTH,
+  });
+  wrapReadMethod(AdminAPI, "getDatabaseHealth", {
+    scope: "admin.maintenance.databaseHealth",
+    ttlMs: CACHE_TTL_MS.ADMIN_DATABASE_HEALTH,
+  });
+  wrapReadMethod(AdminAPI, "findDuplicateUsers", {
+    scope: "admin.maintenance.duplicateUsers",
+    ttlMs: CACHE_TTL_MS.ADMIN_DUPLICATE_USERS,
+  });
+
+  // Student views
+  wrapReadMethod(StudentAPI, "getMyAccountRequests", {
+    scope: "student.accountRequests",
+    ttlMs: CACHE_TTL_MS.STUDENT_ACCOUNT_REQUESTS,
+  });
+  wrapReadMethod(StudentAPI, "getAssignment", {
+    scope: "student.assignment",
+    ttlMs: CACHE_TTL_MS.STUDENT_ASSIGNMENT,
+  });
+  wrapReadMethod(StudentAPI, "getStudyLoad", {
+    scope: "student.studyLoad",
+    ttlMs: CACHE_TTL_MS.STUDENT_STUDYLOAD,
+  });
+  wrapReadMethod(StudentAPI, "getGrades", {
+    scope: "student.grades",
+    ttlMs: CACHE_TTL_MS.STUDENT_GRADES,
+  });
+  wrapReadMethod(StudentAPI, "getAnnouncements", {
+    scope: "student.announcements",
+    ttlMs: CACHE_TTL_MS.STUDENT_ANNOUNCEMENTS,
+  });
+  wrapReadMethod(StudentAPI, "getProjects", {
+    scope: "student.projects.section",
+    ttlMs: CACHE_TTL_MS.STUDENT_SECTION_PROJECTS,
+  });
+  wrapReadMethod(StudentAPI, "getCampusProjects", {
+    scope: "student.projects.campus",
+    ttlMs: CACHE_TTL_MS.STUDENT_CAMPUS_PROJECTS,
+  });
+  wrapReadMethod(StudentAPI, "getEvaluationSettings", {
+    scope: "student.evaluation.settings",
+    ttlMs: CACHE_TTL_MS.STUDENT_EVALUATION_SETTINGS,
+  });
+  wrapReadMethod(StudentAPI, "getEvaluationTeachers", {
+    scope: "student.evaluation.teachers",
+    ttlMs: CACHE_TTL_MS.STUDENT_EVALUATION_TEACHERS,
+  });
+  wrapReadMethod(StudentAPI, "getEvaluation", {
+    scope: "student.evaluation.latest",
+    ttlMs: CACHE_TTL_MS.STUDENT_EVALUATION,
+  });
+  wrapReadMethod(StudentAPI, "getMyFeedbacks", {
+    scope: "student.feedback.mine",
+    ttlMs: CACHE_TTL_MS.STUDENT_FEEDBACK,
+  });
+
+  // Teacher views
+  wrapReadMethod(TeacherAPI, "getSchedule", {
+    scope: "teacher.schedule",
+    ttlMs: CACHE_TTL_MS.TEACHER_SCHEDULE,
+  });
+  wrapReadMethod(TeacherAPI, "getAnnouncements", {
+    scope: "teacher.announcements",
+    ttlMs: CACHE_TTL_MS.TEACHER_ANNOUNCEMENTS,
+  });
+  wrapReadMethod(TeacherAPI, "getProjects", {
+    scope: "teacher.projects.campus",
+    ttlMs: CACHE_TTL_MS.TEACHER_PROJECTS,
+  });
+  wrapReadMethod(TeacherAPI, "getGrades", {
+    scope: "teacher.grades",
+    ttlMs: CACHE_TTL_MS.TEACHER_GRADES,
+  });
+  wrapReadMethod(TeacherAPI, "getSections", {
+    scope: "teacher.sections",
+    ttlMs: CACHE_TTL_MS.TEACHER_SECTIONS,
+  });
+  wrapReadMethod(TeacherAPI, "getStudentsBySection", {
+    scope: "teacher.studentsBySection",
+    ttlMs: CACHE_TTL_MS.TEACHER_SECTION_STUDENTS,
+  });
+  wrapReadMethod(TeacherAPI, "getEvaluationStatistics", {
+    scope: "teacher.evaluation.stats",
+    ttlMs: CACHE_TTL_MS.TEACHER_EVALUATION_STATS,
+  });
+  wrapReadMethod(NotificationAPI, "getUnread", {
+    scope: "notifications.unread",
+    ttlMs: CACHE_TTL_MS.NOTIFICATIONS_UNREAD,
+    bypassWhen: (options: LooseRecord = {}) => Boolean(options?.force_refresh),
+    getCacheArgs: (options: LooseRecord = {}) => [Number(options?.limit) || 20],
+  });
+
+  // Session-bound invalidation
+  wrapMutationMethod(AuthAPI, "login", []);
+  wrapMutationMethod(AuthAPI, "logout", []);
+
+  // Admin mutations
+  wrapMutationMethod(AdminAPI, "setAccountRequestStatus", uniqueScopes(scopeGroups.accountRequests, scopeGroups.users));
+  wrapMutationMethod(AdminAPI, "approveAllAccountRequests", uniqueScopes(scopeGroups.accountRequests, scopeGroups.users));
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createUserWithPassword",
+    uniqueScopes(scopeGroups.users, scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateUserAccount",
+    uniqueScopes(scopeGroups.users, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "adminSetUserPassword",
+    uniqueScopes(scopeGroups.users),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateUserRoles",
+    uniqueScopes(scopeGroups.users, scopeGroups.accountRequests),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateUserSubRole",
+    uniqueScopes(scopeGroups.users),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "setUserDayOffStatus",
+    uniqueScopes(scopeGroups.users, scopeGroups.dashboard, ["admin.statusLogs"]),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteUser",
+    uniqueScopes(scopeGroups.users, scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "blockIpAddress",
+    uniqueScopes(scopeGroups.maintenance, ["admin.statusLogs"]),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "unblockIpAddress",
+    uniqueScopes(scopeGroups.maintenance, ["admin.statusLogs"]),
+  );
+
+  wrapMutationMethod(AdminAPI, "createAnnouncement", uniqueScopes(scopeGroups.announcements, scopeGroups.dashboard));
+  wrapMutationMethod(AdminAPI, "updateAnnouncement", uniqueScopes(scopeGroups.announcements, scopeGroups.dashboard));
+  wrapMutationMethod(AdminAPI, "deleteAnnouncement", uniqueScopes(scopeGroups.announcements, scopeGroups.dashboard));
+
+  wrapMutationMethod(
+    AdminAPI,
+    "updateEvaluationSettings",
+    uniqueScopes(scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createBuilding",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteBuilding",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "createSection",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateSection",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteSection",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createSectionAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateSectionAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteSectionAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createUserAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.studyLoad, scopeGroups.discipline, scopeGroups.payments, scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateUserAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.studyLoad, scopeGroups.discipline, scopeGroups.payments, scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteUserAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.studyLoad, scopeGroups.discipline, scopeGroups.payments, scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(AdminAPI, "issueStudentWarning", uniqueScopes(scopeGroups.discipline, scopeGroups.users));
+  wrapMutationMethod(AdminAPI, "issueStudentSanction", uniqueScopes(scopeGroups.discipline, scopeGroups.users));
+  wrapMutationMethod(AdminAPI, "applyGeneralPayment", uniqueScopes(scopeGroups.payments, scopeGroups.users));
+  wrapMutationMethod(AdminAPI, "recordStudentPayment", uniqueScopes(scopeGroups.payments, scopeGroups.users));
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createSubject",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateSubject",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteSubject",
+    uniqueScopes(scopeGroups.masterData, scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createTeacherAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.schedules, scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteTeacherAssignment",
+    uniqueScopes(scopeGroups.users, scopeGroups.schedules, scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createSchedule",
+    uniqueScopes(scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteSchedule",
+    uniqueScopes(scopeGroups.schedules, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(AdminAPI, "createProject", uniqueScopes(scopeGroups.projects));
+  wrapMutationMethod(AdminAPI, "updateProject", uniqueScopes(scopeGroups.projects));
+  wrapMutationMethod(AdminAPI, "deleteProject", uniqueScopes(scopeGroups.projects));
+
+  wrapMutationMethod(
+    AdminAPI,
+    "clearSectionLoad",
+    uniqueScopes(scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteStudyLoad",
+    uniqueScopes(scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "addStudentCustomStudyLoad",
+    uniqueScopes(scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.users, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "removeStudentCustomStudyLoad",
+    uniqueScopes(scopeGroups.studyLoad, scopeGroups.grades, scopeGroups.users, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(
+    AdminAPI,
+    "createGrade",
+    uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "updateGrade",
+    uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(
+    AdminAPI,
+    "deleteGrade",
+    uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard),
+  );
+
+  wrapMutationMethod(AdminAPI, "replyFeedback", uniqueScopes(scopeGroups.feedback));
+
+  wrapMutationMethod(AdminAPI, "cleanupPictures", []);
+  wrapMutationMethod(AdminAPI, "clearStatusLogsByDateRange", []);
+  wrapMutationMethod(AdminAPI, "restoreBackup", []);
+  wrapMutationMethod(AdminAPI, "runMaintenanceSuite", []);
+  wrapMutationMethod(AdminAPI, "updateMaintenanceScheduler", uniqueScopes(scopeGroups.maintenance));
+  wrapMutationMethod(AdminAPI, "createBackup", uniqueScopes(scopeGroups.maintenance));
+
+  // Student mutations
+  wrapMutationMethod(StudentAPI, "requestProfilePictureUpdate", uniqueScopes(scopeGroups.accountRequests));
+  wrapMutationMethod(StudentAPI, "completeApprovedProfilePictureUpdate", uniqueScopes(scopeGroups.accountRequests));
+  wrapMutationMethod(StudentAPI, "requestPasswordReset", uniqueScopes(scopeGroups.accountRequests));
+  wrapMutationMethod(StudentAPI, "completeApprovedPasswordReset", uniqueScopes(scopeGroups.accountRequests));
+  wrapMutationMethod(
+    StudentAPI,
+    "submitEvaluation",
+    uniqueScopes(scopeGroups.evaluation, scopeGroups.dashboard),
+  );
+  wrapMutationMethod(StudentAPI, "submitFeedback", uniqueScopes(scopeGroups.feedback));
+
+  // Teacher mutations
+  wrapMutationMethod(TeacherAPI, "createAnnouncement", uniqueScopes(scopeGroups.announcements, scopeGroups.dashboard));
+  wrapMutationMethod(TeacherAPI, "deleteAnnouncement", uniqueScopes(scopeGroups.announcements, scopeGroups.dashboard));
+  wrapMutationMethod(TeacherAPI, "createProject", uniqueScopes(scopeGroups.projects));
+  wrapMutationMethod(TeacherAPI, "updateProject", uniqueScopes(scopeGroups.projects));
+  wrapMutationMethod(TeacherAPI, "deleteProject", uniqueScopes(scopeGroups.projects));
+  wrapMutationMethod(TeacherAPI, "createGrade", uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard));
+  wrapMutationMethod(TeacherAPI, "updateGrade", uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard));
+  wrapMutationMethod(TeacherAPI, "deleteGrade", uniqueScopes(scopeGroups.grades, scopeGroups.studyLoad, scopeGroups.dashboard));
+  wrapMutationMethod(NotificationAPI, "markAsRead", ["notifications.unread"]);
+  wrapMutationMethod(NotificationAPI, "markAllAsRead", ["notifications.unread"]);
+};
+
+const configureApiAuthorization = () => {
+  if (apiAuthorizationConfigured) return;
+  apiAuthorizationConfigured = true;
+
+  const wrapRoleMethod = (
+    api: LooseRecord,
+    methodName: string,
+    allowedRoles: string[] = [],
+    actionLabel = "access denied",
+  ) => {
+    const original = api?.[methodName];
+    if (typeof original !== "function") return;
+
+    api[methodName] = async (...args: any[]) => {
+      assertRoleAccess(allowedRoles, actionLabel);
+      return await original(...args);
+    };
+  };
+
+  const wrapRoleMethods = (
+    api: LooseRecord,
+    methodNames: string[],
+    allowedRoles: string[] = [],
+    actionPrefix = "access denied",
+  ) => {
+    (methodNames || []).forEach((methodName) => {
+      wrapRoleMethod(api, methodName, allowedRoles, `${actionPrefix}: ${methodName}`);
+    });
+  };
+
+  const staffScopedAdminMethods = Object.keys(AdminAPI).filter(
+    (methodName) => typeof AdminAPI?.[methodName] === "function",
+  );
+  wrapRoleMethods(
+    AdminAPI,
+    staffScopedAdminMethods,
+    ["admin", "teacher", "faculty", "dean", "nt", "osas", "treasury"],
+    "Staff scope required",
+  );
+
+  const adminOnlySensitiveMethods = [
+    "getDashboardStats",
+    "getUsers",
+    "getStatusLogs",
+    "getAccountRequests",
+    "setAccountRequestStatus",
+    "approveAllAccountRequests",
+    "createUserWithPassword",
+    "updateUserAccount",
+    "adminSetUserPassword",
+    "updateUserRoles",
+    "updateUserSubRole",
+    "setUserDayOffStatus",
+    "deleteUser",
+    "getBackups",
+    "getMaintenanceScheduler",
+    "getBlockedIpList",
+    "getStorageHealth",
+    "getDatabaseHealth",
+    "findDuplicateUsers",
+    "cleanupPictures",
+    "clearStatusLogsByDateRange",
+    "restoreBackup",
+    "runMaintenanceSuite",
+    "updateMaintenanceScheduler",
+    "sendMaintenanceReportNow",
+    "createBackup",
+    "blockIpAddress",
+    "unblockIpAddress",
+  ];
+  wrapRoleMethods(
+    AdminAPI,
+    adminOnlySensitiveMethods,
+    ["admin"],
+    "Admin-only operation",
+  );
+
+  const studentAcademicMethods = [
+    "getAssignment",
+    "getStudyLoad",
+    "getGrades",
+    "getAnnouncements",
+    "getProjects",
+    "getEvaluationSettings",
+    "getEvaluationTeachers",
+    "getEvaluation",
+    "submitEvaluation",
+  ];
+  wrapRoleMethods(
+    StudentAPI,
+    studentAcademicMethods,
+    ["student", "admin"],
+    "Student scope required",
+  );
+
+  const selfServiceMethods = [
+    "requestProfilePictureUpdate",
+    "completeApprovedProfilePictureUpdate",
+    "requestPasswordReset",
+    "getMyAccountRequests",
+    "completeApprovedPasswordReset",
+    "submitFeedback",
+    "getMyFeedbacks",
+    "getCampusProjects",
+  ];
+  wrapRoleMethods(
+    StudentAPI,
+    selfServiceMethods,
+    ["student", "teacher", "faculty", "dean", "nt", "staff", "osas", "treasury", "admin"],
+    "Authenticated scope required",
+  );
+
+  const teacherMethodNames = Object.keys(TeacherAPI).filter(
+    (methodName) => typeof TeacherAPI?.[methodName] === "function",
+  );
+  wrapRoleMethods(
+    TeacherAPI,
+    teacherMethodNames,
+    ["teacher", "admin", "faculty", "dean"],
+    "Teacher scope required",
+  );
+};
+
+configureApiCaching();
+configureApiAuthorization();
 
 export default {
   AuthAPI,

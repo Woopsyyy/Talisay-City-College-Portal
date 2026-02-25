@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import baseStyled from 'styled-components';
 const styled = baseStyled as any;
-import { AdminAPI } from '../../../services/api';
+import { AdminAPI } from 'services/apis/admin';
 import { useAuth } from '../../../context/AuthContext';
 import { COURSE_MAJOR_CONFIG, YEAR_LEVEL_OPTIONS } from '../../../utils/constants';
 import { Search, UserPlus, Users, Layers, BookOpen, GraduationCap, X, Check, Save, Trash2, Filter, AlertCircle, Edit, ShieldAlert, CreditCard, UserCheck, RefreshCw, MapPin, Clock3, Eraser } from 'lucide-react';
@@ -100,9 +100,9 @@ const ManageStudentsView = ({ mode = null, onOpenIrregularStudyLoad = null }) =>
         try {
             setLoading(true);
             const [fetchedAssignments, fetchedSections, fetchedUsers] = await Promise.all([
-                AdminAPI.getUserAssignments(),
+                AdminAPI.getUserAssignments({ active_only: true }),
                 AdminAPI.getSections(),
-                AdminAPI.getUsers()
+                AdminAPI.getUsers({ role: 'student', compact: true })
             ]);
             
             let assignments = Array.isArray(fetchedAssignments) ? fetchedAssignments : [];

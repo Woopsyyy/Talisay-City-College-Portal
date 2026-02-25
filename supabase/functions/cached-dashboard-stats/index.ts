@@ -39,6 +39,15 @@ type DashboardStatsPayload = {
 type RequestPayload = {
   force_refresh?: unknown;
   ttl_seconds?: unknown;
+  page_path?: unknown;
+  page_query?: unknown;
+  view_name?: unknown;
+};
+
+type RequestContext = {
+  pagePath: string | null;
+  pageQuery: string | null;
+  viewName: string | null;
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -59,6 +68,10 @@ const REDIS_BYPASS_SECONDS = (() => {
   if (!Number.isFinite(envValue)) return 300;
   return Math.min(3600, Math.max(30, Math.trunc(envValue)));
 })();
+const EDGE_ALLOWED_ORIGINS = String(Deno.env.get("EDGE_ALLOWED_ORIGINS") || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 const DASHBOARD_CACHE_KEY = "tcc:dashboard:stats:v1";
 let redisBypassUntilEpochMs = 0;
@@ -92,6 +105,13 @@ const json = (status: number, body: Record<string, unknown>) =>
       "Content-Type": "application/json",
     },
   });
+
+const isOriginAllowed = (req: Request): boolean => {
+  if (EDGE_ALLOWED_ORIGINS.length === 0) return true;
+  const origin = String(req.headers.get("origin") || "").trim();
+  if (!origin) return true;
+  return EDGE_ALLOWED_ORIGINS.includes(origin);
+};
 
 const readBearerToken = (req: Request): string | null => {
   const authorization = String(req.headers.get("authorization") || "").trim();
@@ -160,9 +180,38 @@ const hasAdminRole = (row: PublicUserAuthRow | null): boolean => {
   return roles.has("admin");
 };
 
-const parseRequestPayload = async (req: Request): Promise<{ forceRefresh: boolean; ttlSeconds: number }> => {
+const parseRequestPayload = async (req: Request): Promise<{
+  forceRefresh: boolean;
+  ttlSeconds: number;
+  requestContext: RequestContext;
+}> => {
+  const sanitizeText = (value: unknown, maxLength = 180): string | null => {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    return text.slice(0, maxLength);
+  };
+
+  const parsePagePathFromReferer = (): string | null => {
+    const referer = String(req.headers.get("referer") || "").trim();
+    if (!referer) return null;
+    try {
+      const url = new URL(referer);
+      return sanitizeText(url.pathname, 200);
+    } catch (_) {
+      return null;
+    }
+  };
+
   if (req.method !== "POST") {
-    return { forceRefresh: false, ttlSeconds: DEFAULT_CACHE_TTL_SECONDS };
+    return {
+      forceRefresh: false,
+      ttlSeconds: DEFAULT_CACHE_TTL_SECONDS,
+      requestContext: {
+        pagePath: parsePagePathFromReferer(),
+        pageQuery: null,
+        viewName: null,
+      },
+    };
   }
 
   let payload: RequestPayload = {};
@@ -183,7 +232,179 @@ const parseRequestPayload = async (req: Request): Promise<{ forceRefresh: boolea
   return {
     forceRefresh: Boolean(payload?.force_refresh),
     ttlSeconds,
+    requestContext: {
+      pagePath: sanitizeText(payload?.page_path, 200) || parsePagePathFromReferer(),
+      pageQuery: sanitizeText(payload?.page_query, 400),
+      viewName: sanitizeText(payload?.view_name, 120),
+    },
   };
+};
+
+const buildPageLabel = (context: RequestContext): string => {
+  const path = String(context?.pagePath || "").trim();
+  const query = String(context?.pageQuery || "").trim();
+  if (path && query) return `${path}${query}`;
+  if (path) return path;
+  return "unknown-page";
+};
+
+const buildRequestContextFromReferer = (req: Request): RequestContext => {
+  const referer = String(req.headers.get("referer") || "").trim();
+  if (!referer) {
+    return { pagePath: null, pageQuery: null, viewName: null };
+  }
+
+  try {
+    const url = new URL(referer);
+    return {
+      pagePath: String(url.pathname || "").trim().slice(0, 200) || null,
+      pageQuery: String(url.search || "").trim().slice(0, 400) || null,
+      viewName: null,
+    };
+  } catch (_) {
+    return { pagePath: null, pageQuery: null, viewName: null };
+  }
+};
+
+const isMissingFunctionError = (error: unknown, fnName = ""): boolean => {
+  const text = getErrorText(error);
+  if (!text) return false;
+
+  const missingText =
+    text.includes("could not find the function") ||
+    (text.includes("function") && text.includes("does not exist"));
+  if (!missingText) return false;
+  if (!fnName) return true;
+  return text.includes(fnName.toLowerCase());
+};
+
+const logCacheStatusEvent = async (params: {
+  caller: PublicUserAuthRow | null;
+  context: RequestContext;
+  action: string;
+  message: string;
+  source: "cache" | "database";
+  reason: string | null;
+  ttlSeconds: number;
+  forceRefresh: boolean;
+}) => {
+  const actorRole = normalizeRole(params?.caller?.role || "admin") || "admin";
+  const action = String(params?.action || "dashboard_cache_event").trim().toLowerCase();
+  const message = params?.message || "Dashboard cache event";
+  const metadata = {
+    cache_key: DASHBOARD_CACHE_KEY,
+    source: params?.source || "database",
+    reason: params?.reason || null,
+    page_path: params?.context?.pagePath || null,
+    page_query: params?.context?.pageQuery || null,
+    view_name: params?.context?.viewName || null,
+    force_refresh: Boolean(params?.forceRefresh),
+    ttl_seconds: Number(params?.ttlSeconds || DEFAULT_CACHE_TTL_SECONDS),
+    redis_bypass_active: shouldBypassRedis(),
+  };
+
+  try {
+    const { error: fullInsertError } = await supabaseAdmin.from("status_logs").insert({
+      actor_user_id: params?.caller?.id || null,
+      actor_username: params?.caller?.username || "system",
+      actor_role: actorRole,
+      action,
+      category: "cache",
+      target_user_id: null,
+      target_username: null,
+      target_role: null,
+      message,
+      metadata,
+    });
+
+    if (!fullInsertError) return;
+
+    const { error: minimalInsertError } = await supabaseAdmin.from("status_logs").insert({
+      actor_user_id: params?.caller?.id || null,
+      actor_username: params?.caller?.username || "system",
+      actor_role: actorRole,
+      action,
+      category: "cache",
+      message,
+      metadata,
+    });
+    if (!minimalInsertError) return;
+
+    const { error: rpcError } = await supabaseAdmin.rpc("app_log_status_event", {
+      p_action: action,
+      p_category: "cache",
+      p_message: message,
+      p_actor_user_id: params?.caller?.id || null,
+      p_actor_username: params?.caller?.username || "system",
+      p_actor_role: actorRole,
+      p_target_user_id: null,
+      p_target_username: null,
+      p_target_role: null,
+      p_metadata: metadata,
+    });
+    if (rpcError && !isMissingFunctionError(rpcError, "app_log_status_event")) {
+      console.warn("[cached-dashboard-stats] Failed to write status log event", {
+        fullInsertError,
+        minimalInsertError,
+        rpcError,
+      });
+    }
+  } catch (error) {
+    console.warn("[cached-dashboard-stats] Failed to write status log event", error);
+  }
+};
+
+const logUnauthorizedCacheEvent = async (
+  req: Request,
+  reason: string,
+  detail: string | null = null,
+) => {
+  const context = buildRequestContextFromReferer(req);
+  const pageLabel = buildPageLabel(context);
+  const message = `Dashboard cache request unauthorized on ${pageLabel}.`;
+  const metadata = {
+    cache_key: DASHBOARD_CACHE_KEY,
+    source: "database",
+    reason: String(reason || "unauthorized").trim().toLowerCase(),
+    page_path: context.pagePath,
+    page_query: context.pageQuery,
+    view_name: context.viewName,
+    detail: detail || null,
+  };
+
+  try {
+    const { error: insertError } = await supabaseAdmin.from("status_logs").insert({
+      actor_user_id: null,
+      actor_username: "system",
+      actor_role: "system",
+      action: "dashboard_cache_unauthorized",
+      category: "cache",
+      message,
+      metadata,
+    });
+    if (!insertError) return;
+
+    const { error: rpcError } = await supabaseAdmin.rpc("app_log_status_event", {
+      p_action: "dashboard_cache_unauthorized",
+      p_category: "cache",
+      p_message: message,
+      p_actor_user_id: null,
+      p_actor_username: "system",
+      p_actor_role: "system",
+      p_target_user_id: null,
+      p_target_username: null,
+      p_target_role: null,
+      p_metadata: metadata,
+    });
+    if (rpcError && !isMissingFunctionError(rpcError, "app_log_status_event")) {
+      console.warn("[cached-dashboard-stats] Failed to write unauthorized cache event", {
+        insertError,
+        rpcError,
+      });
+    }
+  } catch (error) {
+    console.warn("[cached-dashboard-stats] Failed to write unauthorized cache event", error);
+  }
 };
 
 const countExact = async (table: string): Promise<number> => {
@@ -208,40 +429,59 @@ const mapBuilding = (row: LooseRecord = {}) => ({
   rooms_per_floor: Number(row.rooms_per_floor || 10),
 });
 
-const queryDashboardStats = async (): Promise<DashboardStatsPayload> => {
-  const [
-    usersCount,
-    subjectsCount,
-    sectionsCount,
-    schedulesCount,
-    announcementsCount,
-    studyLoadCount,
-    usersResult,
-    buildingsResult,
-    announcementsResult,
-  ] = await Promise.all([
-    countExact("users"),
-    countExact("subjects"),
-    countExact("sections"),
-    countExact("schedules"),
-    countExact("announcements"),
-    countExact("study_load"),
-    supabaseAdmin.from("users").select("role,roles,sub_role,sub_roles"),
-    supabaseAdmin.from("buildings").select("*"),
-    supabaseAdmin
-      .from("announcements")
-      .select("*")
-      .order("published_at", { ascending: false })
-      .limit(5),
+type DashboardRoleCounts = {
+  students: number;
+  teachers: number;
+  admins: number;
+  nonTeaching: number;
+};
+
+const countUsersByRoleVariants = async (variants: string[]): Promise<number> => {
+  const normalizedVariants = Array.from(new Set(
+    variants
+      .map((variant) => normalizeRole(variant))
+      .filter(Boolean),
+  ));
+  if (normalizedVariants.length === 0) return 0;
+
+  const filterParts = normalizedVariants.flatMap((variant) => [
+    `role.ilike.${variant}`,
+    `sub_role.ilike.${variant}`,
   ]);
 
-  if (usersResult.error) throw new Error(usersResult.error.message || "Failed to load users.");
-  if (buildingsResult.error) throw new Error(buildingsResult.error.message || "Failed to load buildings.");
-  if (announcementsResult.error) {
-    throw new Error(announcementsResult.error.message || "Failed to load recent announcements.");
-  }
+  const { count, error } = await supabaseAdmin
+    .from("users")
+    .select("id", { count: "exact", head: true })
+    .or(filterParts.join(","));
 
-  const users = (usersResult.data || []) as PublicUserRoleRow[];
+  if (error) throw new Error(error.message || "Failed to count users by role.");
+  return Number(count || 0);
+};
+
+const queryDashboardRoleCountsFast = async (): Promise<DashboardRoleCounts> => {
+  const [students, teachers, admins, nonTeaching] = await Promise.all([
+    countUsersByRoleVariants(["student"]),
+    countUsersByRoleVariants(["teacher"]),
+    countUsersByRoleVariants(["admin"]),
+    countUsersByRoleVariants(["nt", "go"]),
+  ]);
+
+  return {
+    students,
+    teachers,
+    admins,
+    nonTeaching,
+  };
+};
+
+const queryDashboardRoleCountsByScan = async (): Promise<DashboardRoleCounts> => {
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select("role,roles,sub_role,sub_roles");
+
+  if (error) throw new Error(error.message || "Failed to load users.");
+
+  const users = (data || []) as PublicUserRoleRow[];
   const students = users.filter((user) =>
     normalizeRoles(user.roles, user.role).includes("student"),
   ).length;
@@ -256,16 +496,68 @@ const queryDashboardStats = async (): Promise<DashboardStatsPayload> => {
   ).length;
 
   return {
+    students,
+    teachers,
+    admins,
+    nonTeaching,
+  };
+};
+
+const queryDashboardStats = async (): Promise<DashboardStatsPayload> => {
+  const [
+    usersCount,
+    subjectsCount,
+    sectionsCount,
+    schedulesCount,
+    announcementsCount,
+    studyLoadCount,
+    buildingsResult,
+    announcementsResult,
+  ] = await Promise.all([
+    countExact("users"),
+    countExact("subjects"),
+    countExact("sections"),
+    countExact("schedules"),
+    countExact("announcements"),
+    countExact("study_load"),
+    supabaseAdmin.from("buildings").select("*"),
+    supabaseAdmin
+      .from("announcements")
+      .select("*")
+      .order("published_at", { ascending: false })
+      .limit(5),
+  ]);
+
+  if (buildingsResult.error) throw new Error(buildingsResult.error.message || "Failed to load buildings.");
+  if (announcementsResult.error) {
+    throw new Error(announcementsResult.error.message || "Failed to load recent announcements.");
+  }
+
+  let roleCounts: DashboardRoleCounts | null = null;
+  try {
+    const fastCounts = await queryDashboardRoleCountsFast();
+    const totalBuckets = fastCounts.students + fastCounts.teachers + fastCounts.admins + fastCounts.nonTeaching;
+
+    // If users exist but fast counts are all zero, fall back to robust scan for legacy datasets.
+    roleCounts = usersCount > 0 && totalBuckets === 0
+      ? await queryDashboardRoleCountsByScan()
+      : fastCounts;
+  } catch (error) {
+    console.warn("[cached-dashboard-stats] Fast role counting failed, falling back to scan.", error);
+    roleCounts = await queryDashboardRoleCountsByScan();
+  }
+
+  return {
     users: usersCount,
     subjects: subjectsCount,
     sections: sectionsCount,
     schedules: schedulesCount,
     announcements: announcementsCount,
     study_load: studyLoadCount,
-    students,
-    teachers,
-    admins,
-    non_teaching: nonTeaching,
+    students: Number(roleCounts?.students || 0),
+    teachers: Number(roleCounts?.teachers || 0),
+    admins: Number(roleCounts?.admins || 0),
+    non_teaching: Number(roleCounts?.nonTeaching || 0),
     buildings: (buildingsResult.data || []).map((row) => mapBuilding(row)),
     recent_announcements: (announcementsResult.data || []).map((row) => mapAnnouncement(row)),
     generated_at: new Date().toISOString(),
@@ -332,40 +624,80 @@ const markRedisBypass = () => {
 };
 
 const readCachedStats = async (): Promise<DashboardStatsPayload | null> => {
-  if (!redis || shouldBypassRedis()) return null;
+  if (!redis) {
+    console.log("[cached-dashboard-stats] CACHE MISS (redis unavailable)");
+    return null;
+  }
+
+  if (shouldBypassRedis()) {
+    console.log("[cached-dashboard-stats] CACHE MISS (redis bypass active)");
+    return null;
+  }
 
   try {
     const raw = await redis.get<string | LooseRecord>(DASHBOARD_CACHE_KEY);
-    if (!raw) return null;
+    if (!raw) {
+      console.log("[cached-dashboard-stats] CACHE MISS");
+      return null;
+    }
 
     if (typeof raw === "string") {
       const parsed = JSON.parse(raw);
-      return isDashboardStatsPayload(parsed) ? parsed : null;
+      if (isDashboardStatsPayload(parsed)) {
+        console.log("[cached-dashboard-stats] CACHE HIT");
+        return parsed;
+      }
+      console.log("[cached-dashboard-stats] CACHE MISS (invalid cached payload)");
+      return null;
     }
 
-    return isDashboardStatsPayload(raw) ? raw : null;
+    if (isDashboardStatsPayload(raw)) {
+      console.log("[cached-dashboard-stats] CACHE HIT");
+      return raw;
+    }
+
+    console.log("[cached-dashboard-stats] CACHE MISS (invalid cached payload)");
+    return null;
   } catch (error) {
     if (isRedisCapacityError(error)) {
+      console.warn("[cached-dashboard-stats] Redis capacity reached, bypassing cache", error);
       markRedisBypass();
     }
+    console.warn("[cached-dashboard-stats] CACHE MISS (redis read error)", error);
     return null;
   }
 };
 
 const writeCachedStats = async (payload: DashboardStatsPayload, ttlSeconds: number) => {
-  if (!redis || shouldBypassRedis()) return;
+  if (!redis) {
+    console.log("[cached-dashboard-stats] CACHE SKIP WRITE (redis unavailable)");
+    return;
+  }
+
+  if (shouldBypassRedis()) {
+    console.log("[cached-dashboard-stats] CACHE SKIP WRITE (redis bypass active)");
+    return;
+  }
+
   try {
     await redis.set(DASHBOARD_CACHE_KEY, JSON.stringify(payload), { ex: ttlSeconds });
+    console.log("[cached-dashboard-stats] CACHE WRITE");
   } catch (error) {
     if (isRedisCapacityError(error)) {
+      console.warn("[cached-dashboard-stats] Redis capacity reached during write, bypassing cache", error);
       markRedisBypass();
       return;
     }
     // cache write is best effort only
+    console.warn("[cached-dashboard-stats] CACHE WRITE ERROR", error);
   }
 };
 
 Deno.serve(async (req: Request) => {
+  if (!isOriginAllowed(req)) {
+    return json(403, { error: "Origin not allowed." });
+  }
+
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -377,11 +709,17 @@ Deno.serve(async (req: Request) => {
   try {
     const token = readBearerToken(req);
     if (!token) {
+      await logUnauthorizedCacheEvent(req, "missing_bearer_token");
       return json(401, { error: "Missing bearer token." });
     }
 
     const { data: callerAuthData, error: callerAuthError } = await supabaseAdmin.auth.getUser(token);
     if (callerAuthError || !callerAuthData?.user?.id) {
+      await logUnauthorizedCacheEvent(
+        req,
+        "invalid_access_token",
+        String(callerAuthError?.message || "").trim() || null,
+      );
       return json(401, { error: "Invalid access token." });
     }
 
@@ -396,15 +734,33 @@ Deno.serve(async (req: Request) => {
       return json(500, { error: callerRowError.message || "Failed to load caller profile." });
     }
 
-    if (!hasAdminRole((callerRow as PublicUserAuthRow | null) || null)) {
+    const caller = (callerRow as PublicUserAuthRow | null) || null;
+    if (!hasAdminRole(caller)) {
+      await logUnauthorizedCacheEvent(
+        req,
+        "forbidden_non_admin",
+        String(caller?.role || "").trim() || null,
+      );
       return json(403, { error: "Only administrators can access dashboard stats cache." });
     }
 
-    const { forceRefresh, ttlSeconds } = await parseRequestPayload(req);
+    const { forceRefresh, ttlSeconds, requestContext } = await parseRequestPayload(req);
+    const pageLabel = buildPageLabel(requestContext);
 
     if (!forceRefresh) {
       const cached = await readCachedStats();
       if (cached) {
+        await logCacheStatusEvent({
+          caller,
+          context: requestContext,
+          action: "dashboard_cache_hit",
+          message: `Dashboard stats cache hit on ${pageLabel}.`,
+          source: "cache",
+          reason: null,
+          ttlSeconds,
+          forceRefresh,
+        });
+
         return json(200, {
           source: "cache",
           cache_key: DASHBOARD_CACHE_KEY,
@@ -413,6 +769,24 @@ Deno.serve(async (req: Request) => {
         });
       }
     }
+
+    console.log("[cached-dashboard-stats] CACHE MISS -> DATABASE QUERY");
+    await logCacheStatusEvent({
+      caller,
+      context: requestContext,
+      action: shouldBypassRedis() ? "dashboard_cache_bypass" : "dashboard_cache_miss",
+      message: forceRefresh
+        ? `Dashboard stats cache refresh forced on ${pageLabel}.`
+        : `Dashboard stats cache miss on ${pageLabel}.`,
+      source: "database",
+      reason: forceRefresh
+        ? "force_refresh"
+        : shouldBypassRedis()
+          ? "redis_bypass_active"
+          : "cache_empty_or_unavailable",
+      ttlSeconds,
+      forceRefresh,
+    });
 
     const stats = await queryDashboardStats();
     await writeCachedStats(stats, ttlSeconds);

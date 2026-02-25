@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import baseStyled from 'styled-components';
-import { TeacherAPI, AdminAPI } from '../../../services/api';
+import { TeacherAPI } from '../../../services/apis/teacher';
+import { AdminAPI } from '../../../services/apis/admin';
 import { 
     Star, 
     MessageSquare, 
